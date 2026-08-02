@@ -39,7 +39,8 @@ function formatPhoneDisplay(phone) {
   let local = "";
   if (digits.startsWith("972") && digits.length >= 11) local = `0${digits.slice(3)}`;
   else if (digits.startsWith("0") && digits.length === 10) local = digits;
-  else return raw.startsWith("+") ? raw : raw;
+  else if (digits.length >= 9) return raw.startsWith("+") ? raw : `+${digits}`;
+  else return raw;
   if (local.length === 10) {
     return `${local.slice(0, 3)}-${local.slice(3, 6)}-${local.slice(6)}`;
   }
@@ -161,7 +162,7 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
   );
 
   return (
-    <div style={{ direction: "rtl", fontFamily: "Heebo, sans-serif", maxWidth: 960, margin: "0 auto" }}>
+    <div style={{ direction: "rtl", fontFamily: "Heebo, sans-serif", maxWidth: 1080, margin: "0 auto" }}>
       <div style={{
         background: "linear-gradient(135deg, #5B21B6 0%, #7C3AED 55%, #A78BFA 100%)",
         borderRadius: 16,
@@ -308,90 +309,111 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                 הגעה {fmtArrivalDate(arrivalYmd)} · {rows.length} אורחים
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {rows.map((lead) => (
+                {rows.map((lead) => {
+                  const phoneRaw = resolveLeadPhone(lead);
+                  const phoneTel = formatPhoneTel(phoneRaw);
+                  const phoneDisplay = formatPhoneDisplay(phoneRaw);
+                  const quote = String(lead.message ?? "").trim().replace(/^\[ידני מ-Inbox\]\s*/i, "") || "אשמח לתאם";
+                  return (
                   <div
                     key={lead.id}
                     style={{
                       background: "#fff",
                       border: "1px solid #E9D5FF",
-                      borderRight: "4px solid #7C3AED",
-                      borderRadius: 12,
-                      padding: "14px 16px",
+                      borderRight: "5px solid #7C3AED",
+                      borderRadius: 14,
+                      padding: "18px 20px",
                       display: "flex",
                       justifyContent: "space-between",
                       alignItems: "flex-start",
-                      gap: 12,
+                      gap: 16,
                       flexWrap: "wrap",
+                      boxShadow: "0 2px 12px rgba(91,33,182,0.06)",
                     }}
                   >
                     <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                        {isManualSpaUpsellLeadMessage(lead.message) && (
+                          <span style={{
+                            fontSize: 11, fontWeight: 800, color: "#92400E",
+                            background: "#FEF3C7", padding: "3px 10px", borderRadius: 8,
+                          }}
+                          >
+                            ידני
+                          </span>
+                        )}
+                        <span style={{
+                          fontSize: 11, fontWeight: 800, color: "#5B21B6",
+                          background: "#EDE9FE", padding: "3px 10px", borderRadius: 8,
+                        }}
+                        >
+                          {leadTypeLabel(lead.alert_type)}
+                        </span>
+                        {lead.guests?.room ? (
+                          <span style={{
+                            fontSize: 11, fontWeight: 700, color: "#6B7280",
+                            background: "#F3F4F6", padding: "3px 10px", borderRadius: 8,
+                          }}
+                          >
+                            {lead.guests.room}
+                          </span>
+                        ) : null}
+                      </div>
+
                       <div style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-                        gap: "10px 16px",
-                        marginBottom: 10,
-                        padding: "10px 12px",
-                        background: "#FAF5FF",
-                        borderRadius: 10,
-                        border: "1px solid #EDE9FE",
+                        fontWeight: 900,
+                        fontSize: "clamp(22px, 4vw, 28px)",
+                        color: "#111827",
+                        lineHeight: 1.25,
+                        letterSpacing: "-0.02em",
+                        marginBottom: 8,
                       }}
                       >
-                        <div>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", marginBottom: 2 }}>שם מלא</div>
-                          <div style={{ fontWeight: 800, fontSize: 16, color: "#1F2937", lineHeight: 1.3 }}>
-                            {isManualSpaUpsellLeadMessage(lead.message) && (
-                              <span style={{
-                                fontSize: 10, fontWeight: 800, color: "#92400E",
-                                background: "#FEF3C7", padding: "2px 8px", borderRadius: 8,
-                                marginLeft: 6, verticalAlign: "middle",
-                              }}
-                              >
-                                ידני
-                              </span>
-                            )}
-                            <span style={{
-                              fontSize: 10, fontWeight: 800, color: "#5B21B6",
-                              background: "#EDE9FE", padding: "2px 8px", borderRadius: 8,
-                              marginLeft: 6, verticalAlign: "middle",
-                            }}
-                            >
-                              {leadTypeLabel(lead.alert_type)}
-                            </span>
-                            {lead.guests?.name || "אורח"}
-                          </div>
-                          {lead.guests?.room ? (
-                            <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{lead.guests.room}</div>
-                          ) : null}
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", marginBottom: 2 }}>טלפון</div>
-                          {formatPhoneTel(resolveLeadPhone(lead)) ? (
-                            <a
-                              href={`tel:${formatPhoneTel(resolveLeadPhone(lead))}`}
-                              style={{ fontWeight: 800, fontSize: 15, color: "#5B21B6", textDecoration: "none" }}
-                            >
-                              {formatPhoneDisplay(resolveLeadPhone(lead))}
-                            </a>
-                          ) : (
-                            <span style={{ fontWeight: 700, color: "#9CA3AF" }}>—</span>
-                          )}
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", marginBottom: 2 }}>תאריך הגעה</div>
-                          <div style={{ fontWeight: 800, fontSize: 15, color: "#6B21A8" }}>
-                            {fmtArrivalDate(lead.guests?.arrival_date)}
-                          </div>
-                        </div>
+                        {lead.guests?.name || "אורח"}
                       </div>
+
+                      {phoneTel ? (
+                        <a
+                          href={`tel:${phoneTel}`}
+                          style={{
+                            display: "inline-block",
+                            fontWeight: 800,
+                            fontSize: "clamp(20px, 3.5vw, 24px)",
+                            color: "#5B21B6",
+                            textDecoration: "none",
+                            direction: "ltr",
+                            unicodeBidi: "embed",
+                            letterSpacing: "0.04em",
+                            marginBottom: 10,
+                            padding: "4px 0",
+                          }}
+                        >
+                          📱 {phoneDisplay}
+                        </a>
+                      ) : (
+                        <div style={{ fontSize: 18, color: "#9CA3AF", marginBottom: 10 }}>אין טלפון</div>
+                      )}
+
                       <div style={{
-                        fontSize: 14,
+                        fontSize: "clamp(16px, 2.5vw, 18px)",
+                        fontWeight: 800,
+                        color: "#6B21A8",
+                        marginBottom: 12,
+                      }}
+                      >
+                        📅 הגעה {fmtArrivalDate(lead.guests?.arrival_date)}
+                      </div>
+
+                      <div style={{
+                        fontSize: 15,
                         color: "#4C1D95",
                         lineHeight: 1.5,
                         fontStyle: "italic",
+                        opacity: 0.9,
                       }}>
-                        «{String(lead.message ?? "").trim().replace(/^\[ידני מ-Inbox\]\s*/i, "") || "אשמח לתאם"}»
+                        «{quote}»
                       </div>
-                      <div style={{ fontSize: 12, color: "#9CA3AF", marginTop: 8 }}>
+                      <div style={{ fontSize: 12, color: "#9CA3AF", marginTop: 10 }}>
                         התקבל {fmtLeadTime(lead.created_at)}
                       </div>
                     </div>
@@ -429,7 +451,8 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                       </button>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
           ))}
@@ -441,14 +464,14 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
 
 function actionBtn(bg, color, bold) {
   return {
-    padding: "10px 16px",
-    minHeight: 44,
-    borderRadius: 10,
+    padding: "12px 18px",
+    minHeight: 48,
+    borderRadius: 12,
     border: `1px solid ${color}33`,
     background: bg,
     color,
     fontWeight: bold ? 800 : 700,
-    fontSize: 13,
+    fontSize: 14,
     cursor: "pointer",
     fontFamily: "Heebo, sans-serif",
     whiteSpace: "nowrap",
