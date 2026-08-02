@@ -4,7 +4,6 @@ import { formatIsraelDateTime, israelTodayYmd } from "../utils/israelTime";
 import {
   SPA_UPSELL_CHANNEL_META,
   SPA_UPSELL_CHANNEL_OPTIONS,
-  SPA_UPSELL_CHANNEL_WHAPI,
   SPA_UPSELL_META_TEMPLATE,
   previewSpaUpsellMetaTemplate,
 } from "../utils/spaUpsellAudience";
