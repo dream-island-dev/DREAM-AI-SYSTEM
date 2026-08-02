@@ -5,7 +5,7 @@ import { usePageVisibility } from "../hooks/usePageVisibility";
 import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
 import { buildDoc1EnrichmentPatch } from "../utils/guestImportIntelligence";
 import { spaSlotsWarningLabel } from "../utils/doc1SpaSlots";
-import { israelTodayYmd, israelTomorrowYmd, israelAddDaysYmd } from "../utils/israelTime";
+import { israelTodayYmd, israelTomorrowYmd, israelAddDaysYmd, formatIsraelDateTime } from "../utils/israelTime";
 import {
   WORKFLOW_META,
   createDaypassGuestFromRec,
@@ -26,6 +26,63 @@ import {
   sendSpaUpsellBatch,
   SPA_UPSELL_SEND_PULSE_MS,
 } from "../utils/spaUpsellDispatch";
+
+const EZGO_ERROR_HEBREW_PATTERNS = [
+  {
+    test: /MissingServerExtension|X-GM-EXT-1|X-GM-RAW/i,
+    hebrew: "Gmail לא תמך בחיפוש המתקדם בסשן הזה — שאילתות הבסיס עדיין פעילות, זו רק שכבת עזר שנכשלה",
+  },
+  {
+    test: /AUTHENTICATIONFAILED|invalid credentials|authentication failed/i,
+    hebrew: "כשל התחברות לתיבת Gmail — ייתכן שסיסמת האפליקציה (App Password) פגה או שונתה",
+  },
+  {
+    test: /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network|fetch failed|failed to fetch/i,
+    hebrew: "בעיית רשת בחיבור לשרת המייל — נסה שוב בעוד רגע",
+  },
+  {
+    test: /rate limit|too many/i,
+    hebrew: "יותר מדי בקשות ל-Gmail בזמן קצר — נסה שוב בעוד כמה דקות",
+  },
+];
+
+/** Known IMAP/network error signatures → plain-Hebrew explanation. Never hides the raw message — only adds context alongside it (FAIL VISIBLE). */
+function translateEzgoErrorHebrew(rawMessage) {
+  const msg = String(rawMessage || "");
+  if (!msg) return null;
+  for (const { test, hebrew } of EZGO_ERROR_HEBREW_PATTERNS) {
+    if (test.test(msg)) return hebrew;
+  }
+  return null;
+}
+
+/** "סנכרון אחרון" line — reads the same cron_heartbeats row whatsapp-cron's background gate reads, so manual vs automatic is visible without opening logs. */
+function LastSyncLine({ lastSync }) {
+  if (!lastSync) return null;
+  const meta = lastSync.meta || {};
+  const ok = meta.ok !== false;
+  const sourceLabel = meta.fullSync
+    ? "ידני · סריקה מלאה"
+    : meta.manual
+      ? "ידני"
+      : "אוטומטי (cron)";
+  const countsLabel = ok && meta.processed != null
+    ? ` · חדשים ${meta.processed} · נבדקו ${meta.scanned ?? 0}`
+    : "";
+  const translated = !ok ? translateEzgoErrorHebrew(meta.error) : null;
+  const errorLabel = !ok
+    ? ` · ${translated ? `${translated} — ` : ""}${meta.error || "שגיאה לא ידועה"}`
+    : "";
+  return (
+    <div style={{
+      fontSize: 12, marginBottom: 12,
+      color: ok ? "rgba(232,201,138,0.75)" : "#FCA5A5",
+      fontWeight: ok ? 400 : 700,
+    }}>
+      {ok ? "🕐" : "⚠"} סנכרון אחרון: {formatIsraelDateTime(lastSync.last_run_at)} · {sourceLabel}{countsLabel}{errorLabel}
+    </div>
+  );
+}
 
 const WORKFLOW_SECTIONS = [
   { id: "suite_spa_sync", title: "🛏️ סנכרון שעות ספא — סוויטות", hint: "מזהה: מס׳ הזמנה → פרופיל סוויטה" },
@@ -245,6 +302,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const [upsellSending, setUpsellSending] = useState(false);
   const [upsellProgress, setUpsellProgress] = useState(null);
   const [emlUploading, setEmlUploading] = useState(false);
+  const [lastSync, setLastSync] = useState(null);
   const fileInputRef = useRef(null);
 
   const loadIngests = useCallback(async () => {
@@ -276,13 +334,26 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     setLines(data ?? []);
   }, [showToast]);
 
-  useEffect(() => { loadIngests(); }, [loadIngests]);
+  const loadLastSync = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("cron_heartbeats")
+      .select("last_run_at, meta")
+      .eq("job_name", "ezgo-mail-sync")
+      .maybeSingle();
+    if (error) {
+      console.warn("[EzgoMailSyncPanel] last sync heartbeat read failed:", error.message);
+      return;
+    }
+    setLastSync(data || null);
+  }, []);
+
+  useEffect(() => { loadIngests(); loadLastSync(); }, [loadIngests, loadLastSync]);
 
   // Auto-refresh ingest list (cron / background sync) without re-scanning IMAP.
   const pageVisible = usePageVisibility();
   useEffect(() => {
     if (!pageVisible) return undefined;
-    const pollId = setInterval(() => { loadIngests(); }, 90_000);
+    const pollId = setInterval(() => { loadIngests(); loadLastSync(); }, 90_000);
     const channel = supabase
       .channel("ezgo-mail-ingest-live")
       .on(
@@ -295,7 +366,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       clearInterval(pollId);
       supabase.removeChannel(channel);
     };
-  }, [loadIngests, pageVisible]);
+  }, [loadIngests, loadLastSync, pageVisible]);
 
   useEffect(() => { loadLines(selectedId); }, [selectedId, loadLines]);
 
@@ -304,15 +375,20 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const isDoc2Ingest = selected?.report_type === "doc2_arrivals";
   const activeSections = isDoc2Ingest ? DOC2_WORKFLOW_SECTIONS : WORKFLOW_SECTIONS;
 
-  // Ledger — flag when today's/tomorrow's arrivals report never arrived (Gmail miss or send delay).
-  const missingDoc2ReportDate = useMemo(() => {
+  // Ledger — distinguishes "report never arrived" (Gmail miss/send delay) from
+  // "report arrived but failed to parse" (0 rows ingested despite the email existing)
+  // so a genuine parse failure doesn't hide behind the same generic "missing" banner.
+  const doc2LedgerStatus = useMemo(() => {
     const today = israelTodayYmd();
     const tomorrow = israelTomorrowYmd();
-    const hasReport = ingests.some((ing) => (
+    const matches = ingests.filter((ing) => (
       ing.report_type === "doc2_arrivals"
       && (ing.report_date_ymd === today || ing.report_date_ymd === tomorrow)
     ));
-    return hasReport ? null : today;
+    if (!matches.length) return { state: "missing", date: today };
+    const failed = matches.find((ing) => ing.parse_status !== "parsed");
+    if (failed) return { state: "failed", date: failed.report_date_ymd || today, ingestId: failed.id };
+    return { state: "ok" };
   }, [ingests]);
 
   const grouped = useMemo(() => {
@@ -369,8 +445,12 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     // out with no clue why. Surface it and force red even when some mail was still found,
     // since a real query failure means the sync isn't actually healthy.
     const searchErrors = imap?.searchErrors || [];
+    const translatedSearchErrors = searchErrors.slice(0, 2).map((raw) => {
+      const hebrew = translateEzgoErrorHebrew(raw);
+      return hebrew ? `${hebrew} (${raw})` : raw;
+    });
     const errorSuffix = searchErrors.length
-      ? ` · ⚠ ${searchErrors.length} שאילתות נכשלו: ${searchErrors.slice(0, 2).join(" | ")}`
+      ? ` · ⚠ ${searchErrors.length} שאילתות נכשלו: ${translatedSearchErrors.join(" | ")}`
       : "";
     const toneWithErrors = (tone) => (searchErrors.length ? "err" : tone);
 
@@ -403,6 +483,11 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     };
   };
 
+  const showTranslatedError = (message) => {
+    const translated = translateEzgoErrorHebrew(message);
+    showToast?.(translated ? `${translated} — ${message}` : message, "err");
+  };
+
   const triggerSync = async ({ fullSync = false, searchDate = scanDate } = {}) => {
     if (fullSync && !window.confirm(
       "סריקה מלאה — ללא dedup, חלון זמן רחב יותר. עלולה לקחת עד כדקה וחצי. להמשיך?",
@@ -422,9 +507,10 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       showToast?.(msg, tone);
       await loadIngests();
     } catch (e) {
-      showToast?.(e.message, "err");
+      showTranslatedError(e.message);
     } finally {
       setSyncing(false);
+      await loadLastSync();
     }
   };
 
@@ -455,7 +541,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       await loadIngests();
       if (data.ingestId) setSelectedId(data.ingestId);
     } catch (err) {
-      showToast?.(err.message, "err");
+      showTranslatedError(err.message);
     } finally {
       setEmlUploading(false);
     }
@@ -476,7 +562,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       if (data.ingestId) setSelectedId(data.ingestId);
       else await loadLines(selectedId);
     } catch (e) {
-      showToast?.(e.message, "err");
+      showTranslatedError(e.message);
     } finally {
       setSyncing(false);
     }
@@ -977,13 +1063,35 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         </div>
       </div>
 
-      {missingDoc2ReportDate && (
+      <LastSyncLine lastSync={lastSync} />
+
+      {doc2LedgerStatus.state === "missing" && (
         <div style={{
           fontSize: 12, color: "#92400E", marginBottom: 14, fontWeight: 700,
           padding: "10px 12px", borderRadius: 8, background: "#FEF3C7",
           border: "1px solid rgba(146,64,14,0.35)",
         }}>
-          ⚠ לא התקבל דוח כניסות ל-{missingDoc2ReportDate} — בדוק תיבת Gmail או העלה .eml ידנית
+          ⚠ לא התקבל דוח כניסות (Doc2) ל-{doc2LedgerStatus.date} — בדוק תיבת Gmail או העלה .eml ידנית
+        </div>
+      )}
+      {doc2LedgerStatus.state === "failed" && (
+        <div style={{
+          fontSize: 12, color: "#FCA5A5", marginBottom: 14, fontWeight: 700,
+          padding: "10px 12px", borderRadius: 8, background: "#7F1D1D",
+          border: "1px solid rgba(252,165,165,0.4)",
+          display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+        }}>
+          <span>🛑 דוח כניסות (Doc2) ל-{doc2LedgerStatus.date} התקבל אבל הפרסור נכשל — 0 שורות נקלטו</span>
+          <button
+            type="button"
+            onClick={() => setSelectedId(doc2LedgerStatus.ingestId)}
+            style={{
+              padding: "4px 10px", borderRadius: 8, border: "1px solid rgba(252,165,165,0.5)",
+              background: "transparent", color: "#FCA5A5", fontSize: 11, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            פתח מייל
+          </button>
         </div>
       )}
 
