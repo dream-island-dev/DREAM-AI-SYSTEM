@@ -8,7 +8,7 @@ import {
   buildBalloonRoomRequestReply,
   buildSpaUpsellAcceptanceReply,
 } from "./automationSchedule.ts";
-import { onGuestAlertInserted } from "./guestAlertWhapiNotify.ts";
+import { onGuestAlertInserted, notifySpaUpsellAcceptOwnerDm } from "./guestAlertWhapiNotify.ts";
 import { sendWhapiText } from "./whapiSend.ts";
 
 const BALLOON_VENDOR_PHONE = (Deno.env.get("BALLOON_VENDOR_PHONE") ?? "").trim();
@@ -240,6 +240,18 @@ export async function runSpaUpsellAcceptanceIntercept(
     guestName,
     sourceLabel: adapter.sourceLabel,
   });
+
+  if (!sim) {
+    notifySpaUpsellAcceptOwnerDm(supabase, {
+      guestName,
+      phone,
+      room: guestRoom,
+      arrivalDate: (guest.arrival_date as string | null) ?? null,
+      guestReply: text,
+    }).catch((e: Error) =>
+      console.warn(`[${adapter.logTag}] spa upsell owner DM failed:`, e.message),
+    );
+  }
 
   if (!sim) {
     try {

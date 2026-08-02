@@ -6,6 +6,7 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "./whapiSend.ts";
+import { ARCHITECT_PHONE_DIGITS, normalizeExecutivePhoneDigits } from "./executiveIdentity.ts";
 import { alertIntentType, resolveRequestsWhapiGroupId } from "./routingConfig.ts";
 import { triggerInboxRedAlert, type InboxAlertChannel } from "./inboxRedAlert.ts";
 
@@ -129,6 +130,88 @@ export function buildGuestAlertWhapiCard(opts: {
   }
   lines.push(`📋 לוח בקשות: ${boardUrl}`);
   return lines.join("\n");
+}
+
+/** Israeli display: +972501234567 → 0501234567 */
+export function formatGuestPhoneForStaffWa(phone: string | null | undefined): string {
+  const digits = phoneDigitsForDeepLink(phone);
+  if (digits.startsWith("972") && digits.length >= 11) return `0${digits.slice(3)}`;
+  return digits || String(phone ?? "").trim();
+}
+
+function formatArrivalDateHe(ymd: string | null | undefined): string {
+  const raw = String(ymd ?? "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return "—";
+  const [y, m, d] = raw.split("-");
+  return `${d}.${m}.${y}`;
+}
+
+/** Owner-only DM — forward-friendly block for spa coordination team. */
+export function buildSpaUpsellAcceptOwnerDm(opts: {
+  guestName?: string | null;
+  phone: string;
+  room?: string | null;
+  arrivalDate?: string | null;
+  guestReply: string;
+}): string {
+  const name = opts.guestName?.trim() || "אורח";
+  const room = opts.room?.trim() || "בילוי יומי";
+  const arrivalHe = formatArrivalDateHe(opts.arrivalDate);
+  const phoneDisplay = formatGuestPhoneForStaffWa(opts.phone);
+  const reply = opts.guestReply.trim() || "אישור";
+  const inboxUrl = buildStaffAppDeepLink({
+    page: "wa_inbox",
+    phone: opts.phone,
+    guestName: opts.guestName,
+  });
+
+  return [
+    "💆 אישור הצעת ספא — בילוי יומי",
+    `הגעה: ${arrivalHe}`,
+    "",
+    `${name} · ${phoneDisplay} · ${room}`,
+    `«${reply}»`,
+    "",
+    "── להעברה לצוות הספא ──",
+    name,
+    phoneDisplay,
+    `${room} · הגעה ${arrivalHe}`,
+    "מעוניין/ת בטיפול ספא (300₪/45 דק׳) — לתאם שעה",
+    "",
+    `💬 שיחה: ${inboxUrl}`,
+  ].join("\n");
+}
+
+/** SPA_UPSELL_NOTIFY_PHONE override; default = architect (Mike) only — not Adir/group SLA. */
+export function resolveSpaUpsellNotifyPhone(): string {
+  const raw = (Deno.env.get("SPA_UPSELL_NOTIFY_PHONE") ?? "").trim();
+  if (raw) {
+    const normalized = normalizeExecutivePhoneDigits(raw);
+    if (normalized) return normalized;
+  }
+  return ARCHITECT_PHONE_DIGITS;
+}
+
+/** Personal Whapi DM when a day-pass guest accepts spa upsell (owner forwards to spa team). */
+export async function notifySpaUpsellAcceptOwnerDm(
+  _supabase: SupabaseClient,
+  opts: {
+    guestName?: string | null;
+    phone: string;
+    room?: string | null;
+    arrivalDate?: string | null;
+    guestReply: string;
+  },
+): Promise<boolean> {
+  const target = resolveSpaUpsellNotifyPhone();
+  const body = buildSpaUpsellAcceptOwnerDm(opts);
+  try {
+    await sendWhapiText(target, body);
+    return true;
+  } catch (e) {
+    console.warn("[guestAlertWhapiNotify] spa upsell owner DM failed:", (e as Error).message);
+    return false;
+  }
 }
 
 /** Whapi group (+ optional personal DM). Returns delivery flags for UI/diagnostics. */
