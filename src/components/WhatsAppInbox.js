@@ -905,13 +905,11 @@ export function contactIsSuiteAudience(contact) {
 }
 
 /**
- * Audience filter for inbox roster.
- * HARD RULE: human_requested always matches — guest waiting for human must
- * never vanish behind suite/daypass browsing (bot reply ≠ human done).
+ * Audience filter for inbox roster — strict match by guest cohort.
+ * Cross-audience human_requested is surfaced via the «התראות» chip + otherAudienceWaiting banner.
  */
 export function contactMatchesAudienceFilter(contact, audienceFilter) {
   if (!audienceFilter || audienceFilter === "all") return true;
-  if (contact?.humanRequested) return true;
   if (audienceFilter === "suite") return contactIsSuiteAudience(contact);
   if (audienceFilter === "daypass") return contactIsDaypassAudience(contact);
   return true;
@@ -3178,7 +3176,6 @@ export default function WhatsAppInbox({
   const [active, setActive]       = useState(null); // selected threadKey
   const [channelFilter, setChannelFilter] = useState("all"); // all | meta | whapi
   // Suite vs day-pass browsing — default suite so spa blasts don't drown desk ops.
-  // human_requested always bypasses (see contactMatchesAudienceFilter).
   const [audienceFilter, setAudienceFilterState] = useState(loadInboxAudienceFilter);
   const setAudienceFilter = useCallback((id) => {
     setAudienceFilterState(id);
@@ -5376,22 +5373,10 @@ export default function WhatsAppInbox({
     channelFilter === "all" ? true : contactMatchesChannelFilter(c, channelFilter),
   );
   // Audience filter AFTER channel; alerts / spa tab already span or isolate.
-  // Inject any human_requested missing from this slice (FAIL VISIBLE — never bury).
-  const audienceScopedRosterSource = (() => {
-    if (rosterFilter === "alerts" || rosterFilter === "spa_daypass" || rosterFilter === "departed") {
-      return channelScopedRosterSource;
-    }
-    let list = channelScopedRosterSource.filter((c) => contactMatchesAudienceFilter(c, audienceFilter));
-    const keys = new Set(list.map((c) => c.threadKey ?? c.phone));
-    for (const c of alertContacts) {
-      const k = c.threadKey ?? c.phone;
-      if (keys.has(k)) continue;
-      if (channelFilter !== "all" && !contactMatchesChannelFilter(c, channelFilter)) continue;
-      list = [...list, c];
-      keys.add(k);
-    }
-    return list;
-  })();
+  const audienceScopedRosterSource =
+    rosterFilter === "alerts" || rosterFilter === "spa_daypass" || rosterFilter === "departed"
+      ? channelScopedRosterSource
+      : channelScopedRosterSource.filter((c) => contactMatchesAudienceFilter(c, audienceFilter));
   // Departed contacts hidden by the current channel filter — surfaced as a
   // count hint (not silently invisible) so staff filtering to "מכשיר
   // הסוויטות" know older Whapi conversations exist under "אחרי עזיבה"
