@@ -119,6 +119,45 @@ export async function mergePastedSpaUpsellContacts(supabase, pasteText, arrivalD
   return { merged, notFound, ineligible, invalid };
 }
 
+const SPA_UPSELL_STAGE_KEY = "spa_upsell_daypass";
+
+/** Pending staff schedules for spa upsell on a given arrival date. */
+export async function fetchSpaUpsellPendingSchedules(supabase, arrivalDate) {
+  if (!supabase || !arrivalDate) return { schedules: [], error: null };
+
+  const { data, error } = await supabase
+    .from("scheduled_tasks")
+    .select(
+      "id, guest_id, scheduled_for, force_channel, status, guests!inner(id, name, phone, room, arrival_date)",
+    )
+    .eq("stage_key", SPA_UPSELL_STAGE_KEY)
+    .eq("status", "pending")
+    .eq("staff_scheduled", true)
+    .eq("guests.arrival_date", arrivalDate)
+    .order("scheduled_for", { ascending: true });
+
+  if (error) return { schedules: [], error };
+
+  const schedules = (data ?? []).map((row) => ({
+    id: row.id,
+    guestId: row.guest_id,
+    scheduledFor: row.scheduled_for,
+    forceChannel: row.force_channel,
+    name: row.guests?.name ?? "",
+    phone: row.guests?.phone ?? "",
+    room: row.guests?.room ?? "",
+  }));
+
+  return { schedules, error: null };
+}
+
+export async function updateSpaUpsellGuestName(supabase, guestId, name) {
+  const trimmed = String(name ?? "").trim();
+  if (!supabase || !guestId || !trimmed) return { error: new Error("שם חסר") };
+  const { error } = await supabase.from("guests").update({ name: trimmed }).eq("id", guestId);
+  return { error: error ?? null };
+}
+
 export function fmtLeadTime(iso) {
   if (!iso) return "—";
   const d = new Date(iso);

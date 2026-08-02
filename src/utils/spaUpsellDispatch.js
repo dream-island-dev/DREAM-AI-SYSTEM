@@ -1,4 +1,5 @@
 import {
+  resolveSpaUpsellMetaBodyText,
   SPA_UPSELL_CHANNEL_WHAPI,
   SPA_UPSELL_META_TEMPLATE,
 } from "./spaUpsellAudience";
@@ -19,6 +20,7 @@ export async function fetchSpaUpsellDispatchMeta(supabase) {
   return {
     scriptText: scriptRes.data?.message_text ?? "",
     metaTemplateStatus: spaPkg?.status ?? null,
+    metaTemplateBodyText: resolveSpaUpsellMetaBodyText(spaPkg),
   };
 }
 

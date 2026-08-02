@@ -23,9 +23,22 @@ export const SPA_UPSELL_CHANNEL_OPTIONS = [
   },
 ];
 
-export function previewSpaUpsellMetaTemplate(guestName) {
+/** Resolve live Meta body from get-wa-templates row; falls back to snapshot. */
+export function resolveSpaUpsellMetaBodyText(metaTemplateRow) {
+  const live = String(metaTemplateRow?.bodyText ?? "").trim();
+  return live || SPA_UPSELL_META_BODY_TEMPLATE;
+}
+
+export function previewSpaUpsellMetaTemplate(guestName, metaBodyText) {
   const name = String(guestName ?? "").trim() || "אורח יקר";
-  return SPA_UPSELL_META_BODY_TEMPLATE.replace(/\{\{1\}\}/g, name);
+  const template = String(metaBodyText ?? "").trim() || SPA_UPSELL_META_BODY_TEMPLATE;
+  return template.replace(/\{\{\s*1\s*\}\}/g, name);
+}
+
+export function spaUpsellChannelLabel(forceChannel) {
+  if (forceChannel === SPA_UPSELL_CHANNEL_META) return "🔵 Dream Bot";
+  if (forceChannel === SPA_UPSELL_CHANNEL_WHAPI) return "📱 מכשיר סוויטות";
+  return forceChannel || "—";
 }
 
 export function isDayPassGuestForUpsell(guest) {

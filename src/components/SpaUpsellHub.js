@@ -5,27 +5,33 @@ import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
 import {
   fetchSpaUpsellAudience,
   israelTodayYmd,
+  resolveSpaUpsellMetaBodyText,
   SPA_UPSELL_CHANNEL_WHAPI,
   SPA_UPSELL_META_TEMPLATE,
+  spaUpsellChannelLabel,
 } from "../utils/spaUpsellAudience";
 import {
   buildInboxDeepLink,
   buildSpaBoardDeepLink,
   buildSpaUpsellStaffCopy,
   fetchSpaUpsellLeads,
+  fetchSpaUpsellPendingSchedules,
   fetchSpaUpsellSentCount,
   fmtLeadTime,
   mergePastedSpaUpsellContacts,
   spaUpsellScriptToWhapiTemplate,
+  updateSpaUpsellGuestName,
 } from "../utils/spaUpsellHub";
 import { createDaypassGuestsBatch } from "../utils/daypassGuestCreate";
 import { isSpaUpsellEligible } from "../utils/spaUpsellAudience";
+import { formatIsraelDateTime } from "../utils/israelTime";
 
 const BATCH_POLL_INTERVAL_MS = 4000;
 const BATCH_POLL_MAX_ATTEMPTS = 150;
 
 const TAB_SEND = "send";
 const TAB_LEADS = "leads";
+const TAB_SCHEDULED = "scheduled";
 
 const cardStyle = {
   background: "#fff",
@@ -48,7 +54,10 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
   const [summary, setSummary] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [metaTemplateStatus, setMetaTemplateStatus] = useState(null);
+  const [metaTemplateBodyText, setMetaTemplateBodyText] = useState("");
   const [sentCount, setSentCount] = useState(0);
+  const [pendingSchedules, setPendingSchedules] = useState([]);
+  const [nameSavingId, setNameSavingId] = useState(null);
 
   const [leads, setLeads] = useState([]);
   const [leadsLoading, setLeadsLoading] = useState(false);
@@ -60,6 +69,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
   const [pasteCreating, setPasteCreating] = useState(false);
 
   const mountedRef = useRef(true);
+  const originalNamesRef = useRef(new Map());
   useEffect(() => () => { mountedRef.current = false; }, []);
 
   const toast = useCallback((type, msg) => onToast?.(msg, type), [onToast]);
@@ -70,7 +80,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
     setLoadError(null);
     setSummary(null);
     try {
-      const [{ guests, error }, scriptRes, tmplRes, sentN] = await Promise.all([
+      const [{ guests, error }, scriptRes, tmplRes, sentN, pendingRes] = await Promise.all([
         fetchSpaUpsellAudience(supabase, { arrivalDate }),
         supabase
           .from("bot_scripts")
@@ -79,14 +89,24 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
           .maybeSingle(),
         supabase.functions.invoke("get-wa-templates", { body: { all: true } }),
         fetchSpaUpsellSentCount(supabase, arrivalDate),
+        fetchSpaUpsellPendingSchedules(supabase, arrivalDate),
       ]);
       if (error) throw error;
-      setCandidates(guests);
-      setSelected(new Set(guests.map((g) => g.id)));
+      if (pendingRes.error) throw pendingRes.error;
+      const pendingIds = new Set((pendingRes.schedules ?? []).map((s) => s.guestId));
+      const available = guests.filter((g) => !pendingIds.has(g.id));
+      setPendingSchedules(pendingRes.schedules ?? []);
+      setCandidates(available);
+      setSelected(new Set(available.map((g) => g.id)));
+      const nameMap = new Map();
+      available.forEach((g) => nameMap.set(g.id, g.name || ""));
+      (pendingRes.schedules ?? []).forEach((s) => nameMap.set(s.guestId, s.name || ""));
+      originalNamesRef.current = nameMap;
       setScriptText(scriptRes.data?.message_text ?? "");
       const templates = tmplRes.data?.templates ?? [];
       const spaPkg = templates.find((t) => t.name === SPA_UPSELL_META_TEMPLATE);
       setMetaTemplateStatus(spaPkg?.status ?? null);
+      setMetaTemplateBodyText(resolveSpaUpsellMetaBodyText(spaPkg));
       setSentCount(sentN);
     } catch (e) {
       const msg = e?.message ?? String(e);
@@ -141,6 +161,26 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
 
   const targets = candidates.filter((g) => selected.has(g.id));
   const pendingLeads = leads.length;
+  const pendingScheduleCount = pendingSchedules.length;
+  const scheduleSlotLabel = pendingSchedules[0]?.scheduledFor
+    ? formatIsraelDateTime(pendingSchedules[0].scheduledFor)
+    : null;
+
+  const saveGuestName = async (guestId, name) => {
+    if (!supabase) return;
+    setNameSavingId(guestId);
+    const { error } = await updateSpaUpsellGuestName(supabase, guestId, name);
+    setNameSavingId(null);
+    if (error) {
+      toast("err", error.message ?? "שגיאה בשמירת שם");
+      return;
+    }
+    const patchName = String(name).trim();
+    originalNamesRef.current.set(guestId, patchName);
+    setCandidates((prev) => prev.map((g) => (g.id === guestId ? { ...g, name: patchName } : g)));
+    setPendingSchedules((prev) => prev.map((s) => (s.guestId === guestId ? { ...s, name: patchName } : s)));
+    toast("ok", "✓ שם עודכן");
+  };
 
   const pollBatch = useCallback((batchId, total) => {
     let attempts = 0;
@@ -286,7 +326,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
       setModalOpen(false);
       setSummary({ total: count, sent: 0, skipped: 0, failed: 0, scheduled: count });
       toast("ok", `📅 תוזמנו ${count} הצעות ספא`);
-      setSentCount((c) => c + count);
+      await loadAudience();
     } catch (err) {
       toast("err", "שגיאה בתזמון: " + (err?.message ?? String(err)));
     } finally {
@@ -413,9 +453,10 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
 
   const kpiCards = useMemo(() => [
     { label: "ממתינים לתאום", value: pendingLeads, accent: "#7C3AED" },
+    { label: "תזמון ממתין", value: pendingScheduleCount, accent: "#0E7490" },
     { label: "לשליחה עכשיו", value: candidates.length, accent: "#A21CAF" },
     { label: "הצעה נשלחה", value: sentCount, accent: "#6B21A8" },
-  ], [pendingLeads, candidates.length, sentCount]);
+  ], [pendingLeads, pendingScheduleCount, candidates.length, sentCount]);
 
   return (
     <div style={{
@@ -471,6 +512,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
       <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
         {[
           { id: TAB_SEND, label: "📤 שליחת הצעה" },
+          { id: TAB_SCHEDULED, label: `📅 תזמון ממתין${pendingScheduleCount ? ` (${pendingScheduleCount})` : ""}` },
           { id: TAB_LEADS, label: `📋 ממתינים לתאום${pendingLeads ? ` (${pendingLeads})` : ""}` },
         ].map((t) => (
           <button
@@ -517,6 +559,16 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
 
       {activeTab === TAB_SEND && (
         <>
+          {pendingScheduleCount > 0 && (
+            <div style={{
+              background: "#ECFEFF", border: "1px solid #67E8F9", borderRadius: 10,
+              padding: "10px 14px", marginBottom: 12, fontSize: 12.5, color: "#155E75", lineHeight: 1.55,
+            }}>
+              📅 <strong>{pendingScheduleCount}</strong> אורחים כבר בתזמון
+              {scheduleSlotLabel ? ` ל-${scheduleSlotLabel}` : ""}
+              {" "}— לא יופיעו כאן כדי למנוע כפילות. ראה טאב «תזמון ממתין».
+            </div>
+          )}
           <details style={{ marginBottom: 14, background: "#fff", borderRadius: 10, padding: "10px 14px", border: "1px solid #E9D5FF" }}>
             <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: 13, color: "#6B21A8" }}>
               ➕ הוסף נמענים בהעתק-הדבקה
@@ -623,7 +675,26 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
                     borderBottom: "1px solid #F3E8FF", fontSize: 13, cursor: "pointer",
                   }}>
                     <input type="checkbox" checked={selected.has(g.id)} onChange={() => toggleOne(g.id)} />
-                    <span style={{ fontWeight: 600, flex: 1 }}>{g.name || "—"}</span>
+                    <input
+                      type="text"
+                      value={g.name || ""}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setCandidates((prev) => prev.map((row) => (row.id === g.id ? { ...row, name: val } : row)));
+                      }}
+                      onBlur={(e) => {
+                        const val = e.target.value.trim();
+                        const original = originalNamesRef.current.get(g.id) ?? "";
+                        if (val && val !== original) saveGuestName(g.id, val);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      disabled={nameSavingId === g.id}
+                      placeholder="שם אורח"
+                      style={{
+                        flex: 1, fontWeight: 600, border: "1px solid #E9D5FF",
+                        borderRadius: 6, padding: "4px 8px", fontSize: 13,
+                      }}
+                    />
                     {g.source === "paste" && (
                       <span style={{ fontSize: 10, color: "#7C3AED", fontWeight: 700 }}>הדבקה</span>
                     )}
@@ -648,6 +719,72 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
             </>
           )}
         </>
+      )}
+
+      {activeTab === TAB_SCHEDULED && (
+        <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E9D5FF", padding: "16px 18px" }}>
+          <div style={{ fontWeight: 800, fontSize: 15, color: "#581C87", marginBottom: 8 }}>
+            תזמונים ממתינים — הגעה {arrivalDate}
+          </div>
+          <div style={{ fontSize: 12.5, color: "#701A75", marginBottom: 14, lineHeight: 1.55 }}>
+            השיגור יופעל אוטומטית ע&quot;י cron (כל ~15 דק׳). עריכת שם כאן מעדכנת את מה שיישלח ב-{"{{1}}"}.
+          </div>
+          {pendingSchedules.length === 0 ? (
+            <div style={{
+              padding: 20, textAlign: "center", color: "#9D174D", fontSize: 13,
+              border: "1px dashed #D8B4FE", borderRadius: 10,
+            }}>
+              אין תזמונים ממתינים לתאריך זה
+            </div>
+          ) : (
+            <>
+              {scheduleSlotLabel && (
+                <div style={{
+                  marginBottom: 12, padding: "8px 12px", borderRadius: 8,
+                  background: "#ECFEFF", border: "1px solid #A5E4EF", fontSize: 12.5, color: "#0E7490",
+                }}>
+                  ⏰ מועד שיגור: <strong>{scheduleSlotLabel}</strong>
+                  {" · "}{spaUpsellChannelLabel(pendingSchedules[0]?.forceChannel)}
+                </div>
+              )}
+              <div style={{
+                maxHeight: 360, overflowY: "auto", border: "1px solid #E9D5FF",
+                borderRadius: 10, background: "#FDF4FF",
+              }}>
+                {pendingSchedules.map((row) => (
+                  <div key={row.id} style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                    borderBottom: "1px solid #F3E8FF", fontSize: 13, flexWrap: "wrap",
+                  }}>
+                    <input
+                      type="text"
+                      value={row.name || ""}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPendingSchedules((prev) => prev.map((s) => (
+                          s.id === row.id ? { ...s, name: val } : s
+                        )));
+                      }}
+                      onBlur={(e) => {
+                        const val = e.target.value.trim();
+                        const original = originalNamesRef.current.get(row.guestId) ?? "";
+                        if (val && val !== original) saveGuestName(row.guestId, val);
+                      }}
+                      disabled={nameSavingId === row.guestId}
+                      placeholder="שם אורח"
+                      style={{
+                        flex: 1, minWidth: 140, fontWeight: 600, border: "1px solid #D8B4FE",
+                        borderRadius: 6, padding: "4px 8px", fontSize: 13,
+                      }}
+                    />
+                    <span style={{ color: "#A21CAF", fontSize: 12 }}>{row.phone}</span>
+                    {row.room && <span style={{ color: "#9D174D", fontSize: 11 }}>{row.room}</span>}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       )}
 
       {activeTab === TAB_LEADS && (
@@ -733,6 +870,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
           pulseSeconds={2.5}
           sending={sending}
           metaTemplateStatus={metaTemplateStatus}
+          metaTemplateBodyText={metaTemplateBodyText}
           onClose={() => { if (!sending) setModalOpen(false); }}
           onSendNow={handleSendNow}
           onSchedule={handleSchedule}

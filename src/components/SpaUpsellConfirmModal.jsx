@@ -25,6 +25,7 @@ export default function SpaUpsellConfirmModal({
   pulseSeconds,
   sending,
   metaTemplateStatus,
+  metaTemplateBodyText,
   onClose,
   onSendNow,
   onSchedule,
@@ -40,9 +41,9 @@ export default function SpaUpsellConfirmModal({
   const metaNotApproved = isMetaChannel && metaTemplateStatus && metaTemplateStatus !== "APPROVED";
 
   const previewBody = useMemo(() => {
-    if (isMetaChannel) return previewSpaUpsellMetaTemplate(sampleGuest?.name);
+    if (isMetaChannel) return previewSpaUpsellMetaTemplate(sampleGuest?.name, metaTemplateBodyText);
     return previewSpaUpsellText(scriptText, sampleGuest?.name);
-  }, [isMetaChannel, scriptText, sampleGuest?.name]);
+  }, [isMetaChannel, scriptText, sampleGuest?.name, metaTemplateBodyText]);
 
   const channelLabel = isMetaChannel
     ? SPA_UPSELL_CHANNEL_OPTIONS[0].label
@@ -151,7 +152,11 @@ export default function SpaUpsellConfirmModal({
           }}>
             {previewBody || "— אין טקסט — ערכו bot_scripts או אשרו תבנית Meta"}
           </pre>
-          {!isMetaChannel && (
+          {isMetaChannel ? (
+            <div style={{ fontSize: 11, color: "#9D174D", marginTop: 8 }}>
+              מקור: <strong>תבנית Meta חיה</strong> ({SPA_UPSELL_META_TEMPLATE}) — זה הטקסט שיישלח בפועל
+            </div>
+          ) : (
             <div style={{ fontSize: 11, color: "#9D174D", marginTop: 8 }}>
               עריכה: <strong>עורך סקריפטים → spa_upsell_daypass</strong>
             </div>

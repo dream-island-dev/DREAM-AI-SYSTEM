@@ -5,6 +5,7 @@ import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
 import {
   fetchSpaUpsellAudience,
   israelTodayYmd,
+  resolveSpaUpsellMetaBodyText,
   SPA_UPSELL_CHANNEL_META,
   SPA_UPSELL_CHANNEL_WHAPI,
   SPA_UPSELL_META_TEMPLATE,
@@ -24,6 +25,7 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
   const [summary, setSummary] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [metaTemplateStatus, setMetaTemplateStatus] = useState(null);
+  const [metaTemplateBodyText, setMetaTemplateBodyText] = useState("");
 
   const toast = useCallback((type, msg) => {
     onToast?.(msg, type);
@@ -51,6 +53,7 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
       const templates = tmplRes.data?.templates ?? [];
       const spaPkg = templates.find((t) => t.name === SPA_UPSELL_META_TEMPLATE);
       setMetaTemplateStatus(spaPkg?.status ?? null);
+      setMetaTemplateBodyText(resolveSpaUpsellMetaBodyText(spaPkg));
     } catch (e) {
       const msg = e?.message ?? String(e);
       setLoadError(msg);
@@ -296,6 +299,7 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
           pulseSeconds={SPA_UPSELL_SEND_PULSE_MS / 1000}
           sending={sending}
           metaTemplateStatus={metaTemplateStatus}
+          metaTemplateBodyText={metaTemplateBodyText}
           onClose={() => { if (!sending) setModalOpen(false); }}
           onSendNow={handleSendNow}
           onSchedule={handleSchedule}
