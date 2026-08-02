@@ -8,6 +8,7 @@ import {
   fmtLeadTime,
   resolveSpaUpsellLead,
 } from "../utils/spaUpsellHub";
+import { isEffectiveDayPassGuest, isEffectiveSuiteGuest } from "../utils/pipelineSegment";
 import { isManualSpaUpsellLeadMessage } from "../utils/spaUpsellLeadManual";
 
 const FILTER_ALL = "all";
@@ -54,6 +55,12 @@ function resolveLeadPhone(lead) {
 function leadTypeLabel(alertType) {
   if (alertType === "spa_request") return "בקשת ספא";
   return "הצעת ספא";
+}
+
+function leadCohortLabel(guest) {
+  if (isEffectiveSuiteGuest(guest)) return "👑 סוויטה";
+  if (isEffectiveDayPassGuest(guest)) return "🌴 בילוי יומי";
+  return null;
 }
 
 function fmtArrivalDate(ymd) {
@@ -349,6 +356,15 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                         >
                           {leadTypeLabel(lead.alert_type)}
                         </span>
+                        {leadCohortLabel(lead.guests) ? (
+                          <span style={{
+                            fontSize: 11, fontWeight: 800, color: "#1E40AF",
+                            background: "#DBEAFE", padding: "3px 10px", borderRadius: 8,
+                          }}
+                          >
+                            {leadCohortLabel(lead.guests)}
+                          </span>
+                        ) : null}
                         {lead.guests?.room ? (
                           <span style={{
                             fontSize: 11, fontWeight: 700, color: "#6B7280",

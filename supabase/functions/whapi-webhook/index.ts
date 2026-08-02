@@ -100,7 +100,6 @@ import {
   isLowValueCourtesyMessage,
   isSevereComplaint,
   isSensitiveStayChangeRequest,
-  CANONICAL_STAY_CHANGE_HANDOFF_MSG,
   isSensitiveFinancialRequest,
   CANONICAL_FINANCIAL_HANDOFF_MSG,
   isCheckInPolicyQuestion,
@@ -152,6 +151,7 @@ import {
 import {
   GUEST_STAFF_HANDOFF_SENTENCE,
   buildGuestHumanRequestReply,
+  buildStayChangeHandoffReply,
   detectGuestHumanRequest,
   isGuestStaffHandoffReply,
 } from "../_shared/guestBotHandoff.ts";
@@ -171,8 +171,10 @@ import { fetchGuestChatHistory } from "../_shared/guestConversationHistory.ts";
 import {
   runBalloonRoomRequestIntercept,
   runAdministrativeInHouseIntercept,
+  runSpaTreatmentRequestIntercept,
   runSpaUpsellAcceptanceIntercept,
 } from "../_shared/guestBalloonAdminIntercept.ts";
+import { shouldInterceptSpaTreatmentRequest } from "../_shared/spaIntentRouting.ts";
 import {
   verifyWhapiWebhookSecret,
   readWhapiWebhookSecretHeader,
@@ -924,7 +926,7 @@ async function handleGuestDirectMessage(
       await escalateGuestDm(supabase, {
         phone, guestId, guestName, text, conversationId,
         attentionReason: "date_change", alertType: "date_change_request", humanRequestType: "date_change", staffMuted,
-        replyText: CANONICAL_STAY_CHANGE_HANDOFF_MSG,
+        replyText: buildStayChangeHandoffReply(guestRecord),
       });
       results.push({ ...base, action: "stay_change_escalated", muted: staffMuted });
       return;
@@ -965,7 +967,7 @@ async function handleGuestDirectMessage(
     const arrivalIntent = await resolveArrivalConfirmationIntent(text, guestRecord);
     if (arrivalIntent === "decline") {
       await handleGuestArrivalDeclineHandoff(supabase, {
-        phone, guestId, text, msgId, claimedConversationId: conversationId, sim: false,
+        phone, guestId, guest: guestRecord, text, msgId, claimedConversationId: conversationId, sim: false,
         source: "ai",
       }, {
         sendReply: async (body) => {
@@ -1240,6 +1242,16 @@ async function handleGuestDirectMessage(
         whapiTier0Adapter,
       );
       results.push({ ...base, action: "spa_upsell_accept", muted: staffMuted });
+      return;
+    }
+
+    if (guestId && guestRecord && shouldInterceptSpaTreatmentRequest(text, guestRecord)) {
+      await runSpaTreatmentRequestIntercept(
+        supabase,
+        { phone, guestId, guest: guestRecord, text, conversationId },
+        whapiTier0Adapter,
+      );
+      results.push({ ...base, action: "spa_request", muted: staffMuted });
       return;
     }
 

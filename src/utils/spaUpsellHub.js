@@ -75,7 +75,7 @@ export async function fetchAllOpenSpaUpsellLeads(supabase) {
 
   const { data, error } = await supabase
     .from("guest_alerts")
-    .select("id, phone, message, created_at, resolved, alert_type, guests(id, name, phone, room, arrival_date, departure_date, status)")
+    .select("id, phone, message, created_at, resolved, alert_type, guests(id, name, phone, room, room_type, arrival_date, departure_date, status)")
     .in("alert_type", SPA_COORDINATOR_ALERT_TYPES)
     .eq("resolved", false)
     .order("created_at", { ascending: false });

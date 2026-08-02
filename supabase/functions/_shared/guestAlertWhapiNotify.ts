@@ -16,6 +16,7 @@ import {
 } from "./spaUpsellPricing.ts";
 import { alertIntentType, resolveRequestsWhapiGroupId } from "./routingConfig.ts";
 import { triggerInboxRedAlert, type InboxAlertChannel } from "./inboxRedAlert.ts";
+import { isEffectiveDayPassGuest } from "./suiteNames.ts";
 
 const STAFF_APP_ORIGIN = "https://dream-ai-system.vercel.app";
 
@@ -106,6 +107,25 @@ async function resolveGuestContext(
     guestName: (data?.name as string | undefined)?.trim() || null,
     room: (data?.room as string | undefined)?.trim() || null,
   };
+}
+
+/** Guest Requests Whapi group is suite-only — day-pass spa leads use owner DM + Spa Leads board. */
+export async function shouldNotifyRequestsWhapiGroup(
+  supabase: SupabaseClient,
+  opts: Pick<GuestAlertNotifyOpts, "alertType" | "guestId" | "room">,
+): Promise<boolean> {
+  if (opts.alertType === "spa_upsell_accept") return false;
+
+  if (opts.guestId) {
+    const { data } = await supabase
+      .from("guests")
+      .select("room, room_type")
+      .eq("id", opts.guestId)
+      .maybeSingle();
+    if (data && isEffectiveDayPassGuest(data)) return false;
+  }
+
+  return true;
 }
 
 export function buildGuestAlertWhapiCard(opts: {
@@ -299,6 +319,33 @@ export async function onGuestAlertInserted(
   }).catch((e: Error) =>
     console.warn("[guestAlertWhapiNotify] red-alert failed:", e.message),
   );
+
+  const notifyGroup = await shouldNotifyRequestsWhapiGroup(supabase, opts);
+  if (!notifyGroup) {
+    if (!opts.alsoPersonalDm) {
+      return { groupNotified: false, personalNotified: false };
+    }
+    const ctx = await resolveGuestContext(supabase, opts.guestId, opts.guestName, opts.room);
+    const card = buildGuestAlertWhapiCard({
+      alertType: opts.alertType,
+      message: opts.message,
+      guestName: ctx.guestName,
+      room: ctx.room,
+      sourceLabel: opts.sourceLabel,
+      phone: opts.phone,
+    });
+    const personalPhone = (Deno.env.get("SLA_GUEST_ALERT_PHONE") ?? "").trim();
+    if (!personalPhone) {
+      return { groupNotified: false, personalNotified: false };
+    }
+    try {
+      await sendWhapiText(personalPhone, card);
+      return { groupNotified: false, personalNotified: true };
+    } catch (e) {
+      console.warn("[guestAlertWhapiNotify] personal-only DM failed:", (e as Error).message);
+      return { groupNotified: false, personalNotified: false };
+    }
+  }
 
   return notifyGuestAlertWhapiGroup(supabase, opts);
 }

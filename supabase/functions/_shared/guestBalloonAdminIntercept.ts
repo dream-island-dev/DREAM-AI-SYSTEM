@@ -7,12 +7,10 @@ import {
   buildAdministrativeRequestSummary,
   buildBalloonRoomRequestReply,
   buildSpaUpsellAcceptanceReply,
+  isAdministrativeInHouseRequest,
 } from "./automationSchedule.ts";
-import { onGuestAlertInserted, notifySpaUpsellAcceptOwnerDm } from "./guestAlertWhapiNotify.ts";
-import {
-  buildSpaUpsellAcceptSummary,
-  resolveSpaUpsellOfferLabel,
-} from "./spaUpsellPricing.ts";
+import { dispatchGuestSpaIntent } from "./spaIntentRouting.ts";
+import { onGuestAlertInserted } from "./guestAlertWhapiNotify.ts";
 import { sendWhapiText } from "./whapiSend.ts";
 
 const BALLOON_VENDOR_PHONE = (Deno.env.get("BALLOON_VENDOR_PHONE") ?? "").trim();
@@ -135,6 +133,56 @@ export async function runBalloonRoomRequestIntercept(
   );
 }
 
+export async function runSpaTreatmentRequestIntercept(
+  supabase: SupabaseClient,
+  opts: {
+    phone: string;
+    guestId: number;
+    guest: Record<string, unknown>;
+    text: string;
+    conversationId: number | null;
+    sim?: boolean;
+  },
+  adapter: GuestTier0InboundAdapter,
+): Promise<void> {
+  const { phone, guestId, guest, text, conversationId, sim = false } = opts;
+  const guestName = (guest.name as string | null) ?? null;
+  const guestRoom = (guest.room as string | null) ?? null;
+  const reply = buildSpaUpsellAcceptanceReply(guestName);
+  const message = text.trim() || "בקשת טיפול בספא";
+
+  await adapter.patchInbound({
+    guest_id: guestId,
+    intent: "spa_request",
+  });
+
+  await dispatchGuestSpaIntent(supabase, {
+    guestId,
+    phone,
+    guest,
+    message,
+    alertType: "spa_request",
+    conversationId,
+    guestName,
+    room: guestRoom,
+    sourceLabel: adapter.sourceLabel,
+  });
+
+  if (!sim) {
+    try {
+      await adapter.sendReply(reply, "spa_request");
+    } catch (e) {
+      console.error(`[${adapter.logTag}] spa treatment reply failed:`, (e as Error).message);
+    }
+  } else {
+    console.info(`[${adapter.logTag}] SIM — spa treatment from ${phone}: ${message}`);
+  }
+
+  console.info(
+    `[${adapter.logTag}] spa treatment intercept — phone:${phone} guest:${guestId}`,
+  );
+}
+
 export async function runAdministrativeInHouseIntercept(
   supabase: SupabaseClient,
   opts: {
@@ -148,6 +196,10 @@ export async function runAdministrativeInHouseIntercept(
   adapter: GuestTier0InboundAdapter,
 ): Promise<void> {
   const { phone, guestId, guest, text, conversationId, sim = false } = opts;
+  if (isAdministrativeInHouseRequest(text)) {
+    await runSpaTreatmentRequestIntercept(supabase, opts, adapter);
+    return;
+  }
   const summary = buildAdministrativeRequestSummary(text);
   const guestName = (guest.name as string | null) ?? null;
   const guestRoom = (guest.room as string | null) ?? null;
@@ -217,47 +269,25 @@ export async function runSpaUpsellAcceptanceIntercept(
   const guestName = (guest.name as string | null) ?? null;
   const guestRoom = (guest.room as string | null) ?? null;
   const reply = buildSpaUpsellAcceptanceReply(guestName);
-  const offerLabel = await resolveSpaUpsellOfferLabel(supabase);
-  const summary = buildSpaUpsellAcceptSummary(offerLabel);
 
   await adapter.patchInbound({
     guest_id: guestId,
     intent: "spa_upsell_accept",
   });
 
-  const { error: guestErr } = await supabase.from("guests").update({
-    requires_attention: true,
-    requires_attention_since: new Date().toISOString(),
-    attention_reason: "request",
-    msg_spa_upsell_sent: true,
-  }).eq("id", guestId);
-  if (guestErr) {
-    console.error(`[${adapter.logTag}] spa upsell accept guest update FAILED:`, guestErr.message);
-  }
-
-  await logAdministrativeRequestAlert(supabase, {
-    phone,
+  const message = text.trim() || "אישור הצעת ספא";
+  await dispatchGuestSpaIntent(supabase, {
     guestId,
-    room: guestRoom,
-    summary,
-    rawText: text,
-    conversationId,
+    phone,
+    guest,
+    message,
     alertType: "spa_upsell_accept",
+    conversationId,
     guestName,
+    room: guestRoom,
     sourceLabel: adapter.sourceLabel,
+    guestReplyForOwnerDm: text,
   });
-
-  if (!sim) {
-    notifySpaUpsellAcceptOwnerDm(supabase, {
-      guestName,
-      phone,
-      room: guestRoom,
-      arrivalDate: (guest.arrival_date as string | null) ?? null,
-      guestReply: text,
-    }).catch((e: Error) =>
-      console.warn(`[${adapter.logTag}] spa upsell owner DM failed:`, e.message),
-    );
-  }
 
   if (!sim) {
     try {

@@ -556,6 +556,15 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 - **Root:** Meta `detectHumanRequest` only flagged Inbox red-dot and still ran FAQ→LLM; Whapi had no detector at all. Prompt alone cannot prevent polarity inversion.
 - **Fix pattern:** Shared Tier-0 in `_shared/guestBotHandoff.ts` (`detectGuestHumanRequest` + `GUEST_CALLBACK_ACK_SENTENCE`) on both channels before LLM; never ask the guest to contact us when they asked for a callback. Soft SLA already knows `call`/`chat`.
 
+### 2026-08-02 — Spa intent router (`dispatchGuestSpaIntent`)
+- **Symptom:** Suite spa bot path used generic `request` alert (no Spa Leads); pre-arrival suite spa missed Tier-0; day-pass cluttered Requests Board + reception group.
+- **Fix pattern:** `_shared/spaIntentRouting.ts` — cohort side effects in one place; `shouldInterceptSpaTreatmentRequest` before check-in gate; Requests Board filters `isSpaCoordinatorOnlyRow`; Adir DM (`alsoPersonalDm`) suite-only via `shouldAdirPersonalDmForSpaIntent`.
+
+### 2026-08-02 — «בקשות אורחים» group = suites only
+- **Symptom:** Day-pass spa upsell accept / manual Inbox lead pinged Hebrew reception group with «💆 אישור הצעת ספא — Inbox (ידני)».
+- **Root:** `onGuestAlertInserted` notified every `guest_alerts` row — including day-pass `spa_upsell_accept` already covered by owner DM (`notifySpaUpsellAcceptOwnerDm`).
+- **Fix pattern:** `shouldNotifyRequestsWhapiGroup` — skip group when `alertType=spa_upsell_accept` or `isEffectiveDayPassGuest`; board + Inbox red-dot unchanged.
+
 ### 2026-07-12 — «בקשות אורחים» group ≠ English field-ops
 - **Symptom:** Whapi guest-request pings were English ("GUEST REQUEST… Please check the Requests Board") with no way to open the chat.
 - **Root:** `guestAlertWhapiNotify` reused field-ops card style + `translateTextForFieldOps` (HE→EN). That group is Hebrew reception.
@@ -682,7 +691,7 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 - migration 128 מתקן `bot_config.night_before_entry_time_shabbat` מ-15:00 ל-12:00 (טעות migration 126).
 
 ### 2026-07-04 — Session 102b (Stage 3 morning Shabbat routing)
-- **Same rule as Stage 2.5:** autonomous `morning_suite`/`morning_welcome` → `suite_welcome_morning` / `suite_welcome_morning_shabbat` Meta templates only. No `stage_3_morning` session hijack on open 24h window. Day-pass `morning_welcome` aligned. Shabbat template failure → session script + `applySaturdayCheckInTimeOverride`, **not** weekday Meta (15:00 leak).
+- **morning_suite 24h window (2026-08-02):** Meta cohort with open `wa_window_expires_at` → `stage_3_morning` / `stage_3_morning_shabbat` session script (12:00/15:00 from ACC), not `suite_welcome_morning` template — prevents stale Meta body (09:00 pools) when guest already chatted. Cold-start (window closed) still uses Meta templates. Day-pass `morning_welcome` unchanged. `night_before` suites still Meta-only on autonomous cron.
 
 ### 2026-07-31 — night_before Meta #132018 + live IMAGE header detection
 - **Symptom:** Cron 15:00 batch — `meta_template_400` #132018 «header: Template does not contain title component» for Meta-cohort suite guests on `night_before`.

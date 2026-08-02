@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { getGuestTimingBadge } from "../utils/guestTiming";
+import { isEffectiveDayPassGuest } from "../utils/pipelineSegment";
 import AILearningButton from "./AILearningButton";
 import UndoSnackbar from "./UndoSnackbar";
 
@@ -29,6 +30,13 @@ const TYPE_META = {
 // visible warning, not silently fall back to a "looks fine" label.
 function typeMeta(alertType) {
   return TYPE_META[alertType] ?? { label: `⚠ ${alertType ?? "ללא סוג"}`, bg: "#F5F5F5", color: "#888888" };
+}
+
+/** Day-pass spa leads live on Spa Leads tab only — not reception Requests Board. */
+function isSpaCoordinatorOnlyRow(row) {
+  if (row.alert_type === "spa_upsell_accept") return true;
+  if (row.alert_type === "spa_request" && row.guests && isEffectiveDayPassGuest(row.guests)) return true;
+  return false;
 }
 
 // Same variant set WhatsAppInbox.js's dismissHumanRequest() matches against —
@@ -238,7 +246,7 @@ export default function RequestsBoard({ user, onOpenDreamBotChat }) {
     // so it can't drift from the guest's actual current state (CLAUDE.md §0.5).
     const { data, error } = await supabase
       .from("guest_alerts")
-      .select("*, guests(name, room, arrival_date, departure_date, status)")
+      .select("*, guests(name, room, room_type, arrival_date, departure_date, status)")
       .order("resolved", { ascending: true })
       .order("created_at", { ascending: false });
     if (error) showToast("err", "שגיאה בטעינה: " + error.message);
@@ -309,8 +317,9 @@ export default function RequestsBoard({ user, onOpenDreamBotChat }) {
     : sourceFilter === "eta"
       ? requests.filter((r) => r.alert_type === "arrival_eta")
       : requests;
-  const visible = showResolved ? bySource : bySource.filter((r) => !r.resolved);
-  const pendingCount = bySource.filter((r) => !r.resolved).length;
+  const receptionScope = bySource.filter((r) => !isSpaCoordinatorOnlyRow(r));
+  const visible = showResolved ? receptionScope : receptionScope.filter((r) => !r.resolved);
+  const pendingCount = receptionScope.filter((r) => !r.resolved).length;
   const portalPendingCount = requests.filter((r) => r.alert_type === "upsell_opportunity" && !r.resolved).length;
   const etaPendingCount = requests.filter((r) => r.alert_type === "arrival_eta" && !r.resolved).length;
 

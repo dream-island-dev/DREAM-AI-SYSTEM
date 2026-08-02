@@ -5,7 +5,7 @@
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
+import { dispatchGuestSpaIntent } from "../_shared/spaIntentRouting.ts";
 import {
   shouldRouteGuestOutboundViaWhapiSuites,
   primeGuestChannelConfig,
@@ -124,30 +124,21 @@ serve(async (req: Request) => {
       `[פורטל אורח — בקשת ספא${guest.room ? " — " + guest.room : ""}]` +
       `${tag ? " [" + tag + "]" : ""} ${PORTAL_SPA_ATTENTION_REASON}`.trim();
 
-    const { data: alert, error: alertErr } = await supabase
-      .from("guest_alerts")
-      .insert({
-        guest_id:   guest.id,
-        phone:      guest.phone,
-        alert_type: "spa_request",
-        message:    alertMessage,
-        resolved:   false,
-      })
-      .select("id")
-      .maybeSingle();
-    if (alertErr) console.warn("[guest-portal-spa-request] guest_alerts insert:", alertErr.message);
-
-    onGuestAlertInserted(supabase, {
+    const dispatch = await dispatchGuestSpaIntent(supabase, {
       guestId: guest.id as number,
       phone: guest.phone as string,
+      guest: guest as Record<string, unknown>,
       message: alertMessage,
       alertType: "spa_request",
       guestName: guest.name as string | null,
       room: guest.room as string | null,
       sourceLabel: "Guest Portal",
-      alsoPersonalDm: true,
       preferredInboxChannel: alertInboxChannel,
-    }).catch((e: Error) => console.warn("[guest-portal-spa-request] staff notify failed:", e.message));
+      dedupeOpenLead: true,
+    });
+    if (!dispatch.ok) {
+      console.warn("[guest-portal-spa-request] spa dispatch:", dispatch.error);
+    }
 
     let conciergeReplySent = false;
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -181,7 +172,8 @@ serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         ok: true,
-        alertId: alert?.id ?? null,
+        alertId: dispatch.alertId ?? null,
+        alreadyExists: dispatch.alreadyExists ?? false,
         conciergeReplySent,
         channel: outboundChannel,
         attentionReason: PORTAL_SPA_ATTENTION_REASON,

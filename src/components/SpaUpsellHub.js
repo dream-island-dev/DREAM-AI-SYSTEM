@@ -468,7 +468,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
             💆 מרכז הצעת ספא — בילוי יומי
           </div>
           <div style={{ fontSize: 12.5, color: "#6B21A8", lineHeight: 1.6, maxWidth: 560 }}>
-            שליחה לתאריך הגעה · תשובות «אשמח לתאם» / «אשמח שיחזרו» נכנסות אוטומטית ל«ממתינים לתאום» + קבוצת בקשות אורחים.
+            שליחה לתאריך הגעה · תשובות «אשמח לתאם» / «אשמח שיחזרו» נכנסות אוטומטית ל«לידים ספא» + DM למייק (לא לקבוצת בקשות אורחים).
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>

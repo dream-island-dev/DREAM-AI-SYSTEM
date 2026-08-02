@@ -9,6 +9,7 @@ import {
   formatGuestPhoneForStaffWa,
   phoneDigitsForDeepLink,
   resolveSpaUpsellNotifyPhone,
+  shouldNotifyRequestsWhapiGroup,
 } from "./guestAlertWhapiNotify.ts";
 import { ARCHITECT_PHONE_DIGITS } from "./executiveIdentity.ts";
 
@@ -88,6 +89,57 @@ Deno.test("buildSpaUpsellAcceptOwnerDm: forward block + inbox link", () => {
   assertStringIncludes(dm, "── להעברה לצוות הספא ──");
   assertStringIncludes(dm, "מעוניין/ת בטיפול ספא (280₪/45 דק׳)");
   assertStringIncludes(dm, "💬 שיחה: https://dream-ai-system.vercel.app/?page=wa_inbox&phone=972509939988");
+});
+
+Deno.test("shouldNotifyRequestsWhapiGroup: spa_upsell_accept never pings group", async () => {
+  const supabase = {
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({ data: { room: "אמטיסט 8", room_type: "suite" } }),
+        }),
+      }),
+    }),
+  };
+  const ok = await shouldNotifyRequestsWhapiGroup(supabase as never, {
+    alertType: "spa_upsell_accept",
+    guestId: 1,
+  });
+  assertEquals(ok, false);
+});
+
+Deno.test("shouldNotifyRequestsWhapiGroup: day-pass guest skipped", async () => {
+  const supabase = {
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({ data: { room: "בילוי יומי", room_type: "day_guest" } }),
+        }),
+      }),
+    }),
+  };
+  const ok = await shouldNotifyRequestsWhapiGroup(supabase as never, {
+    alertType: "spa_request",
+    guestId: 2,
+  });
+  assertEquals(ok, false);
+});
+
+Deno.test("shouldNotifyRequestsWhapiGroup: suite spa_request allowed", async () => {
+  const supabase = {
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({ data: { room: "אמטיסט 8", room_type: "suite" } }),
+        }),
+      }),
+    }),
+  };
+  const ok = await shouldNotifyRequestsWhapiGroup(supabase as never, {
+    alertType: "spa_request",
+    guestId: 3,
+  });
+  assertEquals(ok, true);
 });
 
 Deno.test("resolveSpaUpsellNotifyPhone: defaults to architect", () => {

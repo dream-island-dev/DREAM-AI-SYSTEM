@@ -71,7 +71,6 @@ import {
   isBalloonRoomRequest,
   buildBalloonRoomRequestReply,
   isSensitiveStayChangeRequest,
-  CANONICAL_STAY_CHANGE_HANDOFF_MSG,
   isSensitiveFinancialRequest,
   CANONICAL_FINANCIAL_HANDOFF_MSG,
   isSevereComplaint,
@@ -164,7 +163,9 @@ import {
 } from "../_shared/guestInboundOrchestrator.ts";
 import {
   GUEST_STAFF_HANDOFF_SENTENCE,
+  buildArrivalDeclineHandoffReply,
   buildGuestHumanRequestReply,
+  buildStayChangeHandoffReply,
   detectGuestHumanRequest,
   isGuestStaffHandoffReply,
 } from "../_shared/guestBotHandoff.ts";
@@ -183,9 +184,11 @@ import { coalesceGuestInboundBurstIfLeader } from "../_shared/guestInboundBurst.
 import {
   runBalloonRoomRequestIntercept,
   runAdministrativeInHouseIntercept,
+  runSpaTreatmentRequestIntercept,
   runSpaUpsellAcceptanceIntercept,
   logAdministrativeRequestAlert,
 } from "../_shared/guestBalloonAdminIntercept.ts";
+import { dispatchGuestSpaIntent, shouldInterceptSpaTreatmentRequest } from "../_shared/spaIntentRouting.ts";
 import {
   generateGuestChatReplyWithTools,
   filterToolLoggedRequest,
@@ -1287,6 +1290,7 @@ async function handleSensitiveStayChangeHandoff(
   opts: {
     phone: string;
     guestId: number | null;
+    guest?: Record<string, unknown> | null;
     guestRoom?: string | null;
     text: string;
     msgId: string;
@@ -1295,7 +1299,8 @@ async function handleSensitiveStayChangeHandoff(
     auditSource: string;
   },
 ): Promise<void> {
-  const { phone, guestId, guestRoom, text, msgId, claimedConversationId, sim, auditSource } = opts;
+  const { phone, guestId, guest, guestRoom, text, msgId, claimedConversationId, sim, auditSource } = opts;
+  const handoffMsg = buildStayChangeHandoffReply(guest);
 
   await patchClaimedInbound(supabase, claimedConversationId, msgId, {
     guest_id: guestId,
@@ -1344,11 +1349,11 @@ async function handleSensitiveStayChangeHandoff(
 
   if (!sim) {
     try {
-      await sendReply(phone, CANONICAL_STAY_CHANGE_HANDOFF_MSG, { scripted: true });
+      await sendReply(phone, handoffMsg, { scripted: true });
       await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
-        message:       CANONICAL_STAY_CHANGE_HANDOFF_MSG,
+        message:       handoffMsg,
         wa_message_id: null,
         intent:        "sensitive_stay_change_request",
       });
@@ -1562,6 +1567,7 @@ async function routeStage1ArrivalReply(
     await handleGuestArrivalDeclineHandoff(supabaseClient, {
       phone: ctx.phone,
       guestId: ctx.guestId,
+      guest: ctx.guest,
       text: ctx.text,
       msgId: ctx.msgId,
       claimedConversationId: ctx.claimedConversationId,
@@ -2527,8 +2533,9 @@ Deno.serve(async (req: Request) => {
               sourceLabel: "WhatsApp Bot",
             }).catch((e: Error) => console.warn("[webhook] button date_change notify failed:", e.message));
           })().catch((e: Error) => console.warn("[webhook] guest_alerts (button date_change) error:", e.message));
-          const dateChangeReply =
-            "העברתי את בקשתך לצוות הסוויטות שלנו, בנתיים תכתוב לי באיזה תאריכים תרצו ואנחנו נבדוק זמינות עבורכם וניצור קשר בהקדם. 🙏";
+          const dateChangeReply = buildArrivalDeclineHandoffReply(
+            guest as Record<string, unknown> | null,
+          );
           try { await sendReply(phone, dateChangeReply, { scripted: true }); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await insertGuestOutboundIfNotMuted(supabase, {
             phone, guest_id: guestId, message: dateChangeReply, wa_message_id: null, intent: "date_change_request",
@@ -2866,6 +2873,7 @@ Deno.serve(async (req: Request) => {
         await handleSensitiveStayChangeHandoff(supabase, {
           phone,
           guestId,
+          guest: guest as Record<string, unknown> | null,
           guestRoom: (guest?.room as string | null) ?? null,
           text,
           msgId,
@@ -2948,8 +2956,7 @@ Deno.serve(async (req: Request) => {
           }).catch((e: Error) => console.warn("[webhook] date_change notify failed:", e.message));
         })().catch((e: Error) => console.warn("[webhook] guest_alerts (date_change) error:", e.message));
 
-        const handoffMsg =
-          "העברתי את בקשתך לצוות הסוויטות שלנו, בנתיים תכתוב לי באיזה תאריכים תרצו ואנחנו נבדוק זמינות עבורכם וניצור קשר בהקדם. 🙏";
+        const handoffMsg = buildArrivalDeclineHandoffReply(guest as Record<string, unknown> | null);
 
         if (!sim) {
           try {
@@ -3007,6 +3014,35 @@ Deno.serve(async (req: Request) => {
         isSpaUpsellAcceptanceReply(text)
       ) {
         await runSpaUpsellAcceptanceIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text,
+          conversationId: claimedConversationId,
+          sim,
+        }, {
+          patchInbound: async (patch) => patchClaimedInbound(supabase, claimedConversationId, msgId, patch),
+          sendReply: async (replyText, intent) => {
+            if (sim) return;
+            await sendReply(phone, replyText, { scripted: true });
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: replyText, wa_message_id: null, intent,
+            });
+          },
+          sourceLabel: "WhatsApp Bot",
+          logTag: "webhook",
+        });
+        continue;
+      }
+
+      // ── Spa treatment request (suite / day-pass, any stay phase incl. pre-arrival)
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        shouldInterceptSpaTreatmentRequest(text, guest as Record<string, unknown>)
+      ) {
+        await runSpaTreatmentRequestIntercept(supabase, {
           phone,
           guestId,
           guest: guest as Record<string, unknown>,
@@ -3217,6 +3253,7 @@ Deno.serve(async (req: Request) => {
         await handleSensitiveStayChangeHandoff(supabase, {
           phone,
           guestId,
+          guest: guest as Record<string, unknown> | null,
           guestRoom: (guest?.room as string | null) ?? null,
           text: effectiveText,
           msgId,
@@ -3299,6 +3336,36 @@ Deno.serve(async (req: Request) => {
         isSpaUpsellAcceptanceReply(effectiveText)
       ) {
         await runSpaUpsellAcceptanceIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text: effectiveText,
+          conversationId: claimedConversationId,
+          sim,
+        }, {
+          patchInbound: async (patch) => patchClaimedInbound(supabase, claimedConversationId, msgId, patch),
+          sendReply: async (replyText, intent) => {
+            if (sim) return;
+            await sendReply(phone, replyText, { scripted: true });
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: replyText, wa_message_id: null, intent,
+            });
+          },
+          sourceLabel: "WhatsApp Bot",
+          logTag: "webhook",
+        });
+        continue;
+      }
+
+      // ── Spa treatment request (post-burst) ─────────────────────────────────
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        effectiveText !== text &&
+        shouldInterceptSpaTreatmentRequest(effectiveText, guest as Record<string, unknown>)
+      ) {
+        await runSpaTreatmentRequestIntercept(supabase, {
           phone,
           guestId,
           guest: guest as Record<string, unknown>,
@@ -3803,6 +3870,25 @@ Deno.serve(async (req: Request) => {
           );
         } else if (
           guestId
+          && guest
+          && isAdministrativeInHouseRequest(effectiveText)
+          && shouldInterceptSpaTreatmentRequest(effectiveText, guest as Record<string, unknown>)
+        ) {
+          const guestRoom = (guest as Record<string, unknown>).room as string | null ?? null;
+          dispatchGuestSpaIntent(supabase, {
+            guestId,
+            phone,
+            guest: guest as Record<string, unknown>,
+            message: effectiveText.trim() || "בקשת טיפול בספא",
+            alertType: "spa_request",
+            conversationId,
+            guestName,
+            room: guestRoom,
+            sourceLabel: "WhatsApp Bot",
+          }).catch((e: Error) => console.error("[webhook] spa LLM-path dispatch error:", e.message));
+          console.info(`[webhook] dispatch=spa_request (LLM path) phone:${phone} guest:${guestId}`);
+        } else if (
+          guestId
           && dispatchRoute === "admin_reception_tasks"
           && isAdministrativeInHouseRequest(effectiveText)
         ) {
@@ -3915,7 +4001,7 @@ Deno.serve(async (req: Request) => {
         );
       } else if (isSensitiveStayChangeRequest(effectiveText)) {
         // ── LLM/upsell must never imply stay-change approval ──
-        reply = CANONICAL_STAY_CHANGE_HANDOFF_MSG;
+        reply = buildStayChangeHandoffReply(guest as Record<string, unknown> | null);
         if (guestId) {
           supabase
             .from("guests")
