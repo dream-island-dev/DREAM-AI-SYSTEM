@@ -29,6 +29,30 @@ export async function fetchOpenSpaUpsellLeadForGuest(supabase, guestId, phone) {
   return !e2 && (c2 ?? 0) > 0;
 }
 
+export async function lookupGuestIdByInboxPhone(supabase, phone) {
+  if (!supabase || !phone) return null;
+  const digits = String(phone).replace(/\D/g, "");
+  const last9 = digits.slice(-9);
+  if (!last9) return null;
+  const candidates = new Set();
+  if (digits.startsWith("972")) candidates.add(`+${digits}`);
+  if (digits.startsWith("0") && digits.length === 10) candidates.add(`+972${digits.slice(1)}`);
+  candidates.add(`+972${last9}`);
+  candidates.add(`0${last9}`);
+  for (const p of candidates) {
+    const { data, error } = await supabase.from("guests").select("id").eq("phone", p).maybeSingle();
+    if (!error && data?.id) return data.id;
+  }
+  const { data, error } = await supabase
+    .from("guests")
+    .select("id")
+    .ilike("phone", `%${last9}%`)
+    .limit(1)
+    .maybeSingle();
+  if (!error && data?.id) return data.id;
+  return null;
+}
+
 export async function addManualSpaUpsellLeadFromInbox(supabase, {
   guestId,
   phone,
