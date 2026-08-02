@@ -50,6 +50,11 @@ function resolveLeadPhone(lead) {
   return lead.phone || lead.guests?.phone || "";
 }
 
+function leadTypeLabel(alertType) {
+  if (alertType === "spa_request") return "בקשת ספא";
+  return "הצעת ספא";
+}
+
 function fmtArrivalDate(ymd) {
   if (!ymd) return "—";
   const d = new Date(`${ymd}T12:00:00`);
@@ -167,7 +172,7 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
       }}>
         <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>💆 לידים לתיאום ספא</div>
         <div style={{ fontSize: 13.5, opacity: 0.92, lineHeight: 1.55, maxWidth: 560 }}>
-          אורחי בילוי יומי שענו «אשמח לתאם» אחרי הצעת טיפול — שבצי בלוח הספא, חזרי לאורח בוואטסאפ, וסמני ✓ בוצע.
+          אורחים שרוצים לתאם טיפול בספא (בילוי יומי, סוויטה, פורטל) — שבצי בלוח הספא, חזרי לאורח בוואטסאפ, וסמני ✓ בוצע.
         </div>
         <div style={{
           marginTop: 16,
@@ -344,6 +349,14 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                                 ידני
                               </span>
                             )}
+                            <span style={{
+                              fontSize: 10, fontWeight: 800, color: "#5B21B6",
+                              background: "#EDE9FE", padding: "2px 8px", borderRadius: 8,
+                              marginLeft: 6, verticalAlign: "middle",
+                            }}
+                            >
+                              {leadTypeLabel(lead.alert_type)}
+                            </span>
                             {lead.guests?.name || "אורח"}
                           </div>
                           {lead.guests?.room ? (

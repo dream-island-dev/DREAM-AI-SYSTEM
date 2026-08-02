@@ -5,6 +5,9 @@ import { isSpaUpsellEligible } from "./spaUpsellAudience";
 
 const STAFF_APP_ORIGIN = "https://dream-ai-system.vercel.app";
 
+/** Open spa coordinator leads — upsell acceptance + portal/WA spa requests. */
+export const SPA_COORDINATOR_ALERT_TYPES = ["spa_upsell_accept", "spa_request"];
+
 /** bot_scripts uses {{GUEST_NAME}}; whapi bulk queue expects {{שם}}. */
 export function spaUpsellScriptToWhapiTemplate(scriptText) {
   return String(scriptText ?? "")
@@ -66,14 +69,14 @@ export async function fetchSpaUpsellLeads(supabase, arrivalDate) {
   return { leads: data ?? [], error: null };
 }
 
-/** All open spa upsell acceptance leads — coordinator view (any arrival date). */
+/** All open spa coordinator leads — any arrival date. */
 export async function fetchAllOpenSpaUpsellLeads(supabase) {
   if (!supabase) return { leads: [], error: null };
 
   const { data, error } = await supabase
     .from("guest_alerts")
     .select("id, phone, message, created_at, resolved, alert_type, guests(id, name, phone, room, arrival_date, departure_date, status)")
-    .eq("alert_type", "spa_upsell_accept")
+    .in("alert_type", SPA_COORDINATOR_ALERT_TYPES)
     .eq("resolved", false)
     .order("created_at", { ascending: false });
 
@@ -88,7 +91,7 @@ export async function fetchOpenSpaUpsellLeadCount(supabase) {
   const { count, error } = await supabase
     .from("guest_alerts")
     .select("id", { count: "exact", head: true })
-    .eq("alert_type", "spa_upsell_accept")
+    .in("alert_type", SPA_COORDINATOR_ALERT_TYPES)
     .eq("resolved", false);
   if (error) return 0;
   return count ?? 0;

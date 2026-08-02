@@ -4982,6 +4982,7 @@ export default function WhatsAppInbox({
     const rawMsg = String(lastInbound?.message ?? "")
       .replace(/^\[(META|WHAPI|SESSION|WHAPI SESSION)\]\s*/i, "")
       .trim();
+    const alertType = contactIsDaypassAudience(activeContact) ? "spa_upsell_accept" : "spa_request";
     setSpaLeadAdding(true);
     try {
       const data = await addManualSpaUpsellLeadFromInbox(supabase, {
@@ -4989,6 +4990,7 @@ export default function WhatsAppInbox({
         phone: activeContact.phone,
         message: rawMsg || "נוסף ידנית מ-Inbox",
         conversationId: lastInbound?.id ?? null,
+        alertType,
       });
       setSpaLeadOnFile(true);
       if (data?.alreadyExists) {
@@ -6406,17 +6408,15 @@ export default function WhatsAppInbox({
               >
                 🔗 שלח קישור לפורטל האורחים
               </button>
-              {contactIsDaypassAudience(activeContact) && (
+              {activeContact?.guestId && (
                 <button
                   type="button"
                   onClick={addSpaUpsellLeadFromInbox}
-                  disabled={sending || spaLeadAdding || !activeContact?.guestId || spaLeadOnFile}
+                  disabled={sending || spaLeadAdding || spaLeadOnFile}
                   title={
-                    !activeContact?.guestId
-                      ? "השיחה אינה משויכת לפרופיל אורח"
-                      : spaLeadOnFile
-                        ? "האורח כבר ברשימת לידים ספא — ראה «לידים ספא»"
-                        : "מוסיף את האורח לרשימת לידים ספא לפי תאריך ההגעה (גיבוי אם הבוט לא תפס)"
+                    spaLeadOnFile
+                      ? "האורח כבר ברשימת לידים ספא — ראה «לידים ספא»"
+                      : "מוסיף לרשימת לידים ספא לפי תאריך ההגעה (סוויטה + בילוי יומי)"
                   }
                   style={{
                     padding: "8px 14px", borderRadius: 20,
@@ -6424,7 +6424,7 @@ export default function WhatsAppInbox({
                     background: spaLeadOnFile ? "#F5F3FF" : "linear-gradient(135deg, #F3E8FF, #EDE9FE)",
                     color: spaLeadOnFile ? "#9CA3AF" : "#5B21B6",
                     fontSize: 12, fontWeight: 700,
-                    cursor: (sending || spaLeadAdding || !activeContact?.guestId || spaLeadOnFile)
+                    cursor: (sending || spaLeadAdding || spaLeadOnFile)
                       ? "not-allowed" : "pointer",
                     minHeight: isMobile ? HIT_STAFF : "auto",
                   }}
@@ -6827,6 +6827,44 @@ export default function WhatsAppInbox({
           </>
           );
         })()}
+
+        {activeContact?.guestId && (
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: isMobile ? "8px 12px 0" : "6px var(--space-md) 0",
+            flexWrap: "wrap",
+          }}
+          >
+            <button
+              type="button"
+              onClick={addSpaUpsellLeadFromInbox}
+              disabled={sending || spaLeadAdding || spaLeadOnFile}
+              title={
+                spaLeadOnFile
+                  ? "האורח כבר בלידים ספא"
+                  : "הוסף ללידים ספא — מסודר לפי תאריך הגעה בלשונית «לידים ספא»"
+              }
+              style={{
+                padding: "7px 12px",
+                borderRadius: 18,
+                border: spaLeadOnFile ? "1.5px solid #C4B5FD" : "1.5px solid #7C3AED",
+                background: spaLeadOnFile ? "#F5F3FF" : "#F3E8FF",
+                color: spaLeadOnFile ? "#9CA3AF" : "#5B21B6",
+                fontSize: 12,
+                fontWeight: 800,
+                cursor: (sending || spaLeadAdding || spaLeadOnFile) ? "not-allowed" : "pointer",
+                minHeight: isMobile ? HIT_STAFF : 36,
+              }}
+            >
+              {spaLeadAdding ? "מוסיף ללידים ספא…" : spaLeadOnFile ? "✓ בלידים ספא" : "💆 הוסף ללידים ספא"}
+            </button>
+            <span style={{ fontSize: 11, color: "#9CA3AF" }}>
+              לתיאום טיפול — מופיע ב«לידים ספא» לפי יום הגעה
+            </span>
+          </div>
+        )}
 
         <div
           className={isMobile ? "wa-mobile-composer" : undefined}

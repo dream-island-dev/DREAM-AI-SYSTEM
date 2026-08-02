@@ -19,6 +19,8 @@ serve(async (req: Request) => {
     const phone = String(body.phone ?? "").trim();
     const message = String(body.message ?? "").trim();
     const conversationId = body.conversation_id != null ? Number(body.conversation_id) : null;
+    const alertTypeRaw = String(body.alert_type ?? "spa_upsell_accept").trim();
+    const alertType = alertTypeRaw === "spa_request" ? "spa_request" : "spa_upsell_accept";
 
     if (!guestId || !phone) throw new Error("guest_id and phone are required");
 
@@ -58,6 +60,7 @@ serve(async (req: Request) => {
       message,
       conversationId: Number.isFinite(conversationId) ? conversationId : null,
       sourceLabel: "Inbox (ידני)",
+      alertType,
     });
 
     if (!result.ok) {

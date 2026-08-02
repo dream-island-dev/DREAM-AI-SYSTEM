@@ -2198,7 +2198,7 @@ export default function App({ initialPage = "dashboard" }) {
       const { count, error } = await supabase
         .from("guest_alerts")
         .select("id", { count: "exact", head: true })
-        .eq("alert_type", "spa_upsell_accept")
+        .in("alert_type", ["spa_upsell_accept", "spa_request"])
         .eq("resolved", false);
       if (!error) setSpaLeadsCount(count ?? 0);
     };
