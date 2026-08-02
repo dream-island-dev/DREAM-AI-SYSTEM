@@ -121,7 +121,7 @@ describe("groupByPhoneUnified — one thread per phone", () => {
     expect(contacts[0].messages.map((m) => m.id)).toEqual(["m1", "w1"]);
   });
 
-  test("outbound staff-handoff copy lights humanRequested without inbound flag", () => {
+  test("outbound staff-handoff alone does not light humanRequested (dismiss must stick)", () => {
     const handoff = "אני בודק את זה מול הצוות שלנו ונחזור אליך בהקדם 🙏";
     const rows = [
       msg("in1", "2026-07-06T10:00:00Z", { phone: "972500000001", inbox_channel: "meta" }),
@@ -134,8 +134,26 @@ describe("groupByPhoneUnified — one thread per phone", () => {
     ];
     const contacts = groupByPhoneUnified(rows);
     expect(contacts).toHaveLength(1);
-    expect(contacts[0].humanRequested).toBe(true);
-    expect(contacts[0].humanRequestType).toBe("staff_handoff");
+    expect(contacts[0].humanRequested).toBe(false);
+  });
+
+  test("inbound human_requested clears after dismiss even when outbound handoff exists", () => {
+    const handoff = "אני בודק את זה מול הצוות שלנו ונחזור אליך בהקדם 🙏";
+    const rows = [
+      msg("in1", "2026-07-06T10:00:00Z", {
+        phone: "972500000001",
+        inbox_channel: "meta",
+        human_requested: false,
+      }),
+      msg("out1", "2026-07-06T10:01:00Z", {
+        phone: "972500000001",
+        inbox_channel: "meta",
+        direction: "outbound",
+        message: `[META]\n${handoff}`,
+      }),
+    ];
+    const contacts = groupByPhoneUnified(rows);
+    expect(contacts[0].humanRequested).toBe(false);
   });
 });
 

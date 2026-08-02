@@ -31,7 +31,6 @@ import {
   syncInboxContactWithGuestMap,
 } from "../utils/guestTiming";
 import { resolveEffectiveSelectedSuiteRoom } from "../utils/guestSelectedSuiteRoom";
-import { isGuestStaffHandoffReply } from "../utils/guestBotHandoff";
 import {
   addManualSpaUpsellLeadFromInbox,
   fetchOpenSpaUpsellLeadForGuest,
@@ -257,16 +256,10 @@ function parseOutboundDispatch(raw) {
   return { channel, body, hasInteractiveButtons, buttonLabels };
 }
 
-/** Inbound human_requested flag, or outbound canonical staff-handoff copy. */
+/** Inbound human_requested flag only — outbound handoff text must not re-light after staff dismiss. */
 function messageHumanRequestState(row) {
   if (row.human_requested && row.direction === "inbound") {
     return { requested: true, type: row.human_request_type ?? null };
-  }
-  if (row.direction === "outbound") {
-    const { body } = parseOutboundDispatch(row.message);
-    if (isGuestStaffHandoffReply(body)) {
-      return { requested: true, type: "staff_handoff" };
-    }
   }
   return { requested: false, type: null };
 }
