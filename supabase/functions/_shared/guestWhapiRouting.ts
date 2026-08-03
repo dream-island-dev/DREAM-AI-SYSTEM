@@ -3,8 +3,8 @@
 // Single source of truth for guest outbound channel routing (automation vs
 // manual staff sends). See CLAUDE.md / project-whapi-guest-outbound-rollout.
 //
-// Two independent gates (2026-07-28):
-//   • AUTOMATION — guest_suites_channel + Stage-1 Whapi exception (pre_arrival_2d)
+// Two independent gates (2026-07-28, Stage-1 exception removed 2026-08-03):
+//   • AUTOMATION — guest_suites_channel / guest_daypass_channel (Meta default)
 //   • MANUAL STAFF — canStaffSendViaWhapiSuites() — always Whapi unless SOS
 //
 // Uses the ALREADY-CONNECTED Whapi device (the same WHAPI_TOKEN channel that
@@ -47,9 +47,6 @@ import { fetchGuestBotConfig } from "./guestBotSettings.ts";
  */
 type SuitesChannel = "whapi" | "meta";
 type DaypassChannel = "off" | "whapi" | "meta";
-
-/** Stage 1 always routes suite automation via Whapi (low volume, ban-safe). */
-export const SUITE_STAGE1_WHAPI_TRIGGER = "pre_arrival_2d";
 
 let _suitesChannel: SuitesChannel = "meta";
 let _daypassChannel: DaypassChannel = "off";
@@ -170,9 +167,8 @@ export function canStaffSendViaWhapiSuites(): boolean {
 }
 
 /**
- * AUTOMATION routing — suite guests follow guest_suites_channel except
- * pre_arrival_2d (Stage 1 arrival confirmation), which always uses Whapi
- * when not in SOS. Day-pass never uses Whapi (migration 205).
+ * AUTOMATION routing — suite guests follow guest_suites_channel (meta default).
+ * Day-pass automation never uses Whapi (migration 205) — Meta/off only.
  *
  * @param automationTrigger — pipeline stage_key (e.g. pre_arrival_2d, night_before)
  */
@@ -185,7 +181,6 @@ export function shouldRouteGuestOutboundViaWhapiSuites(
   // device for automated guest outbound — Meta Dream Bot only (ban prevention).
   if (isEffectiveDayPassGuest(guest)) return false;
   if (isEffectiveSuiteGuest(guest)) {
-    if (automationTrigger === SUITE_STAGE1_WHAPI_TRIGGER) return true;
     return _suitesChannel === "whapi";
   }
   return false;
@@ -212,8 +207,7 @@ export function shouldRouteGuestOutboundViaWhapiSuites(
  * Single source of truth for this decision — whatsapp-cron (due-item scan),
  * automation-queue (ACC Live Queue projection), and whatsapp-send (actual
  * dispatch gate) must all agree, or a stage can appear due in one place and
- * silently refuse to send in another (the exact class of bug the 2026-07-12
- * Stage 1 Whapi incident already came from).
+ * silently refuse to send in another.
  */
 export function isStageEffectivelyActive(
   stage: { is_active: boolean; stage_key?: string },

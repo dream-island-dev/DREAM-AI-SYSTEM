@@ -18,7 +18,6 @@ import {
   canStaffSendViaWhapiSuites,
   isWhapiGuestSosActive,
   shouldAutoReplyGuestWhapiDm,
-  SUITE_STAGE1_WHAPI_TRIGGER,
   __setGuestChannelsForTest,
   __setWhapiFailoverForTest,
 } from "./guestWhapiRouting.ts";
@@ -77,11 +76,21 @@ Deno.test("suite guest routes Meta when guest_suites_channel=meta (DreamBot)", (
   });
 });
 
-Deno.test("suite guest Stage 1 routes Whapi even when guest_suites_channel=meta", () => {
+Deno.test("suite guest Stage 1 follows guest_suites_channel=meta (Dream Bot)", () => {
   withChannels("meta", "off", () => {
     const guest = { room: "אמטיסט 8", room_type: "suite" };
     assertEquals(
-      shouldRouteGuestOutboundViaWhapiSuites(guest, SUITE_STAGE1_WHAPI_TRIGGER),
+      shouldRouteGuestOutboundViaWhapiSuites(guest, "pre_arrival_2d"),
+      false,
+    );
+  });
+});
+
+Deno.test("suite guest Stage 1 routes Whapi when guest_suites_channel=whapi", () => {
+  withChannels("whapi", "off", () => {
+    const guest = { room: "אמטיסט 8", room_type: "suite" };
+    assertEquals(
+      shouldRouteGuestOutboundViaWhapiSuites(guest, "pre_arrival_2d"),
       true,
     );
   });
@@ -144,13 +153,13 @@ Deno.test("isStageEffectivelyActive: is_active=false + day-pass guest, daypass=m
   });
 });
 
-Deno.test("isStageEffectivelyActive: is_active=false + suite guest, suites=meta stays paused except Stage 1", () => {
+Deno.test("isStageEffectivelyActive: is_active=false + suite guest, suites=meta stays paused (all stages)", () => {
   withChannels("meta", "off", () => {
     const guest = { room: "אמטיסט 8", room_type: "suite" };
     assertEquals(isStageEffectivelyActive({ is_active: false, stage_key: "night_before" }, guest), false);
     assertEquals(
-      isStageEffectivelyActive({ is_active: false, stage_key: SUITE_STAGE1_WHAPI_TRIGGER }, guest),
-      true,
+      isStageEffectivelyActive({ is_active: false, stage_key: "pre_arrival_2d" }, guest),
+      false,
     );
   });
 });

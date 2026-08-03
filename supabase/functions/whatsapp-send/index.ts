@@ -76,6 +76,10 @@ import {
   resolveMetaTemplateBodyText,
 } from "../_shared/metaTemplateLog.ts";
 import {
+  assertMetaTemplateCanonicalOrThrow,
+  isMetaTemplateDriftError,
+} from "../_shared/metaTemplateCanonicalGuard.ts";
+import {
   buildTwoParamRoomVars,
   fitVarsToExpectedCount,
   resolveExpectedBodyParamCount,
@@ -612,7 +616,8 @@ function _isAbortError(e: unknown): boolean {
 // Source: Meta error JSON body embedded in the throw from sendViaTemplate,
 // e.g. "meta_http_400: {...\"code\":132001...}".
 function isMetaTemplateError(msg: string): boolean {
-  return /132001|template_not_found|template.*not.*approved|template.*pending/i.test(msg);
+  return isMetaTemplateDriftError(msg)
+    || /132001|template_not_found|template.*not.*approved|template.*pending/i.test(msg);
 }
 
 /** Clears AICopilot «ממתין לאישור» gate once room_ready was sent (or idempotent skip). */
@@ -2828,10 +2833,10 @@ serve(async (req: Request) => {
     //     sent via the Whapi Suites device instead of Meta.
     //   • Manual + force_channel="session_message" (or no force_channel at all, the
     //     pre-existing default for any caller that doesn't specify one) → Meta session text.
-    //   • Autonomous cron/default (force !== true) → UNCHANGED — ALWAYS Meta template
-    //     night_before_suites / _shabbat. Never hijack to session text just because the
-    //     24h window is open — that path bypasses the Shabbat-approved static template
-    //     bodies and caused 15:00 on Saturdays.
+    //   • Autonomous cron/default (force !== true):
+    //       Whapi cohort → session bot_script via Whapi.
+    //       Meta cohort + open 24h window → session bot_script (ACC source of truth).
+    //       Meta cohort + window closed → Meta template (night_before_suites*).
     type NightBeforeDispatch =
       | { channel: "text";     freeTextKey: string;   guestName: string; sessionImageUrl?: string }
       | { channel: "whapi";    freeTextKey: string;   guestName: string; sessionImageUrl?: string }
@@ -2904,9 +2909,17 @@ serve(async (req: Request) => {
         // it, so buildTemplateDispatch() (and the Shabbat anti-hijack rule
         // above) stays the only path for every guest that hasn't opted in.
         const useWhapiAutonomous = shouldUseWhapiForGuestAutomation(guest, "night_before");
-        nightBeforeDispatch = useWhapiAutonomous
-          ? { channel: "whapi", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage }
-          : buildTemplateDispatch();
+        if (useWhapiAutonomous) {
+          nightBeforeDispatch = { channel: "whapi", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage };
+        } else if (windowOpen) {
+          nightBeforeDispatch = { channel: "text", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage };
+          console.log(
+            `[whatsapp-send] night_before: route=session_message (open window) guest_id=${guestId} ` +
+            `script=${sessionScriptKey}`,
+          );
+        } else {
+          nightBeforeDispatch = buildTemplateDispatch();
+        }
       }
     }
 
@@ -3038,6 +3051,7 @@ serve(async (req: Request) => {
               `vars=${JSON.stringify(nightBeforeDispatch.vars)} ` +
               `phone=${maskPhoneForLog(safeGuestPhone(guest.phone))} sim=${sim}`,
             );
+            await assertMetaTemplateCanonicalOrThrow(supabase, nightBeforeDispatch.templateName);
             const nbTmplDispatched = await sendViaTemplate(
               String(guest.phone),
               nightBeforeDispatch.templateName,
@@ -3535,6 +3549,7 @@ serve(async (req: Request) => {
             `[whatsapp-send] morning Stage3 pre-send: guest_id=${guestId} ` +
             `template=${morningDispatch.primaryTemplate} vars=${JSON.stringify(morningDispatch.vars)}`,
           );
+          await assertMetaTemplateCanonicalOrThrow(supabase, morningDispatch.primaryTemplate);
           try {
             mdDispatched = await sendViaTemplate(
               String(guest.phone),
@@ -3934,9 +3949,9 @@ serve(async (req: Request) => {
 
     // Hybrid fallback (req #4) — Session free-text when:
     //   • manual staff dispatch, OR
-    //   • guest routes through Whapi (primary day-pass/suite transport), OR
-    //   • day-pass + Meta channel + open 24h window (Option C session-first —
-    //     avoids templates when morning/evening opener already got a reply).
+    //   • guest routes through Whapi (guest_suites_channel=whapi), OR
+    //   • day-pass + Meta channel + open 24h window (Option C), OR
+    //   • Meta automation + open 24h window (session-first — ACC bot_scripts).
     const housekeepingCheckoutSurvey = housekeeping_co === true && trigger === "checkout_fb";
     const isManualPipelineDispatch = force === true || manual_override === true || housekeepingCheckoutSurvey;
     const pipelineArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
@@ -3946,6 +3961,10 @@ serve(async (req: Request) => {
       !forceMetaTemplate &&
       isEffectiveDayPassGuest(guest) &&
       DAYPASS_SESSION_FIRST_TRIGGERS.has(trigger) &&
+      isWindowOpen(guest.wa_window_expires_at);
+    const metaSessionPreferred =
+      !forceMetaTemplate &&
+      !useWhapiForPipeline &&
       isWindowOpen(guest.wa_window_expires_at);
     let usedSessionMessage = false;
     let sessionBody: string | null = null;
@@ -3961,7 +3980,7 @@ serve(async (req: Request) => {
     const stage1AutoAppendCta = trigger === "pre_arrival_2d"
       ? await loadStage1AutoAppendCta(supabase)
       : true;
-    if ((isManualPipelineDispatch || useWhapiForPipeline || daypassSessionPreferred) && !forceMetaTemplate &&
+    if ((isManualPipelineDispatch || useWhapiForPipeline || daypassSessionPreferred || metaSessionPreferred) && !forceMetaTemplate &&
         (stageRow?.session_message_script_key || stageRow?.session_message_script_key_shabbat || pipelineScriptFallback)) {
       if (forceSessionMessage || forceWhapiSession || useWhapiForPipeline || force === true || isManualPipelineDispatch || isWindowOpen(guest.wa_window_expires_at) || daypassSessionPreferred) {
         const pipelineScriptKey = resolveShabbatAwareScriptKey(
@@ -3990,10 +4009,9 @@ serve(async (req: Request) => {
               String(guest.arrival_date ?? ""),
             );
           }
-          // Stage 1 over Whapi has no interactive buttons (Meta's template
-          // does) — the typed CTA in the body is the guest's only path to
-          // confirming. Defend against an ACC edit that drops the phrase.
-          if (trigger === "pre_arrival_2d" && (forceWhapiSession || useWhapiForPipeline)) {
+          // Stage 1 session (Whapi or Meta open-window) has no interactive
+          // buttons — append typed CTA if missing from ACC edit.
+          if (trigger === "pre_arrival_2d") {
             body = ensureArrivalConfirmationCta(body, { autoAppend: stage1AutoAppendCta });
           }
           // Day-pass evening/morning on Whapi: no Meta QR buttons — keep typed

@@ -82,26 +82,60 @@ export function Stage1GuestReplyMatcherPanel() {
 export function Stage1TrueOutboundPreview({
   draftText,
   autoAppendCta,
-  channel = "whapi",
+  channel = "meta",
   guestName = STAGE1_SAMPLE_GUEST_NAME,
   metaTemplateBody,
+  showDualPaths = false,
+  automationChannel = "meta",
 }) {
-  const isWhapi = channel === "whapi" || channel === "whapi_session" || channel === "session_message";
-  const outbound = isWhapi
-    ? resolveStage1OutboundBody(draftText, { guestName, autoAppendCta })
-    : null;
-  const willAppend = isWhapi && stage1WillAutoAppendCta(draftText, autoAppendCta);
-
+  const sessionOutbound = resolveStage1OutboundBody(draftText, { guestName, autoAppendCta });
+  const willAppend = stage1WillAutoAppendCta(draftText, autoAppendCta);
   const metaPreview = metaTemplateBody
     ? metaTemplateBody.replace(/\{\{\s*1\s*\}\}/g, guestName)
     : null;
+
+  if (showDualPaths) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <PreviewBubble
+          title="🔵 אוטומציה — Dream Bot (חלון סגור / cold-start)"
+          channelLabel="תבנית Meta"
+          channelColor="#0369A1"
+          footer={(
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+              <span style={{ fontSize: 11, color: "#0369A1" }}>↩️ כן, מגיעים! ✨</span>
+              <span style={{ fontSize: 11, color: "#0369A1" }}>↩️ לא, שינוי בתאריך 🗓️</span>
+            </div>
+          )}
+        >
+          {metaPreview || "—"}
+        </PreviewBubble>
+        <PreviewBubble
+          title="🟢 אוטומציה — חלון 24ש׳ פתוח (או ערוץ Whapi)"
+          channelLabel={automationChannel === "whapi" ? "מכשיר סוויטות" : "Dream Bot · סשן"}
+          channelColor="#1A7A4A"
+          footer={willAppend ? (
+            <div style={{ fontSize: 11, color: "#92400E", marginTop: 8, lineHeight: 1.55 }}>
+              ⚡ נוספה אוטומטית שורת CTA (רשת ביטחון): «{ARRIVAL_CONFIRM_CTA_HE}»
+            </div>
+          ) : null}
+        >
+          {sessionOutbound || "—"}
+        </PreviewBubble>
+        <Stage1GuestReplyMatcherPanel />
+      </div>
+    );
+  }
+
+  const isWhapi = channel === "whapi" || channel === "whapi_session" || channel === "session_message";
+  const outbound = isWhapi ? sessionOutbound : null;
 
   return (
     <div>
       {isWhapi ? (
         <PreviewBubble
-          title="📱 מה האורח באמת מקבל — מכשיר הסוויטות / Bot Script"
-          channelLabel="מכשיר הסוויטות"
+          title="📱 מה האורח מקבל — סשן / מכשיר הסוויטות"
+          channelLabel="סשן חופשי"
           channelColor="#1A7A4A"
           footer={willAppend ? (
             <div style={{ fontSize: 11, color: "#92400E", marginTop: 8, lineHeight: 1.55 }}>
@@ -140,6 +174,7 @@ export function Stage1ArrivalControlPanel({
   metaTemplateBody,
   onCopyFromMeta,
   compact = false,
+  automationChannel = "meta",
 }) {
   return (
     <div style={{
@@ -153,8 +188,9 @@ export function Stage1ArrivalControlPanel({
         🌴 שלב 1 — בקשת אישור הגעה (מקור האמת)
       </div>
       <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6, marginBottom: 12 }}>
-        לסוויטות ויום-כיף דרך <strong>מכשיר הסוויטות</strong> — הטקסט כאן הוא מה שנשלח.
-        תבנית Meta למטה היא <em>רק</em> ל-Dream Bot כשאין Whapi.
+        ברירת מחדל: <strong>Dream Bot (Meta)</strong> — תבנית כשחלון 24ש׳ סגור, סקריפט זהה כשהחלון פתוח.
+        ערוץ אוטומציה Whapi (ACC) שולח את אותו סקריפט דרך מכשיר הסוויטות.
+        שליחה ידנית מ-Inbox תמיד דרך מכשיר הסוויטות (חוץ מ-SOS).
       </div>
 
       <div className="form-field" style={{ marginBottom: 10 }}>
@@ -213,7 +249,8 @@ export function Stage1ArrivalControlPanel({
       <Stage1TrueOutboundPreview
         draftText={draftText}
         autoAppendCta={autoAppendCta}
-        channel="whapi"
+        showDualPaths
+        automationChannel={automationChannel}
         metaTemplateBody={metaTemplateBody}
       />
     </div>

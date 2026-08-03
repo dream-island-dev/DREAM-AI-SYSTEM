@@ -2,10 +2,10 @@
  * Inbox WYSIWYG helpers — reconstruct Meta template body text for
  * whatsapp_conversations logging (never sent to Meta).
  *
- * Resolution order:
- *   1. message_templates.content (DB, keyed by wa_template_name)
- *   2. TEMPLATE_BODY_APPROVED (static snapshots below)
- *   3. Meta Graph API (cached per template name for the function lifetime)
+ * Resolution order (inbox / preview — must match what Meta actually sends):
+ *   1. Meta Graph API live approved BODY (cached per template name)
+ *   2. message_templates.content (DB mirror — may lag Meta approval)
+ *   3. TEMPLATE_BODY_APPROVED (static snapshots below)
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -151,7 +151,8 @@ async function fetchMetaTemplateComponents(templateName: string): Promise<MetaCo
   }
 }
 
-async function fetchMetaTemplateBodyFromApi(templateName: string): Promise<string | null> {
+/** Live Meta-approved BODY text — source of truth for what guests receive on template sends. */
+export async function fetchLiveMetaTemplateBody(templateName: string): Promise<string | null> {
   if (_metaBodyCache.has(templateName)) return _metaBodyCache.get(templateName)!;
 
   const components = await fetchMetaTemplateComponents(templateName);
@@ -183,20 +184,21 @@ export async function resolveMetaTemplateBodyText(
   templateName: string,
   vars: string[],
 ): Promise<string> {
-  const { data: mt } = await supabase
-    .from("message_templates")
-    .select("content")
-    .eq("wa_template_name", templateName)
-    .maybeSingle();
+  let body = (await fetchLiveMetaTemplateBody(templateName))?.trim() ?? "";
 
-  let body = mt?.content?.trim() ?? "";
+  if (!body) {
+    const { data: mt } = await supabase
+      .from("message_templates")
+      .select("content")
+      .eq("wa_template_name", templateName)
+      .maybeSingle();
+    body = ((mt as { content?: string } | null)?.content?.trim()) ?? "";
+  }
+
   if (!body && TEMPLATE_BODY_APPROVED[templateName]) {
     body = TEMPLATE_BODY_APPROVED[templateName];
   }
-  if (!body) {
-    const fromMeta = await fetchMetaTemplateBodyFromApi(templateName);
-    if (fromMeta) body = fromMeta;
-  }
+
   if (body) return substituteMetaTemplateVars(body, vars);
 
   const varsHint = vars.length ? ` (${vars.join(" | ")})` : "";

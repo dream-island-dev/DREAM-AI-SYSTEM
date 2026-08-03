@@ -356,16 +356,19 @@ Deno.serve(async (req: Request) => {
           dueNow,
           staffScheduled,
           // "predicted" — the real channel decision happens at actual send
-          // time (Phase 4); this is a best-effort projection, not a promise.
-          predictedChannel:
-            stage.node_type === "session_message"
-              ? "session_message"
-              : stage.node_type === "meta_template"
-              ? "meta_template"
-              : (guest as Record<string, unknown>).wa_window_expires_at &&
-                  new Date((guest as Record<string, unknown>).wa_window_expires_at as string) > now
-                ? "session_message"
-                : "meta_template",
+          // time; best-effort projection for ACC chips (not a promise).
+          predictedChannel: (() => {
+            if (shouldRouteGuestOutboundViaWhapiSuites(guest, stage.stage_key)) {
+              return "whapi_session";
+            }
+            if (stage.node_type === "session_message") return "session_message";
+            if (stage.node_type === "meta_template") return "meta_template";
+            const windowOpen = (() => {
+              const exp = (guest as Record<string, unknown>).wa_window_expires_at as string | null;
+              return exp ? new Date(exp).getTime() > now.getTime() : false;
+            })();
+            return windowOpen ? "session_message" : "meta_template";
+          })(),
           // Temporal guards (e.g. not_checked_in for Stage 4) stay "pending" so
           // the Live Queue never hides a future-scheduled stage as "skipped".
           status: logRow?.status ?? (

@@ -48,6 +48,7 @@ import {
   Stage1DispatchPreview,
 } from "./Stage1ArrivalPanel";
 import { STAGE1_AUTO_APPEND_CTA_KEY, parseStage1AutoAppendCta } from "../utils/stage1ArrivalCopy";
+import { detectMetaScriptDrift } from "../utils/metaTemplateDrift";
 
 const JOURNEY_PHASE_LABELS = {
   pre_arrival: "🌴 לפני ההגעה",
@@ -554,14 +555,12 @@ function isDayPassQueueItem(q) {
 
 /**
  * Real outbound-channel truth for a queue item — MUST match server routing
- * (guestWhapiRouting.ts shouldRouteGuestOutboundViaWhapiSuites): suite OR
- * day-pass go via the Whapi Suites device when GUEST_WHAPI_SUITES_ENABLED.
- * Falls back to effectiveSuite when effectiveWhapiGuest is absent (older
- * cached queue payloads, pre-deploy) so suite guests never regress to a
- * false "Meta" reading mid-rollout.
+ * (guestWhapiRouting.ts shouldRouteGuestOutboundViaWhapiSuites): Whapi only when
+ * guest_suites_channel=whapi (suite automation). Falls back to effectiveWhapiGuest
+ * from automation-queue when present.
  */
 function isWhapiRoutedQueueItem(q) {
-  return q?.effectiveWhapiGuest ?? q?.effectiveSuite === true;
+  return q?.effectiveWhapiGuest === true;
 }
 
 /** Suite guests in-resort or arriving today/tomorrow — Dream Bot outreach cohort. */
@@ -920,7 +919,7 @@ function ButtonChipsPreview({ buttons }) {
 // always null — arrival stages now route deterministically (separate Shabbat/
 // weekday templates), so {{2}}/{{3}} no longer exist as template variables.
 // resolveMetaBodyPreview short-circuits on null and shows the raw body text.
-function MetaTemplatePreviewBox({ stage, metaTemplatesByName, previewTimings }) {
+function MetaTemplatePreviewBox({ stage, metaTemplatesByName, previewTimings, sessionScriptText }) {
   const tmpl = metaTemplatesByName[stage.meta_template_name];
   if (!tmpl) {
     return (
@@ -931,6 +930,7 @@ function MetaTemplatePreviewBox({ stage, metaTemplatesByName, previewTimings }) 
   }
   const st = STATUS_META[tmpl.status] ?? STATUS_META.PENDING;
   const isApproved = tmpl.status === "APPROVED";
+  const driftWarning = detectMetaScriptDrift(tmpl.bodyText, sessionScriptText);
 
   // Resolve {{1}}/{{2}}/{{3}} only when the admin has clicked "Auto-fill".
   // {{1}} is always guest name; {{2}}/{{3}} are time slots — correct mapping
@@ -966,6 +966,14 @@ function MetaTemplatePreviewBox({ stage, metaTemplatesByName, previewTimings }) 
           {displayBody}
         </div>
       )}
+      {driftWarning && (
+        <div style={{
+          fontSize: 12, color: "#92400E", background: "#FEF3C7", borderRadius: 8,
+          padding: "8px 12px", lineHeight: 1.6, marginTop: 6, border: "1px solid #F59E0B",
+        }}>
+          {driftWarning}
+        </div>
+      )}
       {tmpl.buttons?.length > 0 && (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
           {tmpl.buttons.map((b, i) => (
@@ -987,7 +995,7 @@ function StageCard({
   stage, isOpen, onToggle, patchStage, scriptsByKey, saveSessionMessage,
   availableScriptKeys, addButton, updateButton, removeButton, convertToTemplate,
   metaTemplatesByName, postCheckoutSurveyDelayMinutes, savePostCheckoutSurveyDelay,
-  stage1AutoAppendCta, saveStage1AutoAppendCta,
+  stage1AutoAppendCta, saveStage1AutoAppendCta, guestSuitesChannel,
 }) {
   const nt = NODE_TYPE_META[stage.node_type] ?? NODE_TYPE_META.hybrid;
   const phaseLabel = JOURNEY_PHASE_LABELS[stage.journey_phase] ?? stage.journey_phase;
@@ -1300,6 +1308,7 @@ function StageCard({
               onAutoAppendChange={saveStage1AutoAppendCta}
               metaTemplateBody={metaTemplatesByName[stage.meta_template_name]?.bodyText}
               onCopyFromMeta={() => {}}
+              automationChannel={guestSuitesChannel ?? "meta"}
             />
           )}
 
@@ -1367,7 +1376,7 @@ function StageCard({
                 {stage.stage_key === "night_before"
                   ? "יום שישי 15:00 — אותה הודעה לאורחים שמגיעים בשישי (באותו היום) ולאורחים שמגיעים בשבת (יום לפני). טקסט + תמונה נפרדים מיום חול. אורח שמגיע בשישי ובצ׳ק-אין לפני 15:00 מדלג."
                   : "בוקר יום השבת — הודעה עם קבלת חדרים ב-18:00."}
-                {" "}ערוץ שליחה (Meta/Whapi) נקבע לפי הגדרת מכשיר הסוויטות (GUEST_WHAPI_SUITES_ENABLED) — לא לפי יום ההגעה.
+                {" "}ערוץ אוטומציה נקבע ב«ערוץ אוטומציה סוויטות» (Dream Bot / Whapi) — חלון פתוח = סשן, חלון סגור = תבנית Meta.
               </div>
               <select
                 value={shabbatScriptKey}
@@ -1427,7 +1436,7 @@ function StageCard({
                 padding: "8px 10px", borderRadius: 8, marginBottom: 8,
                 background: "#FFF8E7", border: "1px solid #D97706",
               }}>
-                ⚠ עריכה כאן משפיעה רק על Dream Bot (Meta). אורחי סוויטות מקבלים את הטקסט מ«מקור האמת» למעלה.
+                ⚠ תבנית Meta = cold-start (חלון סגור). כשחלון 24ש׳ פתוח — נשלח הסקריפט מ«מקור האמת» למעלה (אותו תוכן).
               </div>
             )}
             {(() => {
@@ -1501,6 +1510,8 @@ function StageCard({
                 )}
                 <div style={{ fontSize: 11, color: "#92702C", marginTop: 6, fontStyle: "italic" }}>
                   משתנים {"{{2}}"} / {"{{3}}"} הוסרו — השעות מוטמעות בגוף התבנית המאושרת.
+                  <br />
+                  חלון 24ש׳ סגור → נשלחת תבנית Meta החיה בלבד (חייבת להתאים לסקריפט ACC — אחרת השליחה תיחסם).
                 </div>
               </div>
             )}
@@ -1510,6 +1521,7 @@ function StageCard({
                 stage={stage}
                 metaTemplatesByName={metaTemplatesByName}
                 previewTimings={null}
+                sessionScriptText={scriptsByKey[stage.session_message_script_key] ?? ""}
               />
             )}
           </div>
@@ -1814,11 +1826,10 @@ function ManualDispatchModal({
 
   // Effective classification — matches server routing (suite room wins).
   const isDayType = isDayPassQueueItem(item);
-  // Whapi-eligible (suite OR day-pass, GUEST_WHAPI_SUITES_ENABLED) — Meta
-  // options stay clickable (real fallback for a dead Whapi device) but get
-  // a visible warning instead of silently looking like the normal choice.
+  // Whapi automation cohort (guest_suites_channel=whapi) — Meta override stays
+  // clickable as escape hatch when device is down.
   const isWhapiEligible = isWhapiRoutedQueueItem(item);
-  const whapiPreferredTitle = "האורח מנותב ל-Whapi (מכשיר הסוויטות, ללא עמלת Meta) — לבחור Meta רק במקרה חריג (למשל תקלה במכשיר הסוויטות)";
+  const whapiPreferredTitle = "אורח מנותב ל-Whapi באוטומציה (ערוץ אוטומציה סוויטות=Whapi) — לבחור Meta רק במקרה חריג";
 
   // Filter to stages the backend will actually allow for this room_type.
   const allowedStages = stages.filter((s) => {
@@ -1827,10 +1838,9 @@ function ManualDispatchModal({
   });
 
   const [stageKey, setStageKey]   = useState(item.stageKey ?? (allowedStages[0]?.stage_key ?? ""));
-  // Suite + day-pass guests always talk on the Suites device (when
-  // GUEST_WHAPI_SUITES_ENABLED) — default Override to Whapi.
+  // Default Override channel follows predicted automation path.
   const [channel, setChannel]     = useState(
-    isWhapiRoutedQueueItem(item) ? "whapi_session" : "meta_template",
+    isWhapiRoutedQueueItem(item) ? "whapi_session" : (item.predictedChannel === "session_message" ? "session_message" : "meta_template"),
   );
   const [confirmed, setConfirmed] = useState(false);
   const [sending, setSending]     = useState(false);
@@ -2149,6 +2159,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   );
   const [clubWaSettings, setClubWaSettings] = useState(DEFAULT_GUEST_CLUB_WA_SETTINGS);
   const [stage1AutoAppendCta, setStage1AutoAppendCta] = useState(true);
+  const [guestSuitesChannel, setGuestSuitesChannel] = useState("meta");
 
   // ── Live queue state ──────────────────────────────────────────────────────
   const [queueData, setQueueData] = useState(null);
@@ -2237,7 +2248,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const fetchStages = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoadingStages(false); return; }
     setLoadingStages(true);
-    const [{ data: stageRows, error: stageErr }, { data: scriptRows, error: scriptErr }, { data: delayRow }, { data: stage1CtaRow }, { data: clubWaRow }] = await Promise.all([
+    const [{ data: stageRows, error: stageErr }, { data: scriptRows, error: scriptErr }, { data: delayRow }, { data: stage1CtaRow }, { data: clubWaRow }, { data: suitesChannelRow }] = await Promise.all([
       supabase.from("automation_stages").select("*").order("sequence_order"),
       supabase.from("bot_scripts").select("script_key, message_text"),
       supabase.from("bot_config").select("config_value")
@@ -2248,6 +2259,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
         .maybeSingle(),
       supabase.from("bot_config").select("config_value")
         .eq("config_key", GUEST_CLUB_WA_SETTINGS_KEY)
+        .maybeSingle(),
+      supabase.from("bot_config").select("config_value")
+        .eq("config_key", "guest_suites_channel")
         .maybeSingle(),
     ]);
     if (stageErr) showToast("err", "שגיאה בטעינת שלבים: " + stageErr.message);
@@ -2287,6 +2301,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     );
     setClubWaSettings(normalizeGuestClubWaSettings(clubWaRow?.config_value));
     setStage1AutoAppendCta(parseStage1AutoAppendCta(stage1CtaRow?.config_value));
+    setGuestSuitesChannel(suitesChannelRow?.config_value === "whapi" ? "whapi" : "meta");
     setLoadingStages(false);
   }, [showToast]);
 
@@ -2384,6 +2399,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       showToast("err", "שגיאה בשמירת ערוץ: " + error.message);
     } else {
       showToast("ok", `✅ ${label} עודכן`);
+      if (configKey === "guest_suites_channel") {
+        setGuestSuitesChannel(newValue === "whapi" ? "whapi" : "meta");
+      }
       fetchQueue();
     }
   }, [showToast, fetchQueue]);
@@ -2609,8 +2627,8 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
 
   const runQueueSendNow = useCallback(async (item, scheduledFor) => {
     if (!supabase) return;
-    // night_before: no force_channel pin — whatsapp-send zero-guard uses live window + force=true.
-    // Suite + day-pass guests: always Suites device (Whapi) when Whapi-eligible — Dream Bot Meta is wrong channel for them.
+    // night_before: no force_channel pin — whatsapp-send uses live window + force=true.
+    // Whapi automation cohort only — else Meta template or session per window.
     const forceChannel =
       item.stageKey === "night_before"
         ? undefined
@@ -3071,7 +3089,8 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
             ⚙️ עריכת תזמון/תוכן כאן <strong>חיה</strong> — whatsapp-cron ו-whatsapp-send קוראים בפועל מהטבלה הזו ומחליטים לפיה
             מתי ומה לשלוח לאורחים. הפעלה/כיבוי או שינוי שלב כאן משפיע ישירות על מה שהאורח מקבל בוואטסאפ, לא רק על מה שמוצג בלוח.
             <br />
-            שלב 1 (אישור הגעה): אם האורח סונכרן אחרי מועד ה-T-2 — השלב מופיע כ־«⚠ פספס מועד» עם כפתור «שלח» / בחירה מרובה + «📱 שגר דרך מכשיר הסוויטות». ה-cron לא שולח אוטומטית אחרי שפספס (למנוע ספאם).             שלב 2: נשלח מיד כשהאורח לוחץ «כן מגיעים», מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו. <code>offset_hours</code> משפיע רק על תזמון cron/תור (גיבוי), לא על לחיצת האורח.
+            שלב 1 (אישור הגעה): אם האורח סונכרן אחרי מועד ה-T-2 — השלב מופיע כ־«⚠ פספס מועד» עם כפתור «שלח» / בחירה מרובה. ה-cron לא שולח אוטומטית אחרי שפספס (למנוע ספאם). אוטומציה ברירת מחדל: Dream Bot (Meta) — תבנית / סשן לפי חלון 24ש׳.
+            {" "}שלב 2: נשלח מיד כשהאורח לוחץ «כן מגיעים», מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו.
           </div>
 
           <GuestClubWaControlPanel
@@ -3137,6 +3156,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                         savePostCheckoutSurveyDelay={savePostCheckoutSurveyDelay}
                         stage1AutoAppendCta={stage1AutoAppendCta}
                         saveStage1AutoAppendCta={saveStage1AutoAppendCta}
+                        guestSuitesChannel={guestSuitesChannel}
                       />
                     ))}
                   </div>
@@ -3777,7 +3797,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                       </select>
                     </label>
                     <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center", maxWidth: 420, lineHeight: 1.5 }}>
-                      שלב 1 (אישור הגעה) תמיד דרך Whapi · שליחה ידנית מ-Inbox תמיד דרך מכשיר הסוויטות (חוץ מ-SOS)
+                      אוטומציה סוויטות: Dream Bot (Meta) כברירת מחדל · חלון פתוח = סשן · חלון סגור = תבנית · שליחה ידנית מ-Inbox תמיד דרך מכשיר הסוויטות (חוץ מ-SOS)
                     </span>
                     <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span>☀️ ערוץ יום-כיף:</span>
