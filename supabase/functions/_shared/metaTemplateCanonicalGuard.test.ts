@@ -7,6 +7,10 @@ import {
   normalizeTemplateBodyForCompare,
   templateBodiesMatch,
 } from "./metaTemplateCanonicalGuard.ts";
+import {
+  clearMetaTemplateBodyCacheForTests,
+  fetchLiveMetaTemplateBody,
+} from "./metaTemplateLog.ts";
 
 const CANONICAL_12 = `בוקר אור {{1}}! ✨ היום זה היום!
 הריזורט מוכן וכל הצוות שלנו כבר מחכה להעניק לכם חוויה בלתי נשכחת.
@@ -106,5 +110,56 @@ Deno.test("checkMetaTemplateCanonicalDrift: blocks when Meta still has 09:00 poo
     );
   } finally {
     globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("checkMetaTemplateCanonicalDrift: pre-send guard bypasses a stale cached body", async () => {
+  const supabase = {
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({
+            data: { message_text: CANONICAL_12.replace(/\{\{1\}\}/g, "{{GUEST_NAME}}") },
+          }),
+        }),
+      }),
+    }),
+  };
+
+  const origFetch = globalThis.fetch;
+  Deno.env.set("META_WHATSAPP_TOKEN", "test-token");
+  Deno.env.set("META_BUSINESS_ACCOUNT_ID", "waba-test");
+  clearMetaTemplateBodyCacheForTests();
+
+  try {
+    // Simulate an earlier preview/WYSIWYG call caching a body that happened to match
+    // ACC at the time.
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({
+        data: [{ name: "suite_welcome_morning", components: [{ type: "BODY", text: CANONICAL_12 }] }],
+      }));
+    const cachedBody = await fetchLiveMetaTemplateBody("suite_welcome_morning");
+    assertEquals(cachedBody, CANONICAL_12);
+
+    // Meta now actually serves the stale 09:00 copy (e.g. reverted/re-approved) — the
+    // pre-send guard must catch this instead of trusting the now-outdated cache entry.
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({
+        data: [{ name: "suite_welcome_morning", components: [{ type: "BODY", text: STALE_09 }] }],
+      }));
+
+    const result = await checkMetaTemplateCanonicalDrift(supabase as never, "suite_welcome_morning");
+    if (result.ok) throw new Error("expected drift: guard used the stale cached body instead of a live fetch");
+    assertEquals(result.liveBody, STALE_09);
+    assertEquals(isMetaTemplateDriftError(result.hebrewError), true);
+
+    await assertRejects(
+      () => assertMetaTemplateCanonicalOrThrow(supabase as never, "suite_welcome_morning"),
+      Error,
+      "template_body_drift",
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+    clearMetaTemplateBodyCacheForTests();
   }
 });

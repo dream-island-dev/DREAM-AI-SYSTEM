@@ -86,7 +86,9 @@ export async function checkMetaTemplateCanonicalDrift(
     return { ok: true, templateName, liveBody: "" };
   }
 
-  const liveBody = await fetchLiveMetaTemplateBody(templateName);
+  // Pre-send guard: never trust the process-lifetime preview cache — a re-approved
+  // template must be caught immediately, not only after the cache happens to evict.
+  const liveBody = await fetchLiveMetaTemplateBody(templateName, { bypassCache: true });
   if (!liveBody) {
     const hebrewError =
       `template_body_drift: לא ניתן לאמת את תבנית Meta "${templateName}" מול ACC — ` +

@@ -151,9 +151,17 @@ async function fetchMetaTemplateComponents(templateName: string): Promise<MetaCo
   }
 }
 
-/** Live Meta-approved BODY text — source of truth for what guests receive on template sends. */
-export async function fetchLiveMetaTemplateBody(templateName: string): Promise<string | null> {
-  if (_metaBodyCache.has(templateName)) return _metaBodyCache.get(templateName)!;
+/**
+ * Live Meta-approved BODY text — source of truth for what guests receive on template sends.
+ * `bypassCache: true` forces a fresh Meta API read (pre-send drift guard) instead of the
+ * process-lifetime cache used by preview/WYSIWYG callers — a stale cache entry there can
+ * otherwise let the guard pass/block against a body Meta no longer serves after re-approval.
+ */
+export async function fetchLiveMetaTemplateBody(
+  templateName: string,
+  opts?: { bypassCache?: boolean },
+): Promise<string | null> {
+  if (!opts?.bypassCache && _metaBodyCache.has(templateName)) return _metaBodyCache.get(templateName)!;
 
   const components = await fetchMetaTemplateComponents(templateName);
   const body = components?.find((c) => c.type === "BODY")?.text?.trim() ?? "";
@@ -171,6 +179,12 @@ export async function fetchLiveMetaTemplateBody(templateName: string): Promise<s
   }
 
   return body;
+}
+
+/** Test-only: clear the process-lifetime Meta body cache so a seeded/stale entry doesn't leak between test cases. */
+export function clearMetaTemplateBodyCacheForTests(): void {
+  _metaBodyCache.clear();
+  _metaButtonsCache.clear();
 }
 
 export function getTemplateQuickReplyButtons(templateName: string): string[] {
