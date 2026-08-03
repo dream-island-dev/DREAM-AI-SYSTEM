@@ -1,6 +1,7 @@
 import {
   buildGuestMapsFromRows,
   buildGhostContactFromGuestEntry,
+  fetchInboxRosterAnchorGuests,
   inboxNormalizePhone,
   inboxPhonesMatch,
   lookupGuestFromMaps,
@@ -9,6 +10,27 @@ import {
   toInboxGuestMapEntry,
 } from "./inboxGuestMap";
 import { israelTodayStr } from "./guestTiming";
+
+/** Mock Supabase client: chainable filter builder, pages `range()` off in-memory rows. */
+function makeMockSupabase({ checkedInRows, arrivingRows }) {
+  return {
+    from() {
+      const filters = {};
+      const builder = {
+        select() { return builder; },
+        eq(field, val) { filters[field] = val; return builder; },
+        in(field, vals) { filters[`${field}_in`] = vals; return builder; },
+        not() { return builder; },
+        order() { return builder; },
+        range(from, to) {
+          const rows = filters.status === "checked_in" ? checkedInRows : arrivingRows;
+          return Promise.resolve({ data: rows.slice(from, to + 1), error: null });
+        },
+      };
+      return builder;
+    },
+  };
+}
 
 function canon(p) {
   let s = String(p).replace(/\D/g, "");
@@ -108,5 +130,46 @@ describe("inboxGuestMap", () => {
     );
     expect(ghost.phone).toBe("972501234567");
     expect(ghost.guestId).toBe(5);
+  });
+
+  test("fetchInboxRosterAnchorGuests paginates past 1000-row PostgREST cap", async () => {
+    const today = israelTodayStr();
+    const checkedInRows = Array.from({ length: 1001 }, (_, i) => ({
+      id: i + 1,
+      name: `אורח ${i + 1}`,
+      phone: `+97250${String(1000000 + i).slice(-7)}`,
+      status: "checked_in",
+      room: "אקווה מרין 23",
+      room_type: "suite",
+      arrival_date: today,
+      departure_date: today,
+    }));
+    const supabase = makeMockSupabase({ checkedInRows, arrivingRows: [] });
+
+    const result = await fetchInboxRosterAnchorGuests(supabase, today);
+
+    expect(result).toHaveLength(1001);
+    expect(new Set(result.map((g) => g.id)).size).toBe(1001);
+    expect(result.some((g) => g.id === 1001)).toBe(true);
+  });
+
+  test("fetchInboxRosterAnchorGuests dedupes guests present in both queries", async () => {
+    const today = israelTodayStr();
+    const shared = {
+      id: 42,
+      name: "משותף",
+      phone: "+972501234567",
+      status: "checked_in",
+      room: "אקווה מרין 23",
+      room_type: "suite",
+      arrival_date: today,
+      departure_date: today,
+    };
+    const supabase = makeMockSupabase({ checkedInRows: [shared], arrivingRows: [shared] });
+
+    const result = await fetchInboxRosterAnchorGuests(supabase, today);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe(42);
   });
 });

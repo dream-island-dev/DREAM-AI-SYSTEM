@@ -96,26 +96,37 @@ export function shouldHydrateInboxRosterAnchor(g, today = israelTodayStr()) {
   return isSuiteInResortToday(g) || isSuiteArrivingToday(g);
 }
 
+/** Paginate past PostgREST 1000-row cap for a filtered guests query. */
+async function fetchPaginatedGuests(supabase, applyFilter) {
+  const all = [];
+  for (let from = 0; ; from += MAP_PAGE_SIZE) {
+    const { data, error } = await applyFilter(
+      supabase.from("guests").select(INBOX_GUEST_MAP_COLUMNS),
+    )
+      .order("id", { ascending: true })
+      .range(from, from + MAP_PAGE_SIZE - 1);
+    if (error) throw error;
+    const batch = data ?? [];
+    all.push(...batch);
+    if (batch.length < MAP_PAGE_SIZE) break;
+  }
+  return all;
+}
+
 /** Suite guests physically in-house or arriving today — small scoped query. */
 export async function fetchInboxRosterAnchorGuests(supabase, today = israelTodayStr()) {
-  const [{ data: checkedIn, error: e1 }, { data: arriving, error: e2 }] = await Promise.all([
-    supabase
-      .from("guests")
-      .select(INBOX_GUEST_MAP_COLUMNS)
-      .eq("status", "checked_in")
-      .not("phone", "is", null),
-    supabase
-      .from("guests")
-      .select(INBOX_GUEST_MAP_COLUMNS)
-      .eq("arrival_date", today)
-      .in("status", ["pending", "expected", "room_ready"])
-      .not("phone", "is", null),
+  const [checkedIn, arriving] = await Promise.all([
+    fetchPaginatedGuests(supabase, (q) => q.eq("status", "checked_in").not("phone", "is", null)),
+    fetchPaginatedGuests(supabase, (q) =>
+      q
+        .eq("arrival_date", today)
+        .in("status", ["pending", "expected", "room_ready"])
+        .not("phone", "is", null),
+    ),
   ]);
-  if (e1) throw e1;
-  if (e2) throw e2;
 
   const byId = new Map();
-  for (const g of [...(checkedIn ?? []), ...(arriving ?? [])]) {
+  for (const g of [...checkedIn, ...arriving]) {
     if (g?.id) byId.set(g.id, g);
   }
   return [...byId.values()].filter((g) => shouldHydrateInboxRosterAnchor(g, today));

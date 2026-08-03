@@ -114,7 +114,7 @@ serve(async (req) => {
     .from("ezgo_api_ingest")
     .insert(row)
     .select("id")
-    .single();
+    .maybeSingle();
 
   if (error) {
     if (error.code === "23505" && dedupeExternalId) {
