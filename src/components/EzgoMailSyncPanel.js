@@ -26,6 +26,7 @@ import {
   sendSpaUpsellBatch,
   SPA_UPSELL_SEND_PULSE_MS,
 } from "../utils/spaUpsellDispatch";
+import { fetchSpaUpsellAudience } from "../utils/spaUpsellAudience";
 
 const EZGO_ERROR_HEBREW_PATTERNS = [
   {
@@ -157,7 +158,7 @@ const BTN = {
 };
 
 function LineCard({
-  line, reportDate, busy, onApply, onCreate, onCreateAndUpsell, onReject, onUpsell, isDoc2,
+  line, reportDate, busy, onApply, onCreate, onReject, onUpsell, isDoc2,
 }) {
   const rec = line.parsed_json || {};
   const workflow = lineWorkflow(line, reportDate, isDoc2);
@@ -169,7 +170,6 @@ function LineCard({
     || workflow === "suite_arrival_create";
   const isUpsell = workflow === "daypass_upsell";
   const canUpsell = isUpsell && line.match_guest_id;
-  const canCreateSend = workflow === "daypass_create" && rec.phone;
   const canCreateProfile = (isCreate || (isUpsell && rec.phone))
     && line.action !== "no_match"
     && workflow !== "conflict";
@@ -239,7 +239,7 @@ function LineCard({
                 onClick={() => onUpsell(line)}
                 style={{ ...BTN.upsell, cursor: busy ? "wait" : "pointer" }}
               >
-                💆 שלח הצעת ספא
+                💆 בחר תבנית ושלח
               </button>
             )}
             {canCreateProfile && (
@@ -253,16 +253,6 @@ function LineCard({
                 style={{ ...BTN.create, cursor: busy ? "wait" : "pointer" }}
               >
                 {isUpsell && line.match_guest_id ? "✓ ללא שליחה" : "☀️ צור פרופיל"}
-              </button>
-            )}
-            {canCreateSend && (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => onCreateAndUpsell(line)}
-                style={{ ...BTN.createSend, cursor: busy ? "wait" : "pointer" }}
-              >
-                ☀️💆 צור + שלח
               </button>
             )}
             <button
@@ -298,7 +288,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const [scanDate, setScanDate] = useState(israelTodayYmd);
   const [upsellModal, setUpsellModal] = useState(null);
   const [scriptText, setScriptText] = useState("");
-  const [metaTemplateStatus, setMetaTemplateStatus] = useState(null);
+  const [metaTemplateCatalog, setMetaTemplateCatalog] = useState([]);
   const [upsellSending, setUpsellSending] = useState(false);
   const [upsellProgress, setUpsellProgress] = useState(null);
   const [emlUploading, setEmlUploading] = useState(false);
@@ -722,11 +712,28 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     }
     const meta = await fetchSpaUpsellDispatchMeta(supabase);
     setScriptText(meta.scriptText);
-    setMetaTemplateStatus(meta.metaTemplateStatus);
+    setMetaTemplateCatalog(meta.metaTemplateCatalog ?? []);
     setUpsellModal({ targets, lineIds });
   };
 
-  const handleUpsellSendNow = async (channel) => {
+  const openUpsellForReportDate = async () => {
+    if (!reportDate) {
+      showToast?.("אין תאריך דוח — בחרו מייל עם תאריך הגעה", "err");
+      return;
+    }
+    const { guests, error } = await fetchSpaUpsellAudience(supabase, { arrivalDate: reportDate });
+    if (error) {
+      showToast?.(error.message, "err");
+      return;
+    }
+    if (!guests.length) {
+      showToast?.("אין אורחים מתאימים לשליחה לתאריך " + reportDate, "err");
+      return;
+    }
+    await openUpsellModal(guests.map((g) => ({ id: g.id, name: g.name, phone: g.phone })));
+  };
+
+  const handleUpsellSendNow = async (channel, metaTemplateName) => {
     if (!upsellModal?.targets?.length) return;
     setUpsellSending(true);
     try {
@@ -735,6 +742,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         upsellModal.targets,
         channel,
         setUpsellProgress,
+        metaTemplateName,
       );
       const sentIds = results.filter((r) => r.result === "sent").map((r) => r.guest.id);
       if (sentIds.length) {
@@ -854,26 +862,6 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     }
   };
 
-  const createAndUpsellLine = async (line) => {
-    setBusy(true);
-    try {
-      const inserted = await createLineInternal(line);
-      showToast?.(`נוצר: ${inserted?.name || line.parsed_json?.guest_name}`, "ok");
-      await loadLines(selectedId);
-      await loadIngests();
-      if (inserted?.id) {
-        await openUpsellModal(
-          [{ id: inserted.id, name: inserted.name, phone: inserted.phone }],
-          [line.id],
-        );
-      }
-    } catch (e) {
-      showToast?.(e.message, "err");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const upsellLine = async (line) => {
     const target = guestTargetFromLine(line);
     if (!target) {
@@ -938,34 +926,6 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     showToast?.(`נוצרו ${ok} פרופילים`, "ok");
     await loadLines(selectedId);
     await loadIngests();
-  };
-
-  const createBatchThenUpsell = async (workflowId) => {
-    const pending = grouped[workflowId]?.filter((l) => l.status === "pending_review" && l.action === "create") || [];
-    if (!pending.length) {
-      showToast?.("אין פרופילים ליצירה", "err");
-      return;
-    }
-    setBusy(true);
-    const created = [];
-    const lineIds = [];
-    try {
-      for (const line of pending) {
-        try {
-          const inserted = await createLineInternal(line);
-          if (inserted?.id) {
-            created.push({ id: inserted.id, name: inserted.name, phone: inserted.phone });
-            lineIds.push(line.id);
-          }
-        } catch { /* continue */ }
-      }
-      showToast?.(`נוצרו ${created.length} פרופילים`, "ok");
-      await loadLines(selectedId);
-      await loadIngests();
-      if (created.length) await openUpsellModal(created, lineIds);
-    } finally {
-      setBusy(false);
-    }
   };
 
   return (
@@ -1236,17 +1196,17 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                             >
                               צור הכל ({pendingInSection})
                             </button>
-                            {section.id === "daypass_create" && (
+                            {reportDate && (
                               <button
                                 type="button"
                                 disabled={busy || upsellSending}
-                                onClick={() => createBatchThenUpsell(section.id)}
+                                onClick={openUpsellForReportDate}
                                 style={{
                                   padding: "5px 10px", borderRadius: 8, border: "none",
-                                  background: "#155E75", color: "#fff", fontWeight: 700, fontSize: 11,
+                                  background: "#A21CAF", color: "#fff", fontWeight: 700, fontSize: 11,
                                 }}
                               >
-                                ☀️💆 צור הכל + תזמן/שלח ({pendingInSection})
+                                💆 בחר תבנית ושלח להגעה {reportDate}
                               </button>
                             )}
                           </div>
@@ -1273,7 +1233,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                                 background: "#A21CAF", color: "#fff", fontWeight: 700, fontSize: 11,
                               }}
                             >
-                              💆 שלח / תזמן לכולם ({pendingInSection})
+                              💆 בחר תבנית ושלח ({pendingInSection})
                             </button>
                           </div>
                         )}
@@ -1286,7 +1246,6 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                           busy={busy || upsellSending}
                           onApply={applyLine}
                           onCreate={handleCreateProfile}
-                          onCreateAndUpsell={createAndUpsellLine}
                           onReject={rejectLine}
                           onUpsell={upsellLine}
                           isDoc2={isDoc2Ingest}
@@ -1309,7 +1268,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
           scriptText={scriptText}
           pulseSeconds={SPA_UPSELL_SEND_PULSE_MS / 1000}
           sending={upsellSending}
-          metaTemplateStatus={metaTemplateStatus}
+          metaTemplateCatalog={metaTemplateCatalog}
           onClose={() => { if (!upsellSending) setUpsellModal(null); }}
           onSendNow={handleUpsellSendNow}
           onSchedule={handleUpsellSchedule}

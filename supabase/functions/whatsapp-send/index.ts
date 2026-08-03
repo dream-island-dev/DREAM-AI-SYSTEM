@@ -533,6 +533,13 @@ const ONE_PARAM_NAME_TEMPLATES = new Set([
   "dream_spa_package",
   "dream_spa_warmup",
   "spa_upsell_daypass",
+  "spa_upsell_daypass1",
+]);
+
+/** Staff-picked Meta templates for manual spa upsell (trigger stays spa_upsell_daypass). */
+const SPA_UPSELL_META_TEMPLATE_ALLOWLIST = new Set([
+  "spa_upsell_daypass",
+  "spa_upsell_daypass1",
 ]);
 
 /** Static-body Meta templates — no {{N}} placeholders in approved body. */
@@ -2534,6 +2541,14 @@ serve(async (req: Request) => {
     // portal-button paths below, so every dispatch path for a day-pass
     // pre_arrival_2d picks this template without exception.
     let tmplName = resolvePipelineTemplateName(trigger, guest, stageRow);
+    const staffWaTemplateOverride = String(waTemplateName ?? "").trim();
+    if (
+      staffWaTemplateOverride
+      && trigger === "spa_upsell_daypass"
+      && SPA_UPSELL_META_TEMPLATE_ALLOWLIST.has(staffWaTemplateOverride)
+    ) {
+      tmplName = staffWaTemplateOverride;
+    }
     if (isEffectiveDayPassGuest(guest as GuestRoomFields) && trigger === "pre_arrival_2d") {
       console.log(
         `[whatsapp-send] day_pass_template_override: stage=pre_arrival_2d → ` +

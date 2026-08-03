@@ -4,7 +4,7 @@ import { formatIsraelDateTime, israelTodayYmd } from "../utils/israelTime";
 import {
   SPA_UPSELL_CHANNEL_META,
   SPA_UPSELL_CHANNEL_OPTIONS,
-  SPA_UPSELL_META_TEMPLATE,
+  SPA_UPSELL_META_TEMPLATE_DEFAULT,
   previewSpaUpsellMetaTemplate,
 } from "../utils/spaUpsellAudience";
 
@@ -23,26 +23,39 @@ export default function SpaUpsellConfirmModal({
   scriptText,
   pulseSeconds,
   sending,
-  metaTemplateStatus,
-  metaTemplateBodyText,
+  metaTemplateCatalog = [],
   onClose,
   onSendNow,
   onSchedule,
 }) {
   const [sendMode, setSendMode] = useState("now");
   const [dispatchChannel, setDispatchChannel] = useState(SPA_UPSELL_CHANNEL_META);
+  const [selectedMetaTemplate, setSelectedMetaTemplate] = useState(SPA_UPSELL_META_TEMPLATE_DEFAULT);
   const [scheduleDate, setScheduleDate] = useState(israelTodayYmd);
   const [scheduleTime, setScheduleTime] = useState("10:00");
   const [confirmed, setConfirmed] = useState(false);
 
   const sampleGuest = targets[0];
   const isMetaChannel = dispatchChannel === SPA_UPSELL_CHANNEL_META;
-  const metaNotApproved = isMetaChannel && metaTemplateStatus && metaTemplateStatus !== "APPROVED";
+
+  const catalog = metaTemplateCatalog.length > 0
+    ? metaTemplateCatalog
+    : [{ name: SPA_UPSELL_META_TEMPLATE_DEFAULT, status: null, bodyText: "" }];
+
+  const activeMetaRow = catalog.find((t) => t.name === selectedMetaTemplate)
+    ?? catalog.find((t) => t.name === SPA_UPSELL_META_TEMPLATE_DEFAULT)
+    ?? catalog[0];
+
+  const metaNotApproved = isMetaChannel
+    && activeMetaRow?.status
+    && activeMetaRow.status !== "APPROVED";
 
   const previewBody = useMemo(() => {
-    if (isMetaChannel) return previewSpaUpsellMetaTemplate(sampleGuest?.name, metaTemplateBodyText);
+    if (isMetaChannel) {
+      return previewSpaUpsellMetaTemplate(sampleGuest?.name, activeMetaRow?.bodyText);
+    }
     return previewSpaUpsellText(scriptText, sampleGuest?.name);
-  }, [isMetaChannel, scriptText, sampleGuest?.name, metaTemplateBodyText]);
+  }, [isMetaChannel, scriptText, sampleGuest?.name, activeMetaRow?.bodyText]);
 
   const channelLabel = isMetaChannel
     ? SPA_UPSELL_CHANNEL_OPTIONS[0].label
@@ -65,8 +78,9 @@ export default function SpaUpsellConfirmModal({
 
   const handleConfirm = () => {
     if (!canConfirm) return;
+    const metaTemplateName = isMetaChannel ? activeMetaRow?.name : null;
     if (sendMode === "now") {
-      onSendNow(dispatchChannel);
+      onSendNow(dispatchChannel, metaTemplateName);
       return;
     }
     const payload = targets.map((g) => ({
@@ -75,6 +89,7 @@ export default function SpaUpsellConfirmModal({
       schedule_date: scheduleDate,
       schedule_time: scheduleTime,
       force_channel: dispatchChannel,
+      ...(metaTemplateName ? { wa_template_name: metaTemplateName } : {}),
     }));
     onSchedule(payload);
   };
@@ -123,19 +138,45 @@ export default function SpaUpsellConfirmModal({
               </button>
             ))}
           </div>
-          {isMetaChannel && metaTemplateStatus && (
-            <div style={{
-              marginTop: 8, fontSize: 12, padding: "8px 10px", borderRadius: 8,
-              background: metaTemplateStatus === "APPROVED" ? "#E8F5EF" : "#FFF8E1",
-              color: metaTemplateStatus === "APPROVED" ? "#1A7A4A" : "#B5600A",
-              border: `1px solid ${metaTemplateStatus === "APPROVED" ? "#1A7A4A" : "#F59E0B"}`,
-            }}>
-              {metaTemplateStatus === "APPROVED"
-                ? `✅ ${SPA_UPSELL_META_TEMPLATE} מאושרת ב-Meta`
-                : `⏳ ${SPA_UPSELL_META_TEMPLATE} — ${metaTemplateStatus} (בחרו מכשיר סוויטות עד לאישור)`}
-            </div>
-          )}
         </div>
+
+        {isMetaChannel && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#6B21A8", marginBottom: 8 }}>
+              תבנית Meta
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {catalog.map((tmpl) => (
+                <button
+                  key={tmpl.name}
+                  type="button"
+                  disabled={sending}
+                  onClick={() => setSelectedMetaTemplate(tmpl.name)}
+                  style={{
+                    padding: "8px 12px", borderRadius: 10, cursor: sending ? "not-allowed" : "pointer",
+                    border: selectedMetaTemplate === tmpl.name ? "2px solid #A21CAF" : "1px solid #E9D5FF",
+                    background: selectedMetaTemplate === tmpl.name ? "#F3E8FF" : "#fff",
+                    fontWeight: selectedMetaTemplate === tmpl.name ? 800 : 500,
+                    fontSize: 12, textAlign: "right",
+                  }}
+                >
+                  <div>{tmpl.name}</div>
+                  <div style={{ fontSize: 10.5, color: "#9D174D", marginTop: 2 }}>
+                    {tmpl.status === "APPROVED" ? "✅ מאושרת" : tmpl.status ? `⏳ ${tmpl.status}` : "—"}
+                  </div>
+                </button>
+              ))}
+            </div>
+            {metaNotApproved && (
+              <div style={{
+                marginTop: 8, fontSize: 12, padding: "8px 10px", borderRadius: 8,
+                background: "#FFF8E1", color: "#B5600A", border: "1px solid #F59E0B",
+              }}>
+                ⏳ {activeMetaRow?.name} — {activeMetaRow?.status} (בחרו מכשיר סוויטות עד לאישור)
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{
           background: "#FAF5FF", border: "1px solid #D8B4FE", borderRadius: 10,
@@ -153,7 +194,7 @@ export default function SpaUpsellConfirmModal({
           </pre>
           {isMetaChannel ? (
             <div style={{ fontSize: 11, color: "#9D174D", marginTop: 8 }}>
-              מקור: <strong>תבנית Meta חיה</strong> ({SPA_UPSELL_META_TEMPLATE}) — זה הטקסט שיישלח בפועל
+              מקור: <strong>תבנית Meta חיה</strong> ({activeMetaRow?.name}) — זה הטקסט שיישלח בפועל
             </div>
           ) : (
             <div style={{ fontSize: 11, color: "#9D174D", marginTop: 8 }}>
@@ -252,7 +293,8 @@ export default function SpaUpsellConfirmModal({
             style={{ marginTop: 3 }}
           />
           <span>
-            קראתי את הטקסט ואת רשימת הנמענים — מאשר/ת {sendMode === "now" ? "שליחה מיידית" : "תזמון"} דרך {channelLabel}.
+            קראתי את הטקסט ואת רשימת הנמענים — מאשר/ת {sendMode === "now" ? "שליחה מיידית" : "תזמון"} דרך {channelLabel}
+            {isMetaChannel && activeMetaRow?.name ? ` · ${activeMetaRow.name}` : ""}.
           </span>
         </label>
 

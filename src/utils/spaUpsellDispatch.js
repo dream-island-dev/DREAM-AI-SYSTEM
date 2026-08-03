@@ -1,7 +1,9 @@
 import {
-  resolveSpaUpsellMetaBodyText,
+  buildSpaUpsellMetaTemplateCatalog,
+  isAllowedSpaUpsellMetaTemplate,
+  SPA_UPSELL_CHANNEL_META,
   SPA_UPSELL_CHANNEL_WHAPI,
-  SPA_UPSELL_META_TEMPLATE,
+  SPA_UPSELL_META_TEMPLATE_DEFAULT,
 } from "./spaUpsellAudience";
 
 export const SPA_UPSELL_SEND_PULSE_MS = 2500;
@@ -16,11 +18,14 @@ export async function fetchSpaUpsellDispatchMeta(supabase) {
     supabase.functions.invoke("get-wa-templates", { body: { all: true } }),
   ]);
   const templates = tmplRes.data?.templates ?? [];
-  const spaPkg = templates.find((t) => t.name === SPA_UPSELL_META_TEMPLATE);
+  const metaTemplateCatalog = buildSpaUpsellMetaTemplateCatalog(templates);
+  const defaultRow = metaTemplateCatalog.find((t) => t.name === SPA_UPSELL_META_TEMPLATE_DEFAULT)
+    ?? metaTemplateCatalog[0];
   return {
     scriptText: scriptRes.data?.message_text ?? "",
-    metaTemplateStatus: spaPkg?.status ?? null,
-    metaTemplateBodyText: resolveSpaUpsellMetaBodyText(spaPkg),
+    metaTemplateCatalog,
+    metaTemplateStatus: defaultRow?.status ?? null,
+    metaTemplateBodyText: defaultRow?.bodyText ?? "",
   };
 }
 
@@ -29,22 +34,35 @@ export async function fetchSpaUpsellDispatchMeta(supabase) {
  * @param {Array<{ id: number, name?: string, phone?: string }>} targets
  * @param {string} [channel]
  * @param {(progress: { current: number, total: number }) => void} [onProgress]
+ * @param {string} [waTemplateName] Meta template when channel=meta_template
  */
-export async function sendSpaUpsellBatch(supabase, targets, channel = SPA_UPSELL_CHANNEL_WHAPI, onProgress) {
+export async function sendSpaUpsellBatch(
+  supabase,
+  targets,
+  channel = SPA_UPSELL_CHANNEL_WHAPI,
+  onProgress,
+  waTemplateName,
+) {
   const results = [];
   const ch = channel || SPA_UPSELL_CHANNEL_WHAPI;
+  const metaTemplate = ch === SPA_UPSELL_CHANNEL_META
+    && isAllowedSpaUpsellMetaTemplate(waTemplateName)
+    ? String(waTemplateName).trim()
+    : (ch === SPA_UPSELL_CHANNEL_META ? SPA_UPSELL_META_TEMPLATE_DEFAULT : null);
+
   for (let i = 0; i < targets.length; i++) {
     const guest = targets[i];
     onProgress?.({ current: i + 1, total: targets.length });
     try {
-      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: {
-          trigger: "spa_upsell_daypass",
-          guestId: guest.id,
-          force: true,
-          force_channel: ch,
-        },
-      });
+      const body = {
+        trigger: "spa_upsell_daypass",
+        guestId: guest.id,
+        force: true,
+        force_channel: ch,
+      };
+      if (metaTemplate) body.waTemplateName = metaTemplate;
+
+      const { data, error } = await supabase.functions.invoke("whatsapp-send", { body });
       if (error) results.push({ guest, result: "error", error: error.message });
       else if (data?.skipped) results.push({ guest, result: "skipped", reason: data.reason });
       else if (data?.ok) results.push({ guest, result: "sent" });

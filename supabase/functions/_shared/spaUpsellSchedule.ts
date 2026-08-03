@@ -15,7 +15,7 @@ export async function dispatchDueSpaUpsellScheduledTasks(
 ): Promise<number> {
   const { data: dueRows, error } = await supabase
     .from("scheduled_tasks")
-    .select("guest_id, scheduled_for, force_channel")
+    .select("guest_id, scheduled_for, force_channel, wa_template_name")
     .eq("stage_key", STAGE_KEY)
     .eq("status", "pending")
     .eq("staff_scheduled", true)
@@ -45,6 +45,9 @@ export async function dispatchDueSpaUpsellScheduledTasks(
           trigger: STAGE_KEY,
           force: true,
           force_channel: (row.force_channel as string) || "whapi_session",
+          ...(row.wa_template_name
+            ? { waTemplateName: row.wa_template_name as string }
+            : {}),
         }),
       });
       const body = await res.json().catch(() => ({}));

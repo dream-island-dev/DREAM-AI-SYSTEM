@@ -3,9 +3,17 @@ import { GENERIC_DAY_PASS_ROOM, PREMIUM_DAY_ROOMS } from "../data/suiteRegistry"
 /** Outbound channel pins for spa upsell manual dispatch (whatsapp-send force_channel). */
 export const SPA_UPSELL_CHANNEL_WHAPI = "whapi_session";
 export const SPA_UPSELL_CHANNEL_META = "meta_template";
+/** Legacy Meta template name — kept for automation_stages / logs. */
 export const SPA_UPSELL_META_TEMPLATE = "spa_upsell_daypass";
+/** Approved Meta templates staff can pick for manual day-pass spa upsell. */
+export const SPA_UPSELL_META_TEMPLATE_NAMES = [
+  "spa_upsell_daypass1",
+  "spa_upsell_daypass",
+];
+/** Default manual Meta template (new copy with «אשמח לתאם» button). */
+export const SPA_UPSELL_META_TEMPLATE_DEFAULT = "spa_upsell_daypass1";
 
-/** Live Meta body for spa_upsell_daypass — {{1}} = guest name. */
+/** Live Meta body snapshot — {{1}} = guest name (fallback when API unavailable). */
 export const SPA_UPSELL_META_BODY_TEMPLATE =
   "היי {{1}}💆\nלקראת הגעתכם לריזורט, נשמח להציע לכם טיפול ספא מרגיע של 45 דק׳ להזמנה שלכם במחיר מיוחד. עבורכם -300 ₪ לאדם בלבד (מחיר מלא 370 ₪).\nהשיבו לנו כאן וניצור עימכם קשר לצורך תיאום 🙏";
 
@@ -13,8 +21,7 @@ export const SPA_UPSELL_CHANNEL_OPTIONS = [
   {
     id: SPA_UPSELL_CHANNEL_META,
     label: "🔵 Dream Bot (Meta)",
-    hint: "תבנית spa_upsell_daypass — {{1}} שם (ברירת מחדל לבילוי יומי)",
-    templateName: SPA_UPSELL_META_TEMPLATE,
+    hint: "בחירת תבנית מאושרת — spa_upsell_daypass1 / spa_upsell_daypass",
   },
   {
     id: SPA_UPSELL_CHANNEL_WHAPI,
@@ -24,9 +31,28 @@ export const SPA_UPSELL_CHANNEL_OPTIONS = [
 ];
 
 /** Resolve live Meta body from get-wa-templates row; falls back to snapshot. */
-export function resolveSpaUpsellMetaBodyText(metaTemplateRow) {
+export function resolveSpaUpsellMetaBodyText(metaTemplateRow, templateName = SPA_UPSELL_META_TEMPLATE_DEFAULT) {
   const live = String(metaTemplateRow?.bodyText ?? "").trim();
-  return live || SPA_UPSELL_META_BODY_TEMPLATE;
+  if (live) return live;
+  if (templateName === SPA_UPSELL_META_TEMPLATE) return SPA_UPSELL_META_BODY_TEMPLATE;
+  return SPA_UPSELL_META_BODY_TEMPLATE;
+}
+
+/** Build catalog rows for SpaUpsellConfirmModal from get-wa-templates list. */
+export function buildSpaUpsellMetaTemplateCatalog(templates = []) {
+  return SPA_UPSELL_META_TEMPLATE_NAMES.map((name) => {
+    const row = templates.find((t) => t.name === name);
+    return {
+      name,
+      status: row?.status ?? null,
+      bodyText: resolveSpaUpsellMetaBodyText(row, name),
+    };
+  });
+}
+
+export function isAllowedSpaUpsellMetaTemplate(name) {
+  const key = String(name ?? "").trim();
+  return SPA_UPSELL_META_TEMPLATE_NAMES.includes(key);
 }
 
 export function previewSpaUpsellMetaTemplate(guestName, metaBodyText) {

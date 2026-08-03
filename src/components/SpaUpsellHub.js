@@ -5,11 +5,13 @@ import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
 import {
   fetchSpaUpsellAudience,
   israelTodayYmd,
-  resolveSpaUpsellMetaBodyText,
   SPA_UPSELL_CHANNEL_WHAPI,
-  SPA_UPSELL_META_TEMPLATE,
   spaUpsellChannelLabel,
 } from "../utils/spaUpsellAudience";
+import {
+  fetchSpaUpsellDispatchMeta,
+  sendSpaUpsellBatch,
+} from "../utils/spaUpsellDispatch";
 import {
   buildInboxDeepLink,
   buildSpaBoardDeepLink,
@@ -54,8 +56,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
   const [progress, setProgress] = useState(null);
   const [summary, setSummary] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
-  const [metaTemplateStatus, setMetaTemplateStatus] = useState(null);
-  const [metaTemplateBodyText, setMetaTemplateBodyText] = useState("");
+  const [metaTemplateCatalog, setMetaTemplateCatalog] = useState([]);
   const [sentCount, setSentCount] = useState(0);
   const [pendingSchedules, setPendingSchedules] = useState([]);
   const [nameSavingId, setNameSavingId] = useState(null);
@@ -81,14 +82,9 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
     setLoadError(null);
     setSummary(null);
     try {
-      const [{ guests, error }, scriptRes, tmplRes, sentN, pendingRes] = await Promise.all([
+      const [{ guests, error }, dispatchMeta, sentN, pendingRes] = await Promise.all([
         fetchSpaUpsellAudience(supabase, { arrivalDate }),
-        supabase
-          .from("bot_scripts")
-          .select("message_text")
-          .eq("script_key", "spa_upsell_daypass")
-          .maybeSingle(),
-        supabase.functions.invoke("get-wa-templates", { body: { all: true } }),
+        fetchSpaUpsellDispatchMeta(supabase),
         fetchSpaUpsellSentCount(supabase, arrivalDate),
         fetchSpaUpsellPendingSchedules(supabase, arrivalDate),
       ]);
@@ -103,11 +99,8 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
       available.forEach((g) => nameMap.set(g.id, g.name || ""));
       (pendingRes.schedules ?? []).forEach((s) => nameMap.set(s.guestId, s.name || ""));
       originalNamesRef.current = nameMap;
-      setScriptText(scriptRes.data?.message_text ?? "");
-      const templates = tmplRes.data?.templates ?? [];
-      const spaPkg = templates.find((t) => t.name === SPA_UPSELL_META_TEMPLATE);
-      setMetaTemplateStatus(spaPkg?.status ?? null);
-      setMetaTemplateBodyText(resolveSpaUpsellMetaBodyText(spaPkg));
+      setScriptText(dispatchMeta.scriptText);
+      setMetaTemplateCatalog(dispatchMeta.metaTemplateCatalog ?? []);
       setSentCount(sentN);
     } catch (e) {
       const msg = e?.message ?? String(e);
@@ -235,7 +228,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
     tick();
   }, [targets, toast, loadLeads]);
 
-  const handleSendNow = async (forceChannel) => {
+  const handleSendNow = async (forceChannel, metaTemplateName) => {
     if (!supabase || targets.length === 0) return;
     const channel = forceChannel || SPA_UPSELL_CHANNEL_WHAPI;
 
@@ -270,48 +263,37 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
 
     setSending(true);
     setSummary(null);
-    const results = [];
-    for (let i = 0; i < targets.length; i++) {
-      const guest = targets[i];
-      setProgress({ current: i + 1, total: targets.length });
-      try {
-        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: {
-            trigger: "spa_upsell_daypass",
-            guestId: guest.id,
-            force: true,
-            force_channel: channel,
-          },
-        });
-        if (error) results.push({ guest, result: "error", error: error.message });
-        else if (data?.skipped) results.push({ guest, result: "skipped", reason: data.reason });
-        else if (data?.ok) results.push({ guest, result: "sent" });
-        else results.push({ guest, result: "failed", error: data?.error ?? "unknown" });
-      } catch (e) {
-        results.push({ guest, result: "error", error: e?.message ?? String(e) });
+    setProgress({ current: 0, total: targets.length });
+    try {
+      const results = await sendSpaUpsellBatch(
+        supabase,
+        targets,
+        channel,
+        setProgress,
+        metaTemplateName,
+      );
+      const sentIds = new Set(results.filter((r) => r.result === "sent").map((r) => r.guest.id));
+      setCandidates((prev) => prev.filter((g) => !sentIds.has(g.id)));
+      setSelected(new Set());
+      setModalOpen(false);
+      const sent = results.filter((r) => r.result === "sent").length;
+      setSummary({
+        total: results.length,
+        sent,
+        skipped: results.filter((r) => r.result === "skipped").length,
+        failed: results.filter((r) => r.result === "failed" || r.result === "error").length,
+      });
+      if (sent > 0) {
+        toast("ok", `💆 נשלחו ${sent} הצעות ספא (Dream Bot)`);
+        setSentCount((c) => c + sent);
       }
-      if (i < targets.length - 1) {
-        await new Promise((r) => setTimeout(r, 2500));
-      }
+      await loadLeads();
+    } catch (e) {
+      toast("err", e?.message ?? "שגיאה בשליחה");
+    } finally {
+      setSending(false);
+      setProgress(null);
     }
-    const sentIds = new Set(results.filter((r) => r.result === "sent").map((r) => r.guest.id));
-    setCandidates((prev) => prev.filter((g) => !sentIds.has(g.id)));
-    setSelected(new Set());
-    setSending(false);
-    setProgress(null);
-    setModalOpen(false);
-    const sent = results.filter((r) => r.result === "sent").length;
-    setSummary({
-      total: results.length,
-      sent,
-      skipped: results.filter((r) => r.result === "skipped").length,
-      failed: results.filter((r) => r.result === "failed" || r.result === "error").length,
-    });
-    if (sent > 0) {
-      toast("ok", `💆 נשלחו ${sent} הצעות ספא (Dream Bot)`);
-      setSentCount((c) => c + sent);
-    }
-    await loadLeads();
   };
 
   const handleSchedule = async (payload) => {
@@ -708,7 +690,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
                   cursor: sending || selected.size === 0 ? "not-allowed" : "pointer",
                 }}
               >
-                {sending ? "⏳ מבצע..." : `💆 שלח / תזמן ל-${selected.size} אורחים`}
+                {sending ? "⏳ מבצע..." : `💆 בחר תבנית ושלח ל-${selected.size} אורחים`}
               </button>
             </>
           )}
@@ -863,8 +845,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
           scriptText={scriptText}
           pulseSeconds={2.5}
           sending={sending}
-          metaTemplateStatus={metaTemplateStatus}
-          metaTemplateBodyText={metaTemplateBodyText}
+          metaTemplateCatalog={metaTemplateCatalog}
           onClose={() => { if (!sending) setModalOpen(false); }}
           onSendNow={handleSendNow}
           onSchedule={handleSchedule}
