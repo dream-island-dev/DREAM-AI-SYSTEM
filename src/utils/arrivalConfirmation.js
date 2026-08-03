@@ -22,8 +22,9 @@ function isArrivalDeclineMessage(raw) {
   const t = normalizeInboundConfirmText(raw);
   if (!t) return false;
   if (t.includes("שינוי בתאריך")) return true;
+  if (/לא\s*מגיעים|לא\s*נוכל\s*להגיע|לא\s*יכול(ים|ה)?\s*להגיע/i.test(t)) return true;
   const heb = hebrewOnlyLetters(t);
-  if (heb.startsWith("לא") && !heb.includes("כן")) return true;
+  if (heb === "לא") return true;
   return false;
 }
 

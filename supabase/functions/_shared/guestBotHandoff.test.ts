@@ -1,44 +1,37 @@
-// supabase/functions/_shared/guestBotHandoff.test.ts
-import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+// deno test --no-check supabase/functions/_shared/guestBotHandoff.test.ts
+
+import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import {
-  GUEST_CALLBACK_ACK_SENTENCE,
+  buildArrivalDeclineHandoffReply,
+  buildStayChangeHandoffReply,
   GUEST_STAFF_HANDOFF_SENTENCE,
-  buildGuestHumanRequestReply,
-  detectGuestHumanRequest,
-  isGuestStaffHandoffReply,
+  NEUTRAL_STAFF_HANDOFF_REPLY_HE,
+  SUITE_ARRIVAL_DECLINE_REPLY_HE,
+  SUITE_STAY_CHANGE_HANDOFF_MSG,
 } from "./guestBotHandoff.ts";
 
-Deno.test("detectGuestHumanRequest — אשמח שתחזרו אלי שנקבע → call", () => {
-  const r = detectGuestHumanRequest("אשמח שתחזרו אלי שנקבע");
-  assertEquals(r, { requested: true, type: "call" });
+Deno.test("buildArrivalDeclineHandoffReply: suite gets suites team + dates ask", () => {
+  const msg = buildArrivalDeclineHandoffReply({ room: "אמטיסט 8", room_type: "suite" });
+  assertEquals(msg, SUITE_ARRIVAL_DECLINE_REPLY_HE);
+  assertEquals(msg.includes("סוויטות"), true);
 });
 
-Deno.test("detectGuestHumanRequest — תחזירו אלי / שיחזרו אלי / צרו איתי קשר → call", () => {
-  assertEquals(detectGuestHumanRequest("תחזירו אלי בבקשה").type, "call");
-  assertEquals(detectGuestHumanRequest("שיחזרו אלי מחר").type, "call");
-  assertEquals(detectGuestHumanRequest("אפשר שתצרו איתי קשר?").type, "call");
-  assertEquals(detectGuestHumanRequest("תיצרו איתי קשר לתאם").type, "call");
-  assertEquals(detectGuestHumanRequest("תתקשרו אלי בבקשה").type, "call");
+Deno.test("buildArrivalDeclineHandoffReply: day-pass never mentions suites", () => {
+  const msg = buildArrivalDeclineHandoffReply({ room: "Premium Day 1", room_type: "day_guest" });
+  assertEquals(msg, NEUTRAL_STAFF_HANDOFF_REPLY_HE);
+  assertEquals(msg.includes("סוויטות"), false);
 });
 
-Deno.test("detectGuestHumanRequest — רוצה לדבר עם נציג → chat", () => {
-  const r = detectGuestHumanRequest("רוצה לדבר עם נציג");
-  assertEquals(r, { requested: true, type: "chat" });
+Deno.test("buildStayChangeHandoffReply: day-pass neutral", () => {
+  const msg = buildStayChangeHandoffReply({ room: "בילוי יומי", room_type: "day_guest" });
+  assertEquals(msg, NEUTRAL_STAFF_HANDOFF_REPLY_HE);
 });
 
-Deno.test("detectGuestHumanRequest — FAQ pool hours → not requested", () => {
-  const r = detectGuestHumanRequest("מה שעות הבריכה?");
-  assertEquals(r, { requested: false, type: null });
+Deno.test("buildStayChangeHandoffReply: suite stay-change copy", () => {
+  const msg = buildStayChangeHandoffReply({ room: "ג׳ספר 3", room_type: "suite" });
+  assertEquals(msg, SUITE_STAY_CHANGE_HANDOFF_MSG);
 });
 
-Deno.test("buildGuestHumanRequestReply — call vs chat", () => {
-  assertEquals(buildGuestHumanRequestReply("call"), GUEST_CALLBACK_ACK_SENTENCE);
-  assertEquals(buildGuestHumanRequestReply("chat"), GUEST_STAFF_HANDOFF_SENTENCE);
-  assertEquals(buildGuestHumanRequestReply(null), GUEST_STAFF_HANDOFF_SENTENCE);
-});
-
-Deno.test("isGuestStaffHandoffReply — includes callback ack sentence", () => {
-  assertEquals(isGuestStaffHandoffReply(GUEST_CALLBACK_ACK_SENTENCE), true);
-  assertEquals(isGuestStaffHandoffReply(GUEST_STAFF_HANDOFF_SENTENCE), true);
-  assertEquals(isGuestStaffHandoffReply("שעות הבריכה עד 20:00"), false);
+Deno.test("buildStayChangeHandoffReply: unknown guest → generic handoff", () => {
+  assertEquals(buildStayChangeHandoffReply(null), GUEST_STAFF_HANDOFF_SENTENCE);
 });

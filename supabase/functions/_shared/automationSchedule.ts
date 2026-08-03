@@ -866,6 +866,7 @@ export function resolveStageSchedule(
       }
       if (
         SPA_DAYPASS_CATCHUP_STAGE_KEYS.has(stage.stage_key)
+        && scheduledFor
         && scheduledFor.getTime() < now.getTime() - SPA_DAYPASS_CATCHUP_GRACE_MS
       ) {
         return { scheduledFor, dueNow: false, skipReason: "missed_window" };
@@ -1383,7 +1384,8 @@ export function isSensitiveStayChangeRequest(text: string): boolean {
   return SENSITIVE_STAY_CHANGE_PATTERN.test(t);
 }
 
-/** Canonical staff handoff — MUST NOT vary; no enthusiastic approval language. */
+/** Canonical staff handoff — MUST NOT vary; no enthusiastic approval language.
+ *  Suite cohort default; use buildStayChangeHandoffReply(guest) at call sites. */
 export const CANONICAL_STAY_CHANGE_HANDOFF_MSG =
   "העברתי את בקשתך לצוות הסוויטות שלנו, והם יצרו איתך קשר בהקדם. 🙏";
 
@@ -1842,6 +1844,16 @@ export const EMOJI_ONLY_PATTERN =
 export const COURTESY_ONLY_PATTERN =
   /^(?:תודה(?:\s*רבה)?|תודה\s*לך|הבנתי|הבנת|סגור|סבבה|בסדר(?:\s*גמור)?|אוקיי?|יא?ל+ה|מעולה|נהדר|great|awesome|perfect|cool|thanks?(?:\s*a\s*lot)?|thank\s*you|thx|ty|ok(?:ay)?|got\s*it|understood|sounds?\s*good)[\s!.,?~*'"‍️]*[\p{Extended_Pictographic}☀-➿]*[\s!.,?~*'"]*$/iu;
 
+/** Polite conversation closers — must never route to Stage 1 decline or date_change. */
+export const POLITE_DECLINE_PATTERN =
+  /^(?:לא\s*תודה(?:\s*רבה)?|לא\s*צריך|לא\s*כרגע|אין\s*צורך|לא\s*מעניין|בסדר\s*תודה|הכל\s*בסדר\s*תודה)[\s!.,?~*'"‍️]*[\p{Extended_Pictographic}☀-➿]*[\s!.,?~*'"]*$/iu;
+
+export function isPoliteConversationClose(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return POLITE_DECLINE_PATTERN.test(t);
+}
+
 /** Conversation openers — must NEVER hit courtesy silent-exit (guest expects a hello back). */
 const GREETING_TOKEN =
   "(?:היי+|הי|שלום|hey|hi|hello|good\\s*(?:morning|evening|afternoon))";
@@ -1861,6 +1873,7 @@ export function isLowValueCourtesyMessage(text: string): boolean {
   if (!t) return false;
   if (isGuestGreetingMessage(t)) return false;
   if (EMOJI_ONLY_PATTERN.test(t)) return true;
+  if (isPoliteConversationClose(t)) return true;
   return COURTESY_ONLY_PATTERN.test(t);
 }
 

@@ -13,6 +13,7 @@
 // resolution) lives once, here.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { buildArrivalDeclineHandoffReply } from "./guestBotHandoff.ts";
 import {
   checkPipelineDuplicate,
   logDuplicateBlocked,
@@ -185,7 +186,7 @@ export async function patchClaimedInbound(
   if (error) console.warn("[guestInboundOrchestrator] patchClaimedInbound failed:", error.message);
 }
 
-/** Same copy as Meta date-change button / typed DATE_CHANGE_RE path. */
+/** @deprecated Use buildArrivalDeclineHandoffReply(guest) — suite-only legacy constant. */
 export const STAGE1_ARRIVAL_DECLINE_REPLY_HE =
   "העברתי את בקשתך לצוות הסוויטות שלנו, בנתיים תכתוב לי באיזה תאריכים תרצו ואנחנו נבדוק זמינות עבורכם וניצור קשר בהקדם. 🙏";
 
@@ -206,6 +207,7 @@ export async function handleGuestArrivalDeclineHandoff(
   opts: {
     phone: string;
     guestId: number | null;
+    guest?: Record<string, unknown> | null;
     text: string;
     msgId: string;
     claimedConversationId: number | null;
@@ -214,7 +216,8 @@ export async function handleGuestArrivalDeclineHandoff(
   },
   adapter: ArrivalDeclineHandoffAdapter,
 ): Promise<void> {
-  const { phone, guestId, text, msgId, claimedConversationId, sim, source } = opts;
+  const { phone, guestId, guest, text, msgId, claimedConversationId, sim, source } = opts;
+  const handoffReply = buildArrivalDeclineHandoffReply(guest);
 
   await patchClaimedInbound(supabaseClient, claimedConversationId, msgId, {
     guest_id: guestId,
@@ -258,11 +261,11 @@ export async function handleGuestArrivalDeclineHandoff(
 
   if (!sim) {
     try {
-      await adapter.sendReply(STAGE1_ARRIVAL_DECLINE_REPLY_HE);
+      await adapter.sendReply(handoffReply);
       await adapter.insertOutbound({
         phone,
         guest_id: guestId,
-        message: STAGE1_ARRIVAL_DECLINE_REPLY_HE,
+        message: handoffReply,
         wa_message_id: null,
         intent: "date_change_request",
       });

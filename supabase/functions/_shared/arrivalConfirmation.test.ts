@@ -11,6 +11,7 @@
 import { assertEquals, assertStringIncludes } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import {
   isArrivalConfirmationMessage,
+  isArrivalDeclineMessage,
   ensureArrivalConfirmationCta,
   ARRIVAL_CONFIRM_CTA_HE,
 } from "./arrivalConfirmation.ts";
@@ -59,4 +60,15 @@ Deno.test("regression: explicit date-change decline never confirms", () => {
 
 Deno.test("regression: bare 'לא' decline never confirms", () => {
   assertEquals(isArrivalConfirmationMessage("לא"), false);
+});
+
+Deno.test("isArrivalDeclineMessage: polite close is NOT decline", () => {
+  assertEquals(isArrivalDeclineMessage("לא תודה"), false);
+  assertEquals(isArrivalDeclineMessage("לא צריך"), false);
+});
+
+Deno.test("isArrivalDeclineMessage: explicit cancel phrases match", () => {
+  assertEquals(isArrivalDeclineMessage("לא, שינוי בתאריך 🗓️"), true);
+  assertEquals(isArrivalDeclineMessage("לא מגיעים"), true);
+  assertEquals(isArrivalDeclineMessage("לא"), true);
 });

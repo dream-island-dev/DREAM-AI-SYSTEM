@@ -6,6 +6,10 @@ import {
   sanitizeE164,
 } from "./ezgoDoc1Parser.ts";
 import {
+  duplicateCoordNameKeys,
+  resolveDoc2GuestIdentity,
+} from "./ezgoDoc2RemarkIdentity.ts";
+import {
   isPremiumDayRoom,
   resolveSuiteRoomFromEzgoLabel,
 } from "./suiteNames.ts";
@@ -123,7 +127,20 @@ export function parseHtmlArrivalsReport(htmlText: string): Doc2Record[] {
   if (!arrivalDate) arrivalDate = parseSlashDate(htmlText);
 
   let currentSection: Doc2Section = "arrival";
-  const records: Doc2Record[] = [];
+  type PendingRow = {
+    section: Doc2Section;
+    order_number: string;
+    room_raw: string | null;
+    board_basis: string | null;
+    arrival_time: string | null;
+    nights: number | null;
+    guest_count: string | null;
+    coordName: string | null;
+    coordPhone: string | null;
+    amount: string | null;
+    notes: string | null;
+  };
+  const pending: PendingRow[] = [];
 
   const trMatches = [...htmlText.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
   for (const tr of trMatches) {
@@ -156,30 +173,56 @@ export function parseHtmlArrivalsReport(htmlText: string): Doc2Record[] {
     const amount = cells[orderIdx + 7] || null;
     const notes = cells[orderIdx + 8] || null;
 
-    const { guest_name, phone } = parseClientCell(clientRaw);
-    const room = resolveSuiteRoomFromEzgoLabel(room_raw);
+    const { guest_name: coordName, phone: coordPhone } = parseClientCell(clientRaw);
+    pending.push({
+      section: currentSection,
+      order_number,
+      room_raw,
+      board_basis,
+      arrival_time: arrival_time && arrival_time !== ".." ? arrival_time : null,
+      nights,
+      guest_count,
+      coordName,
+      coordPhone,
+      amount: amount || null,
+      notes: notes || null,
+    });
+  }
+
+  const duplicateCoords = duplicateCoordNameKeys(pending.map((row) => row.coordName));
+  const records: Doc2Record[] = [];
+
+  for (const row of pending) {
+    const coordNameDuplicated = !!row.coordName && duplicateCoords.has(row.coordName);
+    const { guest_name, phone } = resolveDoc2GuestIdentity(
+      row.coordName,
+      row.coordPhone,
+      row.notes,
+      coordNameDuplicated,
+    );
+    const room = resolveSuiteRoomFromEzgoLabel(row.room_raw);
     const is_premium_day = isPremiumDayRoom(room);
     const is_day_guest = room === "בילוי יומי" || is_premium_day;
-    const meal_location = boardBasisToMealLocation(board_basis || "");
-    const departure_date = arrivalDate && nights != null
-      ? addDaysYmd(arrivalDate, nights)
+    const meal_location = boardBasisToMealLocation(row.board_basis || "");
+    const departure_date = arrivalDate && row.nights != null
+      ? addDaysYmd(arrivalDate, row.nights)
       : arrivalDate;
 
     records.push({
       _report: "doc2",
-      section: currentSection,
-      order_number,
-      room_raw,
+      section: row.section,
+      order_number: row.order_number,
+      room_raw: row.room_raw,
       room: room || null,
-      board_basis: board_basis || null,
+      board_basis: row.board_basis || null,
       meal_location,
-      arrival_time: arrival_time && arrival_time !== ".." ? arrival_time : null,
-      nights,
-      guest_count,
+      arrival_time: row.arrival_time,
+      nights: row.nights,
+      guest_count: row.guest_count,
       guest_name,
       phone,
-      amount: amount || null,
-      notes: notes || null,
+      amount: row.amount,
+      notes: row.notes,
       arrival_date: arrivalDate,
       departure_date,
       is_day_guest,

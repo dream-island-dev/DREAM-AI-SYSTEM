@@ -10,11 +10,14 @@
 //   trigger: string,
 //   source: string,
 // }
+// OR pipeline guests (ACC bulk Whapi):
+// POST { guest_ids: number[], trigger: string, source?: string }
 // -> { ok: true, batchId, queued, etaMinutes } | { ok: false, error }
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { enqueueWhapiBulkJob } from "../_shared/whapiOutboundQueue.ts";
+import { enqueuePipelineGuestWhapiBulk } from "../_shared/pipelineWhapiGuestBulk.ts";
 import { normalizeOritGuestPhoneDigits } from "../_shared/oritGuestOutbound.ts";
 
 const CORS = {
@@ -31,11 +34,31 @@ serve(async (req: Request) => {
       message_template?: string;
       trigger?: string;
       source?: string;
+      guest_ids?: number[];
     };
 
-    const messageTemplate = String(body.message_template ?? "").trim();
     const trigger = String(body.trigger ?? "").trim() || "manual_bulk";
     const source = String(body.source ?? "").trim() || "whapi-bulk-dispatch";
+
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
+
+    const guestIds = (body.guest_ids ?? []).map((id) => Number(id)).filter((id) => id > 0);
+    if (guestIds.length > 0) {
+      const result = await enqueuePipelineGuestWhapiBulk(supabase, {
+        guestIds,
+        trigger,
+        source,
+      });
+      return new Response(
+        JSON.stringify({ ok: true, ...result }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
+    const messageTemplate = String(body.message_template ?? "").trim();
 
     if (!messageTemplate) {
       return new Response(
@@ -54,11 +77,6 @@ serve(async (req: Request) => {
         { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
       );
     }
-
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-    );
 
     const result = await enqueueWhapiBulkJob(supabase, {
       recipients, messageTemplate, trigger, source,

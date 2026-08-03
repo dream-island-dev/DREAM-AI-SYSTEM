@@ -27,13 +27,21 @@ export function hebrewOnlyLetters(s: string): string {
 const CONFIRMATION_RE =
   /^[\s🎉✨😊🙂🙏💫🌴]*(?:כן[,!\s.]*)?(?:מגיעים|אנחנו מגיעים|כן מגיעים|כן,מגיעים|כן! מגיעים|כן|אישור|yes|מאשר|מאשרת|כן תודה|כן אישור|אישורי)[\s🎉✨😊🙂🙏💫🌴!.,✨]*$/iu;
 
-/** Explicit negatives — template «לא, שינוי בתאריך» must never confirm. */
+const EXPLICIT_ARRIVAL_CANCEL_RE =
+  /לא\s*מגיעים|לא\s*נוכל\s*להגיע|לא\s*יכול(ים|ה)?\s*להגיע/i;
+
+/**
+ * Tier-0 Stage 1 decline phrases only — NOT polite closers like «לא תודה».
+ * Callers must gate on isGuestAwaitingArrivalConfirmationReply except Meta
+ * date-change buttons (handled in resolveArrivalConfirmationIntent).
+ */
 export function isArrivalDeclineMessage(raw: string): boolean {
   const t = normalizeInboundConfirmText(raw);
   if (!t) return false;
   if (t.includes("שינוי בתאריך")) return true;
+  if (EXPLICIT_ARRIVAL_CANCEL_RE.test(t)) return true;
   const heb = hebrewOnlyLetters(t);
-  if (heb.startsWith("לא") && !heb.includes("כן")) return true;
+  if (heb === "לא") return true;
   return false;
 }
 

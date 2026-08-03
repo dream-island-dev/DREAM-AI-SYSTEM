@@ -13,7 +13,13 @@ type SupabaseClient = any;
 import { loadWhapiVelocityLimits } from "./whapiVelocityGuard.ts";
 import { hasWhapiNamePlaceholder } from "./whapiMessagePersonalize.ts";
 
-export type WhapiBulkRecipient = { phone: string; name?: string | null };
+export type WhapiBulkRecipient = {
+  phone: string;
+  name?: string | null;
+  /** Fully resolved per-guest body — bypasses shared messageTemplate + {{שם}} check. */
+  messageTemplate?: string;
+  guestId?: number;
+};
 
 export type WhapiOutboundJobRow = {
   id: string;
@@ -54,7 +60,8 @@ export async function enqueueWhapiBulkJob(
       `whapi_bulk_too_large: ${recipients.length} נמענים חורג מהתקרה (${limits.bulk_max_recipients_per_job}) — פצל לכמה שליחות.`,
     );
   }
-  if (recipients.length >= 3 && !hasWhapiNamePlaceholder(params.messageTemplate)) {
+  const allPreResolved = recipients.every((r) => String(r.messageTemplate ?? "").trim());
+  if (recipients.length >= 3 && !allPreResolved && !hasWhapiNamePlaceholder(params.messageTemplate)) {
     throw new Error(
       "whapi_bulk_requires_name_placeholder: תפוצה ל-3 נמענים ומעלה חייבת לכלול {{שם}} בטקסט ההודעה.",
     );
@@ -72,7 +79,7 @@ export async function enqueueWhapiBulkJob(
       batch_id: batchId,
       phone: r.phone,
       name: r.name?.trim() || null,
-      message_template: params.messageTemplate,
+      message_template: String(r.messageTemplate ?? "").trim() || params.messageTemplate,
       trigger: params.trigger,
       source: params.source,
       scheduled_after: new Date(nowMs + cumulativeOffsetMs).toISOString(),

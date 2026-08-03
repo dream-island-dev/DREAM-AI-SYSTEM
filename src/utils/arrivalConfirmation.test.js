@@ -25,5 +25,6 @@ describe("arrivalConfirmation", () => {
   test("rejects unrelated courtesy replies", () => {
     expect(isArrivalConfirmationMessage("תודה")).toBe(false);
     expect(isArrivalConfirmationMessage("בסדר")).toBe(false);
+    expect(isArrivalConfirmationMessage("לא תודה")).toBe(false);
   });
 });

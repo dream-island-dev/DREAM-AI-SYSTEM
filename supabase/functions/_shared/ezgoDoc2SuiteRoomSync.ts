@@ -4,6 +4,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { Doc2Record } from "./ezgoDoc2Parser.ts";
 import { roomsCanonicallyMatch, resolveSuiteRoomFromEzgoLabel } from "./suiteNames.ts";
 import type { Doc2GuestRow } from "./ezgoDoc2MailLineWorkflow.ts";
+import { doc2RecordMatchesGuest } from "./ezgoDoc2RecordMatch.ts";
 
 const DOC2_MAIL_LINE_PREFIX = "doc2mail-";
 
@@ -118,7 +119,10 @@ export async function findGuestForDoc2SuiteCreate(
       .eq("arrival_date", arrival)
       .neq("status", "cancelled")
       .limit(3);
-    if (data?.length === 1) return data[0] as Doc2GuestRow;
+    if (data?.length === 1) {
+      const only = data[0] as Doc2GuestRow;
+      if (doc2RecordMatchesGuest(rec, only)) return only;
+    }
     if (data && data.length > 1 && rec.phone) {
       const hit = data.find((g) => g.phone === rec.phone);
       if (hit) return hit as Doc2GuestRow;

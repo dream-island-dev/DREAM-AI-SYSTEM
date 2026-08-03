@@ -21,6 +21,7 @@ import {
 import { loadWhapiVelocityLimits, sendWhapiTextGuarded, WhapiRateLimitedError } from "../_shared/whapiVelocityGuard.ts";
 import { personalizeWhapiBody } from "../_shared/whapiMessagePersonalize.ts";
 import { applySpaUpsellWhapiSentSideEffects } from "../_shared/spaUpsellWhapiSideEffects.ts";
+import { applyPipelineWhapiQueueSideEffects } from "../_shared/pipelineWhapiQueueSideEffects.ts";
 import { cleanPhoneForMention } from "../_shared/whapiSend.ts";
 
 const CORS = {
@@ -70,6 +71,16 @@ serve(async (req: Request) => {
             wamid,
           }).catch((e: Error) =>
             console.warn("[whapi-queue-drain] spa upsell side effects failed:", e.message),
+          );
+        } else {
+          await applyPipelineWhapiQueueSideEffects(supabase, {
+            phone: job.phone,
+            trigger: job.trigger,
+            source: job.source,
+            wamid,
+            body,
+          }).catch((e: Error) =>
+            console.warn("[whapi-queue-drain] pipeline side effects failed:", e.message),
           );
         }
         sent++;

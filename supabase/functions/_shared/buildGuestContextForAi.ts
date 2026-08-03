@@ -1,6 +1,10 @@
 // supabase/functions/_shared/buildGuestContextForAi.ts
 // Single guest-awareness context line for Meta + Whapi LLM prompts.
 
+import {
+  isEffectiveDayPassGuest,
+  isEffectiveSuiteGuest,
+} from "./suiteNames.ts";
 import { formatGuestProfileForAi } from "./guestProfile.ts";
 import { formatSpaScheduleDisplay } from "./spaSchedule.ts";
 import { formatDoc1SpaSlotsForAi } from "./doc1SpaSlots.ts";
@@ -43,7 +47,6 @@ export function buildGuestContextForAi(
   const arrDate = guest.arrival_date as string | null;
   const depDate = guest.departure_date as string | null;
   const room = guest.room as string | null;
-  const roomType = guest.room_type as string | null;
   const status = guest.status as string | null;
   const name = guest.name as string | null;
   const confirmed = guest.arrival_confirmed as boolean | null;
@@ -76,12 +79,13 @@ export function buildGuestContextForAi(
   if (depDate) parts.push(`תאריך עזיבה: ${depDate}`);
   if (room && isCheckedIn) {
     parts.push(`חדר: ${room}`);
-  } else if (room) {
+  } else if (room && !isEffectiveDayPassGuest(guest)) {
     parts.push(
       "חדר: ייחשף בצ'ק-אין — לפני אז אסור לחשוף/להמציא שם חדר ספציפי, רק לציין שזו סוויטת יוקרה",
     );
   }
-  if (roomType === "suite") parts.push("סוג: סוויטה");
+  if (isEffectiveSuiteGuest(guest)) parts.push("סוג: סוויטה");
+  else if (isEffectiveDayPassGuest(guest)) parts.push("סוג: בילוי יומי");
   if (status) parts.push(`סטטוס: ${status}`);
   if (confirmed) parts.push("אישר הגעה: כן");
   const profileSpa = (guest.guest_profile as Record<string, unknown> | null)?.spa as Record<string, unknown> | undefined;

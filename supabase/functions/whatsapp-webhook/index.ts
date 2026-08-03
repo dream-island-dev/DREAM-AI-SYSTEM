@@ -190,6 +190,11 @@ import {
 } from "../_shared/guestBalloonAdminIntercept.ts";
 import { dispatchGuestSpaIntent, shouldInterceptSpaTreatmentRequest } from "../_shared/spaIntentRouting.ts";
 import {
+  buildSpaGroupCampaignReply,
+  parseSpaGroupCampaignToken,
+  runSpaGroupCampaignInbound,
+} from "../_shared/spaGroupCampaign.ts";
+import {
   generateGuestChatReplyWithTools,
   filterToolLoggedRequest,
   looksLikeToolOnlyAck,
@@ -2352,6 +2357,45 @@ Deno.serve(async (req: Request) => {
       // every OTHER message in the same Meta webhook delivery, not just this
       // guest's. Moved earlier so that path is covered too.
       try {
+      // ── Spa group campaign link — auto day-pass profile + spa lead (no prior guest) ──
+      if (!isButtonReply && parseSpaGroupCampaignToken(text)) {
+        const campaignHandled = await runSpaGroupCampaignInbound(supabase, {
+          phone,
+          text,
+          pushName,
+          conversationId: claimedConversationId,
+          sim,
+        }, {
+          patchInbound: async (patch) => patchClaimedInbound(supabase, claimedConversationId, msgId, patch),
+          sendReply: async (replyText, intent, guestIdForLog) => {
+            if (sim) return;
+            await sendReply(phone, replyText, { scripted: true });
+            if (guestIdForLog > 0) {
+              await insertGuestOutboundIfNotMuted(supabase, {
+                phone, guest_id: guestIdForLog, message: replyText, wa_message_id: null, intent,
+              });
+            }
+          },
+          sourceLabel: "WhatsApp Bot (קמפיין קבוצה)",
+          logTag: "webhook",
+        });
+        if (campaignHandled) continue;
+        // Token present but handler returned false — never fall through to LLM handoff.
+        console.warn(`[webhook] spa group campaign partial fail — sending campaign reply phone:${phone}`);
+        try {
+          const fallbackReply = buildSpaGroupCampaignReply(pushName);
+          await sendReply(phone, fallbackReply, { scripted: true });
+          if (guestId) {
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: fallbackReply, wa_message_id: null, intent: "spa_group_campaign",
+            });
+          }
+        } catch (e) {
+          console.error("[webhook] spa group campaign fallback reply error:", (e as Error).message);
+        }
+        continue;
+      }
+
       // ── Stage 2 on «כן מגיעים» — BEFORE auto-checkin / staff-mute / LLM ──
       if (await tryArrivalConfirmationIntercept(supabase, {
         scripts,

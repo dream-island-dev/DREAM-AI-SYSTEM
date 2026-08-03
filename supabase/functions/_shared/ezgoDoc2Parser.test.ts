@@ -36,6 +36,36 @@ Deno.test("parseHtmlArrivalsReport extracts suite row", () => {
   assertEquals(rows[0].departure_date, "2026-07-22");
 });
 
+const GROUP_COORD_HTML = `
+<table><tr><td>כניסה</td><td>03/08/2026</td></tr>
+<tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
+<tr><td></td><td>262984</td><td>סוויטת ג'ספר - 1</td><td>HB</td><td></td><td>2</td><td>1</td><td>בנק לאומי ועד תיכון-ארז זלקטה , 0502005820</td><td>3,680₪</td><td>אורטל בנטורה 050-3302020 - א. ערב 20:00 - בעלה חוגג 40</td></tr>
+<tr><td></td><td>262984</td><td>סוויטת ג'ספר - 2</td><td>HB</td><td></td><td>2</td><td>1</td><td>בנק לאומי ועד תיכון-ארז זלקטה , 0502005820</td><td>2,440₪</td><td>אנגלמן אמיר 054-7902278 - א. ערב 19:30</td></tr>
+</table>`;
+
+Deno.test("parseHtmlArrivalsReport: duplicate coordinator → occupant from הערות", () => {
+  const rows = parseHtmlArrivalsReport(GROUP_COORD_HTML);
+  assertEquals(rows.length, 2);
+  assertEquals(rows[0].guest_name, "אורטל בנטורה");
+  assertEquals(rows[0].phone, "+972503302020");
+  assertEquals(rows[0].order_number, "262984");
+  assertEquals(rows[1].guest_name, "אנגלמן אמיר");
+  assertEquals(rows[1].phone, "+972547902278");
+  assertEquals(rows[1].order_number, "262984");
+});
+
+Deno.test("parseHtmlArrivalsReport: solo row ignores remark occupant", () => {
+  const html = `
+<table><tr><td>כניסה</td><td>03/08/2026</td></tr>
+<tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
+<tr><td></td><td>300310</td><td>סוויטת אמטיסט - 8</td><td>HB</td><td></td><td>1</td><td>2</td><td>שמרית אדרי , 0521234567</td><td>2,550₪</td><td>חוגגים יום הולדת לפנק</td></tr>
+</table>`;
+  const rows = parseHtmlArrivalsReport(html);
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].guest_name, "שמרית אדרי");
+  assertEquals(rows[0].phone, "+972521234567");
+});
+
 Deno.test("fixture EML (דוח כניסות ויציאות 2026-07-25) → doc2_html, >=14 rows, room-less row creates", async () => {
   const { readFileSync } = await import("node:fs");
   const postalMimeMod = await import("https://esm.sh/postal-mime@2.4.3");

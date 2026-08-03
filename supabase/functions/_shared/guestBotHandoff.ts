@@ -2,9 +2,43 @@
 // Canonical staff-handoff copy + detection for Dream Bot (Meta) and Suites
 // Whapi DM — one sentence, one detector, so Inbox red-dot logic never drifts.
 
+import {
+  isEffectiveDayPassGuest,
+  isEffectiveSuiteGuest,
+  type GuestRoomFields,
+} from "./suiteNames.ts";
+
 /** Exact guest-facing sentence when the bot cannot resolve alone. */
 export const GUEST_STAFF_HANDOFF_SENTENCE =
   "אני בודק את זה מול הצוות שלנו ונחזור אליך בהקדם 🙏";
+
+/** Suite Stage 1 cancel / date-change — includes alternate-dates ask. */
+export const SUITE_ARRIVAL_DECLINE_REPLY_HE =
+  "העברתי את בקשתך לצוות הסוויטות שלנו, בנתיים תכתוב לי באיזה תאריכים תרצו ואנחנו נבדוק זמינות עבורכם וניצור קשר בהקדם. 🙏";
+
+/** Suite late checkout / extension — neutral, no date ask. */
+export const SUITE_STAY_CHANGE_HANDOFF_MSG =
+  "העברתי את בקשתך לצוות הסוויטות שלנו, והם יצרו איתך קשר בהקדם. 🙏";
+
+/** Day-pass / unknown cohort — never mention suites team. */
+export const NEUTRAL_STAFF_HANDOFF_REPLY_HE =
+  "העברתי את בקשתך לצוות שלנו, והם יצרו איתך קשר בהקדם. 🙏";
+
+export function buildArrivalDeclineHandoffReply(
+  guest: GuestRoomFields | null | undefined,
+): string {
+  if (isEffectiveDayPassGuest(guest)) return NEUTRAL_STAFF_HANDOFF_REPLY_HE;
+  if (isEffectiveSuiteGuest(guest)) return SUITE_ARRIVAL_DECLINE_REPLY_HE;
+  return GUEST_STAFF_HANDOFF_SENTENCE;
+}
+
+export function buildStayChangeHandoffReply(
+  guest: GuestRoomFields | null | undefined,
+): string {
+  if (isEffectiveDayPassGuest(guest)) return NEUTRAL_STAFF_HANDOFF_REPLY_HE;
+  if (isEffectiveSuiteGuest(guest)) return SUITE_STAY_CHANGE_HANDOFF_MSG;
+  return GUEST_STAFF_HANDOFF_SENTENCE;
+}
 
 /** Pre-2026-07-09 Meta copy — still matched so in-flight replies flag staff. */
 export const LEGACY_META_HANDOFF_SENTENCE =

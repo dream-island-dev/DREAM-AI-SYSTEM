@@ -3289,24 +3289,24 @@ serve(async (req: Request) => {
     }
 
     // ── Morning-of session path (suite guests) ───────────────────────────────
-    // Autonomous cron → Shabbat-aware Meta templates below (suite_welcome_morning /
-    // suite_welcome_morning_shabbat) UNLESS the guest routes through Whapi (all
-    // suite automation, owner decision 2026-07-10) — Whapi has no template
-    // concept, so the session script is its ONLY path, same precedent as
-    // night_before. Meta guests: never hijack to session text just because
-    // the 24h window is open — stage_3_morning carries weekday 15:00 check-in
-    // literals (applySaturdayCheckInTimeOverride fixes that).
+    // Whapi-eligible guests always use bot_scripts (no Meta template concept).
+    // Meta morning_suite: when the 24h service window is open, prefer
+    // stage_3_morning / stage_3_morning_shabbat (ACC source of truth, 12:00/15:00)
+    // over suite_welcome_morning* templates — same pattern as morning_welcome
+    // day-pass. Cold-start (window closed) still uses approved Meta templates.
     //
-    // Session free-text fires when: staff explicitly forces (force===true,
-    // not meta_template) OR the guest is opted into Whapi dispatch (autonomous
-    // or manual — Whapi was previously in WHAPI_UNSUPPORTED_STAGES; removed
-    // now that this path exists).
+    // Session free-text fires when: staff force (not meta_template), Whapi
+    // dispatch, OR morning_suite + open Meta window.
     const mgArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
     const mgIsShabbat = isShabbatArrivalDate(mgArrivalYmd);
+    const mgWindowOpen = isWindowOpen(guest.wa_window_expires_at);
     const useWhapiForMorning =
       (trigger === "morning_suite" || trigger === "morning_welcome") &&
       shouldUseWhapiForGuestAutomation(guest, trigger);
-    const useMorningSession = (force === true && !forceMetaTemplate) || useWhapiForMorning;
+    const useMorningSession =
+      (force === true && !forceMetaTemplate) ||
+      useWhapiForMorning ||
+      (trigger === "morning_suite" && mgWindowOpen && !forceMetaTemplate);
 
     // No longer gated on stageRow having a configured session_message_script_key
     // — resolveShabbatAwareScriptKey already falls back to "stage_3_morning"
@@ -3347,6 +3347,14 @@ serve(async (req: Request) => {
       }
 
       if (mgScriptText) {
+        if (
+          trigger === "morning_suite" && mgWindowOpen && !useWhapiForMorning &&
+          !(force === true && !forceMetaTemplate)
+        ) {
+          console.log(
+            `[whatsapp-send] morning_suite: route=session_message (24h window open) guest_id=${guestId}`,
+          );
+        }
         const mgGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
         const mgPortalUrl = guest.portal_token
           ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`

@@ -8,6 +8,7 @@ import {
   classifyArrivalConfirmationWithAi,
   isGuestAwaitingArrivalConfirmationReply,
 } from "./arrivalConfirmationAi.ts";
+import { isPoliteConversationClose } from "./automationSchedule.ts";
 
 /** Sync Tier-0 only — buttons, template phrases, explicit declines. No Gemini. */
 export function isArrivalConfirmationTier0(
@@ -53,7 +54,12 @@ export async function resolveArrivalConfirmationIntent(
       : "none";
   }
 
-  if (text && isArrivalDeclineMessage(text)) return "decline";
+  if (text && isPoliteConversationClose(text)) return "none";
+
+  if (text && isArrivalDeclineMessage(text)) {
+    if (!isGuestAwaitingArrivalConfirmationReply(guest)) return "none";
+    return "decline";
+  }
   if (isArrivalConfirmationMessage(text, opts)) return "confirm";
   if (!text || !isGuestAwaitingArrivalConfirmationReply(guest)) return "none";
 

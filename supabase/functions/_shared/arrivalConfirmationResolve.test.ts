@@ -38,6 +38,30 @@ Deno.test("resolveArrivalConfirmationIntent: tier-0 decline", async () => {
   );
 });
 
+Deno.test("resolveArrivalConfirmationIntent: לא תודה is none even in Stage 1 funnel", async () => {
+  const { resolveArrivalConfirmationIntent } = await import("./arrivalConfirmationResolve.ts");
+  assertEquals(
+    await resolveArrivalConfirmationIntent("לא תודה", {
+      status: "expected",
+      msg_pre_arrival_2d_sent: true,
+      arrival_confirmed: false,
+    }),
+    "none",
+  );
+});
+
+Deno.test("resolveArrivalConfirmationIntent: לא מגיעים outside funnel → none (DATE_CHANGE_RE path)", async () => {
+  const { resolveArrivalConfirmationIntent } = await import("./arrivalConfirmationResolve.ts");
+  assertEquals(
+    await resolveArrivalConfirmationIntent("לא מגיעים", {
+      status: "checked_in",
+      arrival_confirmed: true,
+      msg_pre_arrival_2d_sent: true,
+    }),
+    "none",
+  );
+});
+
 Deno.test("resolveArrivalConfirmation: confirm shorthand", async () => {
   const { resolveArrivalConfirmation } = await import("./arrivalConfirmationResolve.ts");
   assertEquals(await resolveArrivalConfirmation("כן, מגיעים!"), true);

@@ -46,6 +46,7 @@ import {
   shouldHandoffUnrecognizedInRoomRequest,
   isSpaUpsellAcceptanceReply,
   isSpaUpsellAcceptanceEligible,
+  isLowValueCourtesyMessage,
   type AutomationStage,
   type GuestForSchedule,
 } from "./automationSchedule.ts";
@@ -1196,4 +1197,10 @@ Deno.test("isSpaUpsellAcceptanceEligible: sent flag + no spa on arrival", () => 
     isSpaUpsellAcceptanceEligible({ ...eligible, msg_spa_upsell_sent: false }),
     false,
   );
+});
+
+Deno.test("isLowValueCourtesyMessage: polite decline closers", () => {
+  assertEquals(isLowValueCourtesyMessage("לא תודה"), true);
+  assertEquals(isLowValueCourtesyMessage("לא צריך"), true);
+  assertEquals(isLowValueCourtesyMessage("לא מגיעים"), false);
 });

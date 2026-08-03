@@ -513,6 +513,9 @@ function GuestQueueStageTable(props) {
 
 /** Meta burst protection — mirrors whatsapp-cron INTER_SEND_DELAY_MS. */
 const BULK_SEND_PULSE_MS = 2500;
+/** Whapi bulk queue poll — matches WaiterPulseDispatchPanel / SpaUpsellHub. */
+const WHAPI_BATCH_POLL_INTERVAL_MS = 4000;
+const WHAPI_BATCH_POLL_MAX_ATTEMPTS = 150;
 
 const STAGE_SHORT_LABELS = {
   pre_arrival_2d: "שלב 1",
@@ -2807,50 +2810,150 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       displayQueue.some((q) => `${q.guestId}_${q.stageKey}` === itemKey),
     );
 
-    for (let i = 0; i < keysToSend.length; i++) {
-      const itemKey = keysToSend[i];
-      setDispatchProgress({ current: i + 1, total: keysToSend.length });
-      const item = displayQueue.find((q) => `${q.guestId}_${q.stageKey}` === itemKey);
-      if (!item) continue;
-
-      // Client-side Safety Gate — matches server guard in whatsapp-send BRANCH D.
-      if (isQueueItemGated(item, DAY_PASS_ALLOWED_STAGES)) {
-        results.push({ item, result: "blocked", reason: "day_pass_stage_gate" });
-        continue;
-      }
-      if (viaWhapi && WHAPI_UNSUPPORTED_STAGES.has(item.stageKey)) {
-        results.push({ item, result: "blocked", reason: "whapi_unsupported_stage" });
-        continue;
-      }
-
+    if (viaWhapi) {
       try {
-        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: viaWhapi
-            ? { trigger: item.stageKey, guestId: item.guestId, force: true, force_channel: "whapi_session" }
-            : { trigger: item.stageKey, guestId: item.guestId },
-        });
-        if (error) {
-          results.push({ item, result: "error", error: error.message });
-        } else if (data?.skipped) {
-          if (data?.status === "duplicate_blocked") {
-            results.push({ item, result: "duplicate", reason: data.reason ?? "duplicate_blocked" });
-          } else {
-            results.push({ item, result: "skipped", reason: data.reason });
+        const itemsByStage = new Map();
+        for (const itemKey of keysToSend) {
+          const item = displayQueue.find((q) => `${q.guestId}_${q.stageKey}` === itemKey);
+          if (!item) continue;
+          if (isQueueItemGated(item, DAY_PASS_ALLOWED_STAGES)) {
+            results.push({ item, result: "blocked", reason: "day_pass_stage_gate" });
+            continue;
           }
-        } else if (data?.ok) {
-          results.push({ item, result: "sent", simulation: data.simulation });
-        } else if (data?.status === "timeout") {
-          results.push({ item, result: "timeout", error: data?.error ?? "timeout_no_response" });
-        } else {
-          results.push({ item, result: "failed", error: data?.error ?? "unknown" });
+          if (WHAPI_UNSUPPORTED_STAGES.has(item.stageKey)) {
+            results.push({ item, result: "blocked", reason: "whapi_unsupported_stage" });
+            continue;
+          }
+          const list = itemsByStage.get(item.stageKey) ?? [];
+          list.push(item);
+          itemsByStage.set(item.stageKey, list);
+        }
+
+        const batchJobs = [];
+        let enqueueProgress = 0;
+        const totalToQueue = keysToSend.length - results.length;
+
+        for (const [stageKey, items] of itemsByStage.entries()) {
+          if (!items.length) continue;
+          const { data, error } = await supabase.functions.invoke("whapi-bulk-dispatch", {
+            body: {
+              guest_ids: items.map((i) => i.guestId),
+              trigger: stageKey,
+              source: "AutomationControlCenter",
+            },
+          });
+          enqueueProgress += items.length;
+          setDispatchProgress({ current: enqueueProgress, total: totalToQueue || enqueueProgress });
+
+          if (error || !data?.ok) {
+            const errMsg = error?.message || data?.error || "שגיאה בתזמון";
+            items.forEach((item) => results.push({ item, result: "failed", error: errMsg }));
+            continue;
+          }
+
+          const skippedIds = new Set((data.skipped ?? []).map((s) => s.guestId));
+          (data.skipped ?? []).forEach((skip) => {
+            const item = items.find((i) => i.guestId === skip.guestId);
+            if (item) results.push({ item, result: "blocked", reason: skip.reason });
+          });
+
+          const queuedItems = items.filter((i) => !skippedIds.has(i.guestId));
+          if (queuedItems.length > 0) {
+            batchJobs.push({
+              batchId: data.batchId,
+              items: queuedItems,
+              total: data.queued ?? queuedItems.length,
+              etaMinutes: data.etaMinutes ?? null,
+            });
+          }
+        }
+
+        if (batchJobs.length > 0) {
+          const batchStatus = new Map();
+          for (let attempt = 0; attempt < WHAPI_BATCH_POLL_MAX_ATTEMPTS; attempt++) {
+            let allDone = true;
+            for (const job of batchJobs) {
+              const { data: rows } = await supabase
+                .from("whapi_outbound_jobs")
+                .select("phone, status, last_error")
+                .eq("batch_id", job.batchId);
+              batchStatus.set(job.batchId, rows ?? []);
+              const done = (rows ?? []).filter((r) => ["sent", "failed", "cancelled"].includes(r.status)).length;
+              if (done < job.total) allDone = false;
+            }
+            const sentSoFar = [...batchStatus.values()].flat().filter((r) => r.status === "sent").length;
+            const totalQueued = batchJobs.reduce((s, j) => s + j.total, 0);
+            setDispatchProgress({ current: sentSoFar, total: totalQueued });
+            if (allDone) break;
+            await new Promise((r) => setTimeout(r, WHAPI_BATCH_POLL_INTERVAL_MS));
+          }
+
+          const phoneSuffix = (phone) => String(phone ?? "").replace(/\D/g, "").slice(-9);
+          for (const job of batchJobs) {
+            const rows = batchStatus.get(job.batchId) ?? [];
+            for (const item of job.items) {
+              const suffix = phoneSuffix(item.phone);
+              const row = rows.find((r) => phoneSuffix(r.phone) === suffix);
+              if (!row) {
+                results.push({ item, result: "failed", error: "missing_queue_row" });
+              } else if (row.status === "sent") {
+                results.push({ item, result: "sent" });
+              } else if (row.status === "pending" || row.status === "sending") {
+                results.push({ item, result: "queued", error: "ממשיך ברקע בתור Whapi" });
+              } else {
+                results.push({ item, result: "failed", error: row.last_error || row.status });
+              }
+            }
+          }
         }
       } catch (e) {
-        results.push({ item, result: "error", error: e?.message ?? String(e) });
+        keysToSend.forEach((itemKey) => {
+          const item = displayQueue.find((q) => `${q.guestId}_${q.stageKey}` === itemKey);
+          if (item && !results.some((r) => r.item === item)) {
+            results.push({ item, result: "error", error: e?.message ?? String(e) });
+          }
+        });
       }
+    } else {
+      for (let i = 0; i < keysToSend.length; i++) {
+        const itemKey = keysToSend[i];
+        setDispatchProgress({ current: i + 1, total: keysToSend.length });
+        const item = displayQueue.find((q) => `${q.guestId}_${q.stageKey}` === itemKey);
+        if (!item) continue;
 
-      // Pulse between sends — same 2.5s cadence as whatsapp-cron (Meta rate-limit safety).
-      if (i < keysToSend.length - 1) {
-        await new Promise((r) => setTimeout(r, BULK_SEND_PULSE_MS));
+        if (isQueueItemGated(item, DAY_PASS_ALLOWED_STAGES)) {
+          results.push({ item, result: "blocked", reason: "day_pass_stage_gate" });
+          continue;
+        }
+
+        try {
+          const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+            body: { trigger: item.stageKey, guestId: item.guestId },
+          });
+          if (error) {
+            results.push({ item, result: "error", error: error.message });
+          } else if (data?.skipped) {
+            if (data?.status === "duplicate_blocked") {
+              results.push({ item, result: "duplicate", reason: data.reason ?? "duplicate_blocked" });
+            } else {
+              results.push({ item, result: "skipped", reason: data.reason });
+            }
+          } else if (data?.ok) {
+            results.push({ item, result: "sent", simulation: data.simulation });
+          } else if (data?.status === "timeout") {
+            results.push({ item, result: "timeout", error: data?.error ?? "timeout_no_response" });
+          } else if (data?.status === "rate_limited") {
+            results.push({ item, result: "failed", error: data?.error ?? "rate_limited" });
+          } else {
+            results.push({ item, result: "failed", error: data?.error ?? "unknown" });
+          }
+        } catch (e) {
+          results.push({ item, result: "error", error: e?.message ?? String(e) });
+        }
+
+        if (i < keysToSend.length - 1) {
+          await new Promise((r) => setTimeout(r, BULK_SEND_PULSE_MS));
+        }
       }
     }
 
@@ -2861,11 +2964,13 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     setDispatchSummary({
       total:   results.length,
       sent:    results.filter((r) => r.result === "sent").length,
+      queued:  results.filter((r) => r.result === "queued").length,
       skipped: results.filter((r) => r.result === "skipped").length,
       duplicates: results.filter((r) => r.result === "duplicate").length,
       blocked: results.filter((r) => r.result === "blocked").length,
       timeout: results.filter((r) => r.result === "timeout").length,
       failed:  results.filter((r) => r.result === "failed" || r.result === "error").length,
+      viaWhapiQueue: viaWhapi,
       details: results,
     });
     fetchQueue();
@@ -3234,9 +3339,21 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                       ⚠ פעולה זו אינה הפיכה. וודא שרשימת הנמענים נכונה לפני האישור.
                     </div>
                     <div style={{ marginTop: 10, fontSize: 12, color: "#444", background: "var(--ivory)", borderRadius: 8, padding: "8px 12px", border: "1px solid var(--border)" }}>
-                      ⏱ שליחה בפעימות של {BULK_SEND_PULSE_MS / 1000} שניות בין הודעה להודעה (הגנה מפני חסימת Meta).
-                      {selectedItems.size > 1 && (
-                        <span> משך משוער: כ-{Math.ceil(((selectedItems.size - 1) * BULK_SEND_PULSE_MS) / 1000 / 60)} דק׳.</span>
+                      {dispatchViaWhapi ? (
+                        <>
+                          📱 שליחה דרך מכשיר הסוויטות — נכנסת לתור מדורג (8–15ש׳ בין הודעות) כדי למנוע חסימת Whapi.
+                          ממשיך ברקע גם אם תסגור את הדף.
+                          {selectedItems.size > 1 && (
+                            <span> משך משוער: כ-{Math.ceil(((selectedItems.size - 1) * 12) / 60)} דק׳.</span>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          ⏱ שליחה בפעימות של {BULK_SEND_PULSE_MS / 1000} שניות בין הודעה להודעה (הגנה מפני חסימת Meta).
+                          {selectedItems.size > 1 && (
+                            <span> משך משוער: כ-{Math.ceil(((selectedItems.size - 1) * BULK_SEND_PULSE_MS) / 1000 / 60)} דק׳.</span>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -3284,6 +3401,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                     {dispatchSummary.sent > 0 && (
                       <div style={{ color: "#1A7A4A" }}>✅ נשלחו בהצלחה: <strong>{dispatchSummary.sent}</strong></div>
                     )}
+                    {dispatchSummary.queued > 0 && (
+                      <div style={{ color: "#92702C" }}>⏳ בתור Whapi (ממשיך ברקע): <strong>{dispatchSummary.queued}</strong></div>
+                    )}
                     {dispatchSummary.skipped > 0 && (
                       <div style={{ color: "#92702C" }}>↩️ כבר נשלחו (דולגו): <strong>{dispatchSummary.skipped}</strong></div>
                     )}
@@ -3319,6 +3439,17 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                         .map((r, i) => (
                           <div key={i} style={{ fontSize: 11, color: "#92702C", padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
                             {r.item.guestName ?? r.item.guestId} — {r.item.displayName}: לא ודאי אם הגיע — בדקו לפני שליחה חוזרת
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                  {dispatchSummary.queued > 0 && (
+                    <div style={{ marginTop: 16, maxHeight: 140, overflowY: "auto" }}>
+                      {dispatchSummary.details
+                        .filter((r) => r.result === "queued")
+                        .map((r, i) => (
+                          <div key={i} style={{ fontSize: 11, color: "#92702C", padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
+                            {r.item.guestName ?? r.item.guestId} — {r.item.displayName}: בתור — יישלח אוטומטית ברקע
                           </div>
                         ))}
                     </div>
@@ -4380,7 +4511,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                 </button>
                 {dispatching && (
                   <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                    פעימה של {BULK_SEND_PULSE_MS / 1000}ש׳ בין הודעות — אל תסגור את הדף
+                    {dispatchViaWhapi
+                      ? "תור Whapi — ממשיך ברקע, אל תשלח שוב את אותם אורחים"
+                      : `פעימה של ${BULK_SEND_PULSE_MS / 1000}ש׳ בין הודעות — אל תסגור את הדף`}
                   </span>
                 )}
               </div>
