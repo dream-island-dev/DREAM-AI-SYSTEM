@@ -27,7 +27,6 @@ import {
   isGuestDeparted,
   isPremiumDayRoom,
   isSuiteGuestProfile,
-  israelTodayStr,
   rosterGuestFields,
   syncInboxContactWithGuestMap,
 } from "../utils/guestTiming";
@@ -77,7 +76,17 @@ import {
   shouldWarnMetaWindowClosed,
   resolveMetaWindowClosedHint,
 } from "../utils/inboxSendErrors";
-import { pickGuestProfileByPhone } from "../utils/guestProfilePick";
+import {
+  buildGuestMapsFromRows,
+  fetchAllGuestsForInboxMap,
+  fetchInboxRosterAnchorGuests,
+  inboxNormalizePhone as normalizePhone,
+  inboxPhonesMatch,
+  lookupGuestFromMaps,
+  mergeRosterAnchorContacts,
+  shouldHydrateInboxRosterAnchor,
+  toInboxGuestMapEntry,
+} from "../utils/inboxGuestMap";
 
 const HIT_STAFF = "var(--hit-target-staff, 44px)";
 const HIT_COMFORT = "var(--hit-target-comfort, 48px)";
@@ -688,45 +697,12 @@ function canonicalizePhone(raw) {
   return p;
 }
 
-// Comparison-only helper — NOT a replacement for canonicalizePhone() above and
-// never used to build a dialable number. Strips every non-digit and keeps
-// only the last 9 — the invariant core of an Israeli mobile number regardless
-// of country/dialing-prefix noise (+972, 972, 0, 00972) or manual-entry
-// separators (spaces, dashes). Used to match a guests.phone value (stored in
-// whatever format it was typed/imported in) against a WhatsApp-derived phone.
-function normalizePhone(phoneStr) {
-  if (!phoneStr) return "";
-  return String(phoneStr).replace(/\D/g, "").slice(-9);
-}
-
 // Every variant a guests.phone/whatsapp_conversations.phone value might be
 // stored in (E.164 "+972...", bare "972...", local "0...") — shared by every
 // write path below (claim/release/dismiss/editor fetch) since neither table
 // guarantees one canonical format (session 15 root cause, see CLAUDE.md §6).
 function phoneVariants(bare) {
   return [bare, `+${bare}`, `0${bare.slice(3)}`];
-}
-
-/** Build a map-entry slice from a guests row (phone map + id map). */
-function toGuestMapEntry(g) {
-  if (!g?.id) return null;
-  return {
-    id: g.id,
-    name: g.name ?? null,
-    status: g.status ?? null,
-    arrival_date: g.arrival_date ?? null,
-    departure_date: g.departure_date ?? null,
-    room: g.room ?? null,
-    room_type: g.room_type ?? null,
-    spa_time: g.spa_time ?? null,
-    spa_date: g.spa_date ?? null,
-    portal_token: g.portal_token ?? null,
-    meal_time: g.meal_time ?? null,
-    meal_location: g.meal_location ?? null,
-    claimed_by: g.claimed_by ?? null,
-    claimed_at: g.claimed_at ?? null,
-    guest_profile: g.guest_profile ?? null,
-  };
 }
 
 function inboxActiveSuiteRoom(contact) {
@@ -751,8 +727,8 @@ function lookupWhapiClaim(whapiClaimsMap, guestId) {
 /** Apply live guests map onto one flat message row (or strip when unregistered).
  * Claim is per-channel: Meta ← guests.claimed_by; Whapi ← guest_channel_claims
  * (whapiClaimsMap). Never copy Meta's claimed_by onto a Whapi row. */
-function reconcileMessageWithGuestMap(row, phoneMap, whapiClaimsMap = null, whapiClaimsReady = false) {
-  const guest = phoneMap.get(normalizePhone(row.phone));
+function reconcileMessageWithGuestMap(row, phoneMap, idMap = null, whapiClaimsMap = null, whapiClaimsReady = false) {
+  const guest = lookupGuestFromMaps(row.phone, row.guest_id, phoneMap, idMap);
   if (!guest?.id) return clearGuestFieldsFromMessage(row);
   const isWhapi = (row.inbox_channel ?? "meta") === "whapi";
   let claimedBy = guest.claimed_by ?? null;
@@ -790,30 +766,6 @@ function reconcileMessageWithGuestMap(row, phoneMap, whapiClaimsMap = null, whap
   };
 }
 
-function buildGuestMapsFromRows(rows) {
-  const phoneBuckets = new Map();
-  const idMap = new Map();
-  const today = israelTodayStr();
-
-  for (const g of rows ?? []) {
-    const entry = toGuestMapEntry(g);
-    if (!entry) continue;
-    idMap.set(entry.id, entry);
-    const key = normalizePhone(g.phone);
-    if (!key) continue;
-    if (!phoneBuckets.has(key)) phoneBuckets.set(key, []);
-    phoneBuckets.get(key).push(g);
-  }
-
-  const phoneMap = new Map();
-  for (const [key, bucket] of phoneBuckets) {
-    const picked = pickGuestProfileByPhone(bucket, today);
-    const entry = toGuestMapEntry(picked);
-    if (entry) phoneMap.set(key, entry);
-  }
-  return { phoneMap, idMap };
-}
-
 /** Strip denormalized guests join fields from a flat message row. */
 function clearGuestFieldsFromMessage(m) {
   return {
@@ -838,10 +790,10 @@ function clearGuestFieldsFromMessage(m) {
 /** Strip deleted-guest denormalized fields from module-level inbox cache. */
 function purgeInboxMemoryCacheForGuest(guestId, phone) {
   if (!inboxMemoryCache.messages?.length) return;
-  const targetPhone = phone ? canonicalizePhone(phone) : null;
+  const targetKey = phone ? normalizePhone(phone) : null;
   inboxMemoryCache.messages = inboxMemoryCache.messages.map((m) => {
     const byId = guestId && m.guest_id === guestId;
-    const byPhone = targetPhone && m.phone === targetPhone;
+    const byPhone = targetKey && normalizePhone(m.phone) === targetKey;
     if (!byId && !byPhone) return m;
     return clearGuestFieldsFromMessage(m);
   });
@@ -3296,6 +3248,8 @@ export default function WhatsAppInbox({
   const whapiClaimsMapRef = useRef(new Map()); // guests.id → { claimed_by, claimed_at } (guest_channel_claims, whapi only — §4)
   const whapiClaimsReadyRef = useRef(false); // true after guest_channel_claims fetch — empty Map before that must not wipe stamps
   const guestMapReadyRef = useRef(false); // true after initial guests fetch — avoids stripping before load
+  const rosterAnchorGuestsRef = useRef([]); // suite in-resort / arriving today — ghost threads when WA window misses
+  const [rosterAnchorTick, setRosterAnchorTick] = useState(0);
   const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
   const alertsReadyRef   = useRef(false); // skip sounds until initial fetchAll completes
   const pendingFocusRef  = useRef(null);   // { phone, guestName?, inboxChannel? } — deep-link
@@ -3354,16 +3308,14 @@ export default function WhatsAppInbox({
   // a guest was added, or a guests.phone format neither lookup anticipated),
   // re-check it here against every guest's phone using the same last-9-digit
   // comparison, so the UI self-heals without needing a backfill migration.
-  const resolveGuestEntryForContact = useCallback((contact) => {
-    const byPhone = guestPhoneMapRef.current.get(normalizePhone(contact.phone));
-    if (byPhone?.id) return byPhone;
-    const guestId = contact.guestId ?? contact.guest_id ?? null;
-    if (guestId) {
-      const byId = guestIdMapRef.current.get(guestId);
-      if (byId?.id) return byId;
-    }
-    return null;
-  }, []);
+  const resolveGuestEntryForContact = useCallback((contact) => (
+    lookupGuestFromMaps(
+      contact.phone,
+      contact.guestId ?? contact.guest_id ?? null,
+      guestPhoneMapRef.current,
+      guestIdMapRef.current,
+    )
+  ), []);
 
   const resolveIdentityFallback = useCallback((contacts) => {
     if (!guestMapReadyRef.current) return contacts;
@@ -3380,6 +3332,7 @@ export default function WhatsAppInbox({
       reconcileMessageWithGuestMap(
         r,
         guestPhoneMapRef.current,
+        guestIdMapRef.current,
         whapiClaimsMapRef.current,
         whapiClaimsReadyRef.current,
       ),
@@ -3980,7 +3933,7 @@ export default function WhatsAppInbox({
             ?? null;
           if (existing?.id) {
             guestId = existing.id;
-            const entry = toGuestMapEntry(existing);
+            const entry = toInboxGuestMapEntry(existing);
             if (entry) {
               guestIdMapRef.current.set(entry.id, entry);
               const mapKey = normalizePhone(contact.phone);
@@ -4128,20 +4081,34 @@ export default function WhatsAppInbox({
   // Realtime listener below can't drift out of sync with each other.
   const applyGuestRowUpdate = useCallback((g) => {
     if (!g?.phone) return;
-    const entry = toGuestMapEntry(g);
+    const entry = toInboxGuestMapEntry(g);
     if (!entry) return;
     const key = normalizePhone(g.phone);
     if (key) guestPhoneMapRef.current.set(key, entry);
     guestIdMapRef.current.set(entry.id, entry);
 
-    const targetPhone = canonicalizePhone(g.phone);
+    if (shouldHydrateInboxRosterAnchor(g)) {
+      const prev = rosterAnchorGuestsRef.current;
+      const idx = prev.findIndex((x) => x.id === g.id);
+      const next = idx >= 0 ? prev.map((x, i) => (i === idx ? g : x)) : [...prev, g];
+      rosterAnchorGuestsRef.current = next;
+      setRosterAnchorTick((t) => t + 1);
+    } else {
+      const filtered = rosterAnchorGuestsRef.current.filter((x) => x.id !== g.id);
+      if (filtered.length !== rosterAnchorGuestsRef.current.length) {
+        rosterAnchorGuestsRef.current = filtered;
+        setRosterAnchorTick((t) => t + 1);
+      }
+    }
+
     let touched = false;
     allMsgsRef.current = allMsgsRef.current.map((m) => {
-      if (m.phone !== targetPhone) return m;
+      if (!inboxPhonesMatch(m.phone, g.phone)) return m;
       touched = true;
       return reconcileMessageWithGuestMap(
         m,
         guestPhoneMapRef.current,
+        guestIdMapRef.current,
         whapiClaimsMapRef.current,
         whapiClaimsReadyRef.current,
       );
@@ -4163,13 +4130,20 @@ export default function WhatsAppInbox({
     }
     if (guestId) guestIdMapRef.current.delete(guestId);
 
-    const targetPhone = deleted.phone ? canonicalizePhone(deleted.phone) : null;
-    purgeInboxMemoryCacheForGuest(guestId, targetPhone);
+    if (guestId) {
+      const filtered = rosterAnchorGuestsRef.current.filter((x) => x.id !== guestId);
+      if (filtered.length !== rosterAnchorGuestsRef.current.length) {
+        rosterAnchorGuestsRef.current = filtered;
+        setRosterAnchorTick((t) => t + 1);
+      }
+    }
+
+    purgeInboxMemoryCacheForGuest(guestId, deleted.phone ?? null);
 
     let touched = false;
     allMsgsRef.current = allMsgsRef.current.map((m) => {
       const byId = guestId && m.guest_id === guestId;
-      const byPhone = targetPhone && m.phone === targetPhone;
+      const byPhone = deleted.phone && inboxPhonesMatch(m.phone, deleted.phone);
       if (!byId && !byPhone) return m;
       touched = true;
       return clearGuestFieldsFromMessage(m);
@@ -4520,22 +4494,29 @@ export default function WhatsAppInbox({
   // resolution fallback above. Re-applies to already-loaded contacts in case
   // this resolves after the first fetchAll already rendered them. ──────────
   useEffect(() => {
-    supabase
-      .from("guests")
-      .select(
-        "id, name, phone, status, arrival_date, departure_date, room, room_type, " +
-        "spa_time, spa_date, portal_token, meal_time, meal_location, claimed_by, claimed_at, guest_profile",
-      )
-      .not("phone", "is", null)
-      .then(({ data }) => {
-        const { phoneMap, idMap } = buildGuestMapsFromRows(data);
+    if (!supabase) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [allRows, anchors] = await Promise.all([
+          fetchAllGuestsForInboxMap(supabase),
+          fetchInboxRosterAnchorGuests(supabase),
+        ]);
+        if (cancelled) return;
+        const { phoneMap, idMap } = buildGuestMapsFromRows(allRows);
         guestPhoneMapRef.current = phoneMap;
         guestIdMapRef.current = idMap;
         guestMapReadyRef.current = true;
+        rosterAnchorGuestsRef.current = anchors;
+        setRosterAnchorTick((t) => t + 1);
         allMsgsRef.current = reconcileRowsWithGuestMap(allMsgsRef.current);
         setContacts(applyGrouping(allMsgsRef.current));
-      });
-  }, [resolveIdentityFallback, reconcileRowsWithGuestMap, applyGrouping]);
+      } catch (e) {
+        console.warn("[WA-inbox] guest map load failed:", e?.message ?? e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [reconcileRowsWithGuestMap, applyGrouping]);
 
   // ── Populate the profiles id→name map once on mount, for resolving
   // guests.claimed_by (a UUID) to a readable name on the claim badge. ──────
@@ -5334,7 +5315,11 @@ export default function WhatsAppInbox({
   }
 
   // ── Derived state ──────────────────────────────────────────────────────────
-  const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.threadKey ?? c.phone));
+  const contactsWithAnchors = useMemo(() => {
+    void rosterAnchorTick; // ref bump when roster-anchor guests load/update
+    return mergeRosterAnchorContacts(contacts, rosterAnchorGuestsRef.current, canonicalizePhone);
+  }, [contacts, rosterAnchorTick]);
+  const visibleContacts = contactsWithAnchors.filter((c) => !archivedPhones.has(c.threadKey ?? c.phone));
   // A departed guest who messages back (new inbound, unread) must still surface in
   // the main "all" roster — not silently buried in the "אחרי עזיבה" tab nobody
   // checks by default (Disable Don't Hide, CLAUDE.md §0.2). It lands in the pinned
