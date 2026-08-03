@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { getGuestTimingBadge, isSuiteGuestProfile } from "../utils/guestTiming";
+import { pickGuestProfileByPhone } from "../utils/guestProfilePick";
 import { resolveTimelineScopeForArrival } from "../utils/guestCheckinMatrix";
 import { formatSpaSchedule } from "../utils/israeliTime";
 import { getProfileDisplayChips, hasMeaningfulProfile } from "../data/guestProfileSchema";
@@ -156,7 +157,7 @@ export default function GuestContextDrawer({
     setLoadError(null);
     try {
       const variants = phoneVariants(contact.phone);
-      const { data: g, error: gErr } = await supabase
+      const { data: guestRows, error: gErr } = await supabase
         .from("guests")
         .select(
           "id, name, phone, room, room_type, status, arrival_date, departure_date, " +
@@ -169,9 +170,11 @@ export default function GuestContextDrawer({
           "msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent"
         )
         .in("phone", variants)
-        .limit(1)
-        .maybeSingle();
+        .neq("status", "cancelled")
+        .order("arrival_date", { ascending: false });
       if (gErr) throw gErr;
+
+      const g = pickGuestProfileByPhone(guestRows ?? []);
 
       const row = g ?? {
         name: contact.guestName || contact.pushName || null,

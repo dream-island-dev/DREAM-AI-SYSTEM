@@ -2,6 +2,8 @@
 
 import { GENERIC_DAY_PASS_ROOM, roomsCanonicallyMatch } from "../data/suiteRegistry";
 import { isCanonicalSuiteRoom, isPremiumDayRoom } from "./pipelineSegment";
+import { israelTodayStr } from "./guestTiming";
+import { shouldTreatAsReturningGuestCreate } from "./guestProfilePick";
 import { createDaypassGuestFromRec, stripWorkflowPatch } from "./ezgoMailLineWorkflow";
 import {
   createDoc2SuiteArrival,
@@ -85,6 +87,13 @@ function roomConflict(rec, guest) {
 }
 
 export function classifyDoc2MailWorkflow(rec, guest) {
+  const today = israelTodayStr();
+  const reportDate = rec?.arrival_date ? String(rec.arrival_date).slice(0, 10) : null;
+  let matchedGuest = guest;
+  if (matchedGuest && shouldTreatAsReturningGuestCreate(matchedGuest, rec, reportDate, today)) {
+    matchedGuest = null;
+  }
+
   if (rec?.section === "departure") {
     return {
       workflow: "noop",
@@ -101,7 +110,7 @@ export function classifyDoc2MailWorkflow(rec, guest) {
       patch: withWorkflowMeta({}, "no_match"),
     };
   }
-  if (!guest) {
+  if (!matchedGuest) {
     if (rec.is_day_guest || isPremiumDayRoom(rec.room)) {
       return {
         workflow: "daypass_create",
@@ -135,83 +144,83 @@ export function classifyDoc2MailWorkflow(rec, guest) {
   }
 
   if (!rec.room) {
-    const patch = buildDoc2EnrichmentPatch(rec, guest);
+    const patch = buildDoc2EnrichmentPatch(rec, matchedGuest);
     if (!patchHasChanges(patch)) {
       return {
         workflow: "noop",
         action: "enrich",
-        label: `${guest.name || "אורח"} · אין שדות חדשים`,
+        label: `${matchedGuest.name || "אורח"} · אין שדות חדשים`,
         patch: withWorkflowMeta(patch, "noop"),
       };
     }
     return {
       workflow: "suite_arrival_enrich",
       action: "enrich",
-      label: `השלמת חסר · ${guest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
+      label: `השלמת חסר · ${matchedGuest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
       patch: withWorkflowMeta(patch, "suite_arrival_enrich"),
     };
   }
 
-  if (nameConflict(rec, guest) && roomConflict(rec, guest)) {
+  if (nameConflict(rec, matchedGuest) && roomConflict(rec, matchedGuest)) {
     return {
       workflow: "conflict",
       action: "conflict",
-      label: `⚠ בדוק שם+חדר · DB: ${guest.name} / ${guest.room || "—"}`,
+      label: `⚠ בדוק שם+חדר · DB: ${matchedGuest.name} / ${matchedGuest.room || "—"}`,
       patch: withWorkflowMeta({}, "conflict"),
     };
   }
 
-  if (rec.room && guestRoomLabelsInclude(guest.room, rec.room)) {
-    const patch = buildDoc2EnrichmentPatch(rec, guest);
+  if (rec.room && guestRoomLabelsInclude(matchedGuest.room, rec.room)) {
+    const patch = buildDoc2EnrichmentPatch(rec, matchedGuest);
     if (!patchHasChanges(patch)) {
       return {
         workflow: "noop",
         action: "enrich",
-        label: `${guest.name || "אורח"} · חדר ${rec.room} כבר קיים`,
+        label: `${matchedGuest.name || "אורח"} · חדר ${rec.room} כבר קיים`,
         patch: withWorkflowMeta(patch, "noop"),
       };
     }
     return {
       workflow: "suite_arrival_enrich",
       action: "enrich",
-      label: `השלמת חסר · ${guest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
+      label: `השלמת חסר · ${matchedGuest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
       patch: withWorkflowMeta(patch, "suite_arrival_enrich"),
     };
   }
 
-  if (roomConflict(rec, guest) && isSameDoc2Booking(rec, guest) && rec.room) {
+  if (roomConflict(rec, matchedGuest) && isSameDoc2Booking(rec, matchedGuest) && rec.room) {
     return {
       workflow: "suite_room_add",
       action: "enrich",
-      label: `➕ חדר נוסף · ${guest.name || rec.guest_name} → ${rec.room}`,
+      label: `➕ חדר נוסף · ${matchedGuest.name || rec.guest_name} → ${rec.room}`,
       patch: withWorkflowMeta({ _add_room: rec.room }, "suite_room_add"),
     };
   }
 
-  if (!guest.room && rec.room && isCanonicalSuiteRoom(rec.room)) {
+  if (!matchedGuest.room && rec.room && isCanonicalSuiteRoom(rec.room)) {
     return {
       workflow: "suite_room_assign",
       action: "enrich",
-      label: `שיבוץ חדר · ${guest.name || rec.guest_name} → ${rec.room}`,
+      label: `שיבוץ חדר · ${matchedGuest.name || rec.guest_name} → ${rec.room}`,
       patch: withWorkflowMeta({ room: rec.room }, "suite_room_assign"),
     };
   }
 
-  if (roomConflict(rec, guest)) {
+  if (roomConflict(rec, matchedGuest)) {
     return {
       workflow: "conflict",
       action: "conflict",
-      label: `⚠ חדר שונה · DB: ${guest.room} · דוח: ${rec.room}`,
+      label: `⚠ חדר שונה · DB: ${matchedGuest.room} · דוח: ${rec.room}`,
       patch: withWorkflowMeta({}, "conflict"),
     };
   }
 
-  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  const patch = buildDoc2EnrichmentPatch(rec, matchedGuest);
   if (!patchHasChanges(patch)) {
     return {
       workflow: "noop",
       action: "enrich",
-      label: `${guest.name || "אורח"} · אין שדות חדשים`,
+      label: `${matchedGuest.name || "אורח"} · אין שדות חדשים`,
       patch: withWorkflowMeta(patch, "noop"),
     };
   }
@@ -219,7 +228,7 @@ export function classifyDoc2MailWorkflow(rec, guest) {
   return {
     workflow: "suite_arrival_enrich",
     action: "enrich",
-    label: `השלמת חסר · ${guest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
+    label: `השלמת חסר · ${matchedGuest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
     patch: withWorkflowMeta(patch, "suite_arrival_enrich"),
   };
 }

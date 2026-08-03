@@ -153,7 +153,14 @@ Deno.test("no room, no name, no order number, no existing guest → no_match (mi
 
 Deno.test("guest exists, no room in report row → suite_arrival_enrich (room untouched)", () => {
   const guest = { ...shacharGuest, order_number: null };
-  const rec = { ...noRoomOrderOnly, phone: shacharGuest.phone, guest_name: shacharGuest.name };
+  const rec = {
+    ...noRoomOrderOnly,
+    phone: shacharGuest.phone,
+    guest_name: shacharGuest.name,
+    arrival_date: shacharGuest.arrival_date,
+    departure_date: shacharGuest.departure_date,
+    order_number: null,
+  };
   const r = classifyDoc2MailWorkflow(rec, guest);
   if (r.workflow !== "suite_arrival_enrich") {
     throw new Error(`expected suite_arrival_enrich got ${r.workflow}`);
@@ -184,4 +191,43 @@ Deno.test("fixture row 278993 (אמטיסט בלי מספר) → suite_arrival_c
   if (r.workflow !== "suite_arrival_create") {
     throw new Error(`expected suite_arrival_create got ${r.workflow}`);
   }
+});
+
+Deno.test("returning guest with new arrival → suite_arrival_create not enrich", () => {
+  const archivedGuest = {
+    id: 99,
+    name: "ליאור חבולי",
+    phone: "+972501112233",
+    order_number: "111111",
+    arrival_date: "2026-07-06",
+    departure_date: "2026-07-07",
+    room: "אמטיסט 8",
+    room_type: "suite",
+    meal_location: null,
+  };
+  const rec = {
+    _report: "doc2" as const,
+    section: "arrival" as const,
+    order_number: "222222",
+    room_raw: "סוויטת אמטיסט - 10",
+    room: "אמטיסט 10",
+    board_basis: null,
+    meal_location: null,
+    arrival_time: null,
+    nights: 1,
+    guest_count: "2",
+    guest_name: "ליאור חבולי",
+    phone: "+972501112233",
+    amount: null,
+    notes: null,
+    arrival_date: "2026-08-08",
+    departure_date: "2026-08-09",
+    is_day_guest: false,
+    is_premium_day: false,
+  };
+  const r = classifyDoc2MailWorkflow(rec, archivedGuest);
+  if (r.workflow !== "suite_arrival_create") {
+    throw new Error(`expected suite_arrival_create got ${r.workflow}`);
+  }
+  if (r.action !== "create") throw new Error("expected create action");
 });

@@ -27,6 +27,7 @@ import {
   isGuestDeparted,
   isPremiumDayRoom,
   isSuiteGuestProfile,
+  israelTodayStr,
   rosterGuestFields,
   syncInboxContactWithGuestMap,
 } from "../utils/guestTiming";
@@ -76,6 +77,7 @@ import {
   shouldWarnMetaWindowClosed,
   resolveMetaWindowClosedHint,
 } from "../utils/inboxSendErrors";
+import { pickGuestProfileByPhone } from "../utils/guestProfilePick";
 
 const HIT_STAFF = "var(--hit-target-staff, 44px)";
 const HIT_COMFORT = "var(--hit-target-comfort, 48px)";
@@ -789,14 +791,25 @@ function reconcileMessageWithGuestMap(row, phoneMap, whapiClaimsMap = null, whap
 }
 
 function buildGuestMapsFromRows(rows) {
-  const phoneMap = new Map();
+  const phoneBuckets = new Map();
   const idMap = new Map();
+  const today = israelTodayStr();
+
   for (const g of rows ?? []) {
     const entry = toGuestMapEntry(g);
     if (!entry) continue;
     idMap.set(entry.id, entry);
     const key = normalizePhone(g.phone);
-    if (key) phoneMap.set(key, entry);
+    if (!key) continue;
+    if (!phoneBuckets.has(key)) phoneBuckets.set(key, []);
+    phoneBuckets.get(key).push(g);
+  }
+
+  const phoneMap = new Map();
+  for (const [key, bucket] of phoneBuckets) {
+    const picked = pickGuestProfileByPhone(bucket, today);
+    const entry = toGuestMapEntry(picked);
+    if (entry) phoneMap.set(key, entry);
   }
   return { phoneMap, idMap };
 }

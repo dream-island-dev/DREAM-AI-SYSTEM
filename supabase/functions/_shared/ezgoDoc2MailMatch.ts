@@ -7,6 +7,9 @@ import {
   type Doc2GuestRow,
 } from "./ezgoDoc2MailLineWorkflow.ts";
 import { reportDateWithinGuestStay } from "./ezgoDoc1Parser.ts";
+import { doc2RecordMatchesGuest } from "./ezgoDoc2RecordMatch.ts";
+import { israelYmd } from "./automationSchedule.ts";
+import { shouldTreatAsReturningGuestCreate } from "./guestProfilePick.ts";
 
 export type Doc2MatchResult = {
   guest: Doc2GuestRow | null;
@@ -24,15 +27,39 @@ function normalizeGuestName(name: string | null | undefined): string {
   return String(name || "").trim().replace(/\s+/g, " ");
 }
 
+function acceptDoc2GuestMatch(
+  guest: Doc2GuestRow | null,
+  rec: Doc2Record,
+  reportDate: string | null,
+  today: string,
+): Doc2GuestRow | null {
+  if (!guest) return null;
+  if (shouldTreatAsReturningGuestCreate(guest, rec, reportDate, today)) return null;
+  return guest;
+}
+
+/** Order-based match is allowed only when phones agree (group bookings share order_number). */
+export { doc2RecordMatchesGuest } from "./ezgoDoc2RecordMatch.ts";
+
 function pickFromOverlap(
   rows: Doc2GuestRow[],
   reportDate: string | null,
   phone: string | null,
+  rec: Doc2Record | null = null,
 ): Doc2GuestRow | null {
   if (!rows.length) return null;
-  if (!reportDate) return rows.length === 1 ? rows[0] : null;
+  if (!reportDate) {
+    if (rows.length === 1) {
+      const only = rows[0];
+      return rec && !doc2RecordMatchesGuest(rec, only) ? null : only;
+    }
+    return null;
+  }
   const inStay = rows.filter((g) => reportDateWithinGuestStay(g, reportDate));
-  if (inStay.length === 1) return inStay[0];
+  if (inStay.length === 1) {
+    const only = inStay[0];
+    return rec && !doc2RecordMatchesGuest(rec, only) ? null : only;
+  }
   if (inStay.length > 1 && phone) {
     const hit = inStay.find((g) => g.phone === phone);
     if (hit) return hit;
@@ -40,7 +67,10 @@ function pickFromOverlap(
   const sameDay = rows.filter(
     (g) => String(g.arrival_date).slice(0, 10) === reportDate,
   );
-  if (sameDay.length === 1) return sameDay[0];
+  if (sameDay.length === 1) {
+    const only = sameDay[0];
+    return rec && !doc2RecordMatchesGuest(rec, only) ? null : only;
+  }
   if (sameDay.length > 1 && phone) {
     const hit = sameDay.find((g) => g.phone === phone);
     if (hit) return hit;
@@ -53,6 +83,7 @@ export function findGuestForDoc2Record(
   rec: Doc2Record,
 ): Doc2GuestRow | null {
   if (!existingRows?.length || !rec) return null;
+  const today = israelYmd();
   const reportDate = rec.arrival_date ? String(rec.arrival_date).slice(0, 10) : null;
   const phone = rec.phone || null;
   const order = rec.order_number || null;
@@ -61,17 +92,23 @@ export function findGuestForDoc2Record(
     const byOrder = existingRows.filter((g) => g.order_number === order);
     if (byOrder.length === 1) {
       const only = byOrder[0];
-      if (!reportDate || reportDateWithinGuestStay(only, reportDate)) return only;
-      if (String(only.arrival_date).slice(0, 10) === reportDate) return only;
+      if (doc2RecordMatchesGuest(rec, only)) {
+        if (reportDate && reportDateWithinGuestStay(only, reportDate)) {
+          return acceptDoc2GuestMatch(only, rec, reportDate, today);
+        }
+        if (reportDate && String(only.arrival_date).slice(0, 10) === reportDate) {
+          return acceptDoc2GuestMatch(only, rec, reportDate, today);
+        }
+      }
     }
-    const hit = pickFromOverlap(byOrder, reportDate, phone);
-    if (hit) return hit;
+    const hit = pickFromOverlap(byOrder, reportDate, phone, rec);
+    if (hit) return acceptDoc2GuestMatch(hit, rec, reportDate, today);
   }
 
   if (phone) {
     const byPhone = existingRows.filter((g) => g.phone === phone);
-    const hit = pickFromOverlap(byPhone, reportDate, phone);
-    if (hit) return hit;
+    const hit = pickFromOverlap(byPhone, reportDate, phone, rec);
+    if (hit) return acceptDoc2GuestMatch(hit, rec, reportDate, today);
   }
 
   if (rec.guest_name && reportDate) {
@@ -80,7 +117,7 @@ export function findGuestForDoc2Record(
       normalizeGuestName(g.name) === target
       && String(g.arrival_date).slice(0, 10) === reportDate
     );
-    if (hits.length === 1) return hits[0];
+    if (hits.length === 1) return acceptDoc2GuestMatch(hits[0], rec, reportDate, today);
   }
 
   return null;
@@ -92,6 +129,7 @@ export async function matchDoc2Record(
   guestCache: Doc2GuestRow[],
   reportDateYmd: string | null,
 ): Promise<Doc2MatchResult> {
+  const today = israelYmd();
   const reportDate = rec.arrival_date
     ? String(rec.arrival_date).slice(0, 10)
     : reportDateYmd?.slice(0, 10) ?? null;
@@ -115,11 +153,14 @@ export async function matchDoc2Record(
       .neq("status", "cancelled")
       .limit(5);
     if (byOrder?.length === 1) {
-      guest = byOrder[0] as Doc2GuestRow;
-      method = "order";
-      confidence = 0.92;
+      const candidate = byOrder[0] as Doc2GuestRow;
+      if (doc2RecordMatchesGuest(rec, candidate)) {
+        guest = candidate;
+        method = "order";
+        confidence = 0.92;
+      }
     } else if (byOrder && byOrder.length > 1) {
-      const hit = pickFromOverlap(byOrder as Doc2GuestRow[], reportDate, rec.phone);
+      const hit = pickFromOverlap(byOrder as Doc2GuestRow[], reportDate, rec.phone, rec);
       if (hit) {
         guest = hit;
         method = "order";
@@ -156,6 +197,12 @@ export async function matchDoc2Record(
       method = "fuzzy";
       confidence = 0.78;
     }
+  }
+
+  guest = acceptDoc2GuestMatch(guest, rec, reportDate, today);
+  if (!guest) {
+    method = "none";
+    confidence = 0;
   }
 
   const classified = classifyDoc2MailWorkflow(rec, guest);
