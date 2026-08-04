@@ -363,6 +363,7 @@ const T = {
     identityDb: "תואם מהמערכת", identityWa: "פרופיל WhatsApp", identityPhone: "מספר בלבד",
     identityUnlinked: "⚠ לא רשום במערכת",
     guestDeletedBanner: "פרופיל אורח נמחק — השיחה נשמרת להיסטוריה בלבד",
+    guestUnlinkedBanner: "השיחה הזו לא מקושרת לפרופיל אורח כרגע — ייתכן שהקישור עדיין נטען, או שזה מספר שלא רשום במערכת",
     editGuestNoProfile: "אין פרופיל אורח פעיל — הוסף אורח מניהול אורחים / צ'ק-אין",
     spa: "ספא",
     msgsCount: (n) => `${n} הודעות`,
@@ -463,6 +464,7 @@ const T = {
     identityDb: "Matched in system", identityWa: "WhatsApp profile", identityPhone: "Phone only",
     identityUnlinked: "⚠ Not in roster",
     guestDeletedBanner: "Guest profile deleted — thread kept for history only",
+    guestUnlinkedBanner: "This thread isn't linked to a guest profile right now — the link may still be loading, or this number isn't in the system",
     editGuestNoProfile: "No active guest profile — add from Guests / Check-in",
     spa: "Spa",
     msgsCount: (n) => `${n} messages`,
@@ -3250,6 +3252,17 @@ export default function WhatsAppInbox({
   const guestMapReadyRef = useRef(false); // true after initial guests fetch — avoids stripping before load
   const rosterAnchorGuestsRef = useRef([]); // suite in-resort / arriving today — ghost threads when WA window misses
   const [rosterAnchorTick, setRosterAnchorTick] = useState(0);
+  // Phones confirmed deleted THIS session (applyGuestRowDelete) — the only reliable
+  // signal that an unlinked thread is a real delete, not just an unmatched lookup
+  // (never-a-guest number, or a guest map still loading). Session-only, no persistence.
+  const deletedGuestPhonesRef = useRef(new Set());
+  // Roster-anchor ghosts (suite guests with zero WA history) live only in this merged
+  // list, never in raw `contacts` — every by-threadKey lookup must read from here or
+  // clicking/refreshing a zero-message checked-in guest silently resolves to nothing.
+  const contactsWithAnchors = useMemo(() => {
+    void rosterAnchorTick; // ref bump when roster-anchor guests load/update
+    return mergeRosterAnchorContacts(contacts, rosterAnchorGuestsRef.current, canonicalizePhone);
+  }, [contacts, rosterAnchorTick]);
   const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
   const alertsReadyRef   = useRef(false); // skip sounds until initial fetchAll completes
   const pendingFocusRef  = useRef(null);   // { phone, guestName?, inboxChannel? } — deep-link
@@ -3321,9 +3334,16 @@ export default function WhatsAppInbox({
     if (!guestMapReadyRef.current) return contacts;
     // Pass Map only after claims fetch — null keeps Whapi stamps (never Meta leak).
     const whapiMap = whapiClaimsReadyRef.current ? whapiClaimsMapRef.current : null;
-    return contacts.map((c) =>
-      syncInboxContactWithGuestMap(c, resolveGuestEntryForContact(c), whapiMap),
-    );
+    return contacts.map((c) => {
+      const synced = syncInboxContactWithGuestMap(c, resolveGuestEntryForContact(c), whapiMap);
+      // Only a confirmed applyGuestRowDelete event means "deleted" — an unlinked
+      // guestId is just as often a lookup that hasn't matched yet (or never will,
+      // e.g. a non-guest WhatsApp sender), never itself proof of deletion.
+      if (!synced.guestId && deletedGuestPhonesRef.current.has(normalizePhone(synced.phone))) {
+        return { ...synced, guestDeleted: true };
+      }
+      return synced;
+    });
   }, [resolveGuestEntryForContact]);
 
   const reconcileRowsWithGuestMap = useCallback((rows) => {
@@ -3688,7 +3708,7 @@ export default function WhatsAppInbox({
   }, [fetchThreadHistory]);
 
   const refreshActiveThread = useCallback(async () => {
-    const selected = contacts.find((c) => c.threadKey === active);
+    const selected = contactsWithAnchors.find((c) => c.threadKey === active);
     if (!selected) return;
     setThreadRefreshBusy(true);
     try {
@@ -3700,7 +3720,7 @@ export default function WhatsAppInbox({
     } finally {
       setThreadRefreshBusy(false);
     }
-  }, [active, contacts, fetchThreadHistoryForContact, fetchThreadDbCount]);
+  }, [active, contactsWithAnchors, fetchThreadHistoryForContact, fetchThreadDbCount]);
 
   // ── Full-inbox search (message content + guests not yet loaded) ──────────
   // displayContacts' rosterSearch filter (below) only matches contacts already
@@ -4122,10 +4142,14 @@ export default function WhatsAppInbox({
     if (!guestId && !deleted?.phone) return;
 
     if (deleted.phone) {
+      deletedGuestPhonesRef.current.add(normalizePhone(deleted.phone));
       guestPhoneMapRef.current.delete(normalizePhone(deleted.phone));
     } else {
       for (const [key, val] of guestPhoneMapRef.current.entries()) {
-        if (val.id === guestId) guestPhoneMapRef.current.delete(key);
+        if (val.id === guestId) {
+          deletedGuestPhonesRef.current.add(key);
+          guestPhoneMapRef.current.delete(key);
+        }
       }
     }
     if (guestId) guestIdMapRef.current.delete(guestId);
@@ -4325,18 +4349,27 @@ export default function WhatsAppInbox({
     if (!pending || loading) return;
 
     const normTarget = normalizePhone(pending.phone);
-    const phoneMatches = contacts.filter(
+    // contactsWithAnchors, not raw contacts — a zero-message checked-in/arriving-today
+    // guest only exists as a roster-anchor ghost (inbox_channel "unified", threadKey =
+    // bare phone), and matching against raw contacts here reproduces the exact bug this
+    // fix targets: the ghost is skipped and a bare synthetic contact is opened instead,
+    // whose threadKey ("<phone>::<channel>") never matches the ghost's, so re-opening the
+    // same guest from the roster afterward resolves to a second, disconnected activeContact.
+    const phoneMatches = contactsWithAnchors.filter(
       (c) => c.phone === pending.phone || normalizePhone(c.phone) === normTarget,
     );
     // Deep links (Requests Board, QR modal, staff links) carry a phone only —
     // no channel — and a guest can now have both a Meta and a Whapi thread.
     // Deterministically prefer the Meta thread (primary/default channel) so
     // the same phone always opens the same thread, instead of whichever one
-    // happened to sort first in the roster array.
+    // happened to sort first in the roster array. A roster-anchor ghost (no
+    // message history yet) is preferred over the fully-synthetic fallback
+    // below, since it carries the real guest profile (name/room/status).
     const preferredChannel = pending.inboxChannel === "whapi" ? "whapi" : "meta";
     const match =
       phoneMatches.find((c) => (c.inbox_channel ?? "meta") === preferredChannel)
       ?? phoneMatches.find((c) => (c.inbox_channel ?? "meta") === "meta")
+      ?? phoneMatches.find((c) => c.inbox_channel === "unified")
       ?? phoneMatches[0];
 
     if (match) {
@@ -4355,7 +4388,7 @@ export default function WhatsAppInbox({
       if (pending.guestName) setNavGuestName(pending.guestName);
       pendingFocusRef.current = null;
     }
-  }, [contacts, loading, openContact]);
+  }, [contactsWithAnchors, loading, openContact]);
 
   // ── Route a guest conversation to Operations (Maintenance/Housekeeping) ──
   // Inserts a real `tasks` row — same shape as whapi-webhook/staff-ops — so it
@@ -4928,7 +4961,7 @@ export default function WhatsAppInbox({
 
   // ── Auto-scroll to bottom of thread ─────────────────────────────────────
   // Moved below derived `thread` — scroll when active chat grows (realtime/poll).
-  const activeContact   = contacts.find((c) => c.threadKey === active) ?? null;
+  const activeContact   = contactsWithAnchors.find((c) => c.threadKey === active) ?? null;
   const thread          = activeContact?.messages ?? [];
   const activeInboxChannel = activeContact?.inbox_channel ?? null;
 
@@ -5315,10 +5348,6 @@ export default function WhatsAppInbox({
   }
 
   // ── Derived state ──────────────────────────────────────────────────────────
-  const contactsWithAnchors = useMemo(() => {
-    void rosterAnchorTick; // ref bump when roster-anchor guests load/update
-    return mergeRosterAnchorContacts(contacts, rosterAnchorGuestsRef.current, canonicalizePhone);
-  }, [contacts, rosterAnchorTick]);
   const visibleContacts = contactsWithAnchors.filter((c) => !archivedPhones.has(c.threadKey ?? c.phone));
   // A departed guest who messages back (new inbound, unread) must still surface in
   // the main "all" roster — not silently buried in the "אחרי עזיבה" tab nobody
@@ -6208,7 +6237,7 @@ export default function WhatsAppInbox({
           fontWeight: 700,
           color: "var(--black)",
         }}>
-          ⚠ {t.guestDeletedBanner}
+          ⚠ {activeContact.guestDeleted ? t.guestDeletedBanner : t.guestUnlinkedBanner}
         </div>
       )}
 

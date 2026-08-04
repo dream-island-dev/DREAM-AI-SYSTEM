@@ -22,6 +22,36 @@ export const META_TEMPLATE_CANONICAL_STATIC: Record<string, string> = {
   night_before_suites_shabbat: TEMPLATE_BODY_APPROVED.night_before_suites_shabbat,
 };
 
+/**
+ * Closed-window night_before trusts Meta's live approved body over the local ACC
+ * snapshot — wording is Meta's to own once approved. For these templates the guard
+ * only checks the embedded time tokens (defense against a genuine stale-version bug
+ * like 09:00 vs 12:00) and never blocks the send even when that check fails — it logs
+ * instead. suite_welcome_morning (open 09:00-vs-12:00 incident) stays on the strict
+ * full-body throw path below.
+ */
+export const META_TEMPLATE_CANONICAL_WARN_ONLY = new Set<string>([
+  "night_before_suites",
+  "night_before_suites_shabbat",
+]);
+
+const TIME_TOKEN_RE = /\b([0-2]?\d):([0-5]\d)\b/g;
+
+export function extractTimeTokens(text: string): string[] {
+  const out: string[] = [];
+  for (const m of String(text ?? "").matchAll(TIME_TOKEN_RE)) {
+    out.push(`${m[1].padStart(2, "0")}:${m[2]}`);
+  }
+  return out.sort();
+}
+
+export function templateTimesMatch(canonical: string, live: string): boolean {
+  const a = extractTimeTokens(canonical);
+  const b = extractTimeTokens(live);
+  if (a.length === 0 || b.length === 0) return false;
+  return a.join(",") === b.join(",");
+}
+
 export function botScriptTextToMetaTemplateBody(scriptText: string): string {
   return String(scriptText ?? "")
     .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, "{{1}}")
@@ -96,7 +126,11 @@ export async function checkMetaTemplateCanonicalDrift(
     return { ok: false, templateName, liveBody: null, canonicalBody, hebrewError };
   }
 
-  if (templateBodiesMatch(canonicalBody, liveBody)) {
+  const isTimeTokenOnly = META_TEMPLATE_CANONICAL_WARN_ONLY.has(templateName);
+  const bodiesMatch = isTimeTokenOnly
+    ? templateTimesMatch(canonicalBody, liveBody)
+    : templateBodiesMatch(canonicalBody, liveBody);
+  if (bodiesMatch) {
     return { ok: true, templateName, liveBody };
   }
 
@@ -113,13 +147,21 @@ function snippetForLog(text: string): string {
   return oneLine.length > 72 ? `${oneLine.slice(0, 72)}…` : oneLine;
 }
 
-/** Throws when live Meta body ≠ ACC canonical. Used before sendViaTemplate on journey stages. */
+/**
+ * Throws when live Meta body ≠ ACC canonical. Used before sendViaTemplate on journey stages.
+ * Templates in META_TEMPLATE_CANONICAL_WARN_ONLY never throw — a mismatch is logged (console.warn)
+ * and the send proceeds, since Meta's live approved body is trusted over the local snapshot.
+ */
 export async function assertMetaTemplateCanonicalOrThrow(
   supabase: ReturnType<typeof createClient>,
   templateName: string,
 ): Promise<void> {
   const drift = await checkMetaTemplateCanonicalDrift(supabase, templateName);
   if (!drift.ok) {
+    if (META_TEMPLATE_CANONICAL_WARN_ONLY.has(templateName)) {
+      console.warn(`[metaTemplateCanonicalGuard] ${drift.hebrewError}`);
+      return;
+    }
     throw new Error(drift.hebrewError);
   }
 }
