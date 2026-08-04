@@ -742,8 +742,9 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 │                                                         │
 │  אחרי תעלה → בדוק בטלפון → כן / תקן: …                  │
 │                                                         │
-│  Claude Code: 3 sessions — מאיה / בודק / שומר (§13)    │
+│  Claude Code: מאיה / בודק / מבקר UX / שומר (§13)       │
 │  לפני תעלה על backend: /xos-qa + /xos-security         │
+│  לפני תעלה על UI: /xos-ux  ·  שבועי: /xos-qa-full      │
 └─────────────────────────────────────────────────────────┘
 
 
@@ -819,21 +820,24 @@ Mike says now:
 
 ---
 
-## 13. Claude Code Desktop — Mike's Magic Workflow (3 Agents)
+## 13. Claude Code Desktop — Mike's Magic Workflow (4 Agents)
 
 Mike's goal: **describe a need in Hebrew → agents plan, build, QA, deploy** — with minimal friction and maximum safety.
 
 Cursor and Claude Code Desktop share the same brain: `CLAUDE.md` + this playbook. Use **both** tools; never edit the same files in parallel in two sessions on the same repo dir (playbook §10 2026-07-07 index.lock incident).
 
-### 13.1 The three agents
+### 13.1 The four agents
+
+**2026-08-04 split:** QA used to mean one thing (`qa-gate`, backend-only) — this caused a real mix-up where Mike expected a security review to also catch UI issues. Now there are three single-purpose read-only reviewers, each explicitly disclaiming what it does *not* cover: `qa-gate` = backend/automation, `ux-auditor` = product/UI/IA, `security-sentinel` = secrets/RLS/injection. See `docs/staff_ui_ux_audit_2026-08-02.md` for the audit that motivated `ux-auditor`.
 
 | Agent | File | Role | Tools |
 |---|---|---|---|
 | **מאיה** | `.claude/agents/maya-partner.md` | Daily partner — Hebrew chat, pipeline routing, atomic Execute, browser approval loop | Full (Read/Edit/Bash/…) |
-| **בודק** | `.claude/agents/qa-gate.md` | Independent QA — read-only, P0 table or `PASSED QA` | Read/Grep/Glob/Bash only |
-| **שומר** | `.claude/agents/security-sentinel.md` | Security before backend deploy | Read/Grep/Glob/Bash only |
+| **בודק** | `.claude/agents/qa-gate.md` | Independent backend/automation QA — git-diff-scoped, read-only, P0 table or `PASSED QA` | Read/Grep/Glob/Bash only |
+| **מבקר UX** | `.claude/agents/ux-auditor.md` | Independent product/UX/IA audit — holistic, not diff-scoped; baseline = `RESORT_UI_MANIFEST.md` + `staff_ui_ux_audit_2026-08-02.md`; `PASSED UX AUDIT` or P0/P1/P2 table | Read/Grep/Glob/Bash only |
+| **שומר** | `.claude/agents/security-sentinel.md` | Security before backend deploy — secrets/RLS/PII/injection only | Read/Grep/Glob/Bash only |
 
-Slash skills (user-invoked): `/xos-qa` → qa-gate checklist · `/xos-security` → security-sentinel checklist.
+Slash skills (user-invoked): `/xos-qa` → qa-gate checklist · `/xos-ux` → ux-auditor checklist · `/xos-security` → security-sentinel checklist · `/xos-qa-full` → runs all three in sequence (weekly / pre-launch sweep).
 
 **Not** the same as staff product agents (נועה/ליאת/סיגל in `staffAgentRoster.js`) — those serve resort staff on WhatsApp; these serve **Mike's development**.
 
@@ -841,9 +845,9 @@ Slash skills (user-invoked): `/xos-qa` → qa-gate checklist · `/xos-security` 
 
 1. Open Claude Code Desktop → project folder `DREAM-AI-SYSTEM`.
 2. `npm start` running (or use `.claude/launch.json` debug config `dream-ai-react`).
-3. Create **3 sessions** (`Ctrl+N`): name them `מאיה`, `בודק`, `שומר`.
+3. Create sessions (`Ctrl+N`) as needed: `מאיה` (always open), `בודק` / `מבקר UX` / `שומר` (opened on demand — they're read-only reviewers, not always-on).
 4. After editing agent files on disk → **restart session** to reload (or use `/agents` UI — changes apply immediately).
-5. Verify `@qa-gate` and `@security-sentinel` appear in @-mention typeahead.
+5. Verify `@qa-gate`, `@ux-auditor`, and `@security-sentinel` appear in @-mention typeahead.
 
 ### 13.3 Daily flow ("אני מבקש והקסם קורה")
 
@@ -852,11 +856,13 @@ Mike (מאיה session):  "רוצה ש…"
 מאיה:                 Diagnostic (3 options) → wait כן
 מאיה:                 ONE small change → "תסתכל ב-localhost:3000 → Inbox"
 Mike:                 כן
-מאיה (optional):      "לפני תעלה — פתח session בודק"
-Mike (בודק session):  /xos-qa   OR   @qa-gate בדוק את השינויים
-בודק:                 PASSED QA  OR  P0 table
-Mike (שומר session): /xos-security   (if functions/migrations/webhooks touched)
-שומר:                 SECURITY PASSED
+מאיה (optional):      "לפני תעלה — פתח session בודק / מבקר UX"
+Mike (בודק session):     /xos-qa   OR   @qa-gate בדוק את השינויים   (if backend touched)
+בודק:                    PASSED QA  OR  P0 table
+Mike (מבקר UX session):  /xos-ux   OR   @ux-auditor                (if UI/screens touched)
+מבקר UX:                 PASSED UX AUDIT  OR  P0/P1/P2 table
+Mike (שומר session):     /xos-security   (mandatory if functions/migrations/webhooks touched)
+שומר:                    SECURITY PASSED
 Mike (מאיה session):  תעלה
 מאיה:                 build → commit → push → functions deploy (checklist §6)
 ```
@@ -869,7 +875,9 @@ Mike (מאיה session):  תעלה
 |---|---|---|
 | Feature, bugfix, UI, planning | **מאיה** | default — or `@maya-partner` |
 | After Execute on automation/webhooks/RLS/Shabbat | **בודק** | `/xos-qa` or `@qa-gate` — **separate session** (fresh context) |
-| Before deploy of functions/migrations | **שומר** | `/xos-security` or `@security-sentinel` |
+| After a UI phase batch, or weekly | **מבקר UX** | `/xos-ux` or `@ux-auditor` — **not** a security check |
+| Before deploy of functions/migrations | **שומר** | `/xos-security` or `@security-sentinel` — **mandatory**, never skip |
+| Weekly sweep / before a major תעלה | any session | `/xos-qa-full` — runs all three in sequence |
 | "How does X work?" | **מאיה** | Stage 0 only — `רק research` |
 | Large multi-file refactor | **מאיה** | Claude Code `/batch` (parallel worktrees) |
 

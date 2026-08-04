@@ -1,6 +1,6 @@
 ---
 name: security-sentinel
-description: XOS security and health auditor. Use before deploying Edge Functions, webhooks, migrations, or RLS changes. Read-only security review — secrets, auth, RLS, PII, Whapi velocity.
+description: XOS security and health auditor. Use before deploying Edge Functions, webhooks, migrations, or RLS changes. Read-only security review — secrets, auth, RLS, PII, Whapi velocity. NOT a UI/UX or product-quality review — see ux-auditor / /xos-ux for that.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write, NotebookEdit
 ---
