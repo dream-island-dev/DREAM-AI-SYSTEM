@@ -1722,19 +1722,27 @@ serve(async (req: Request) => {
       try {
         if (!sim) {
           if (routeViaWhapi) {
-            whapiWamid = await sendWhapiText(cleanPhoneForMention(guestPhone), whapiBody!);
+            whapiWamid = await sendWhapiTextGuarded(supabase, cleanPhoneForMention(guestPhone), whapiBody!, {
+              sendClass: "guest", trigger: "broadcast", source: "whatsapp-send",
+            });
           } else {
             dispatched = await sendViaTemplate(guestPhone, waTemplateName, vars, "he", undefined, requestImageUrl);
           }
           status = "sent";
         }
       } catch (e) {
-        sendError = (e as Error).message;
-        // A timeout means Meta never confirmed OR rejected — not the same as a
-        // real rejection. Reporting it as "failed" is exactly the misleading
-        // signal that showed messages as failed after they'd actually arrived.
-        status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
-        console.error(`[whatsapp] broadcast send ${status}:`, sendError);
+        if (e instanceof WhapiRateLimitedError) {
+          status = "rate_limited";
+          sendError = e.message;
+          console.warn("[whatsapp] broadcast rate_limited:", sendError);
+        } else {
+          sendError = (e as Error).message;
+          // A timeout means Meta never confirmed OR rejected — not the same as a
+          // real rejection. Reporting it as "failed" is exactly the misleading
+          // signal that showed messages as failed after they'd actually arrived.
+          status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
+          console.error(`[whatsapp] broadcast send ${status}:`, sendError);
+        }
       }
 
       await notifyAdminIfDispatchFailed({
