@@ -38,6 +38,21 @@ export function buildSpaUpsellStaffCopy(leads, arrivalDate) {
   return lines.join("\n");
 }
 
+/** Single-lead clipboard copy — same row format as buildSpaUpsellStaffCopy, no numbering/header/footer. */
+export function buildSpaLeadSingleCopy(lead) {
+  const name = lead?.guests?.name || "אורח";
+  const room = lead?.guests?.room ? ` · ${lead.guests.room}` : "";
+  const phone = lead?.phone || lead?.guests?.phone || "—";
+  const arrival = lead?.guests?.arrival_date || "—";
+  const message = String(lead?.message ?? "").trim();
+  const lines = [
+    `💆 ${name}${room}`,
+    `📅 ${arrival} · 📱 ${phone}`,
+  ];
+  if (message) lines.push(`«${message}»`);
+  return lines.join("\n");
+}
+
 export function buildInboxDeepLink(phone, guestName) {
   const digits = String(phone ?? "").replace(/\D/g, "");
   if (!digits) return STAFF_APP_ORIGIN;

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { israelTodayYmd } from "../utils/spaUpsellAudience";
 import {
+  buildSpaLeadSingleCopy,
   buildSpaUpsellStaffCopy,
   fetchAllOpenSpaUpsellLeads,
   fmtLeadTime,
@@ -77,6 +78,7 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [resolvingId, setResolvingId] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
   const [dateFilter, setDateFilter] = useState(FILTER_TODAY);
   const [customDate, setCustomDate] = useState(israelTodayYmd());
 
@@ -145,6 +147,16 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
     );
     try {
       await navigator.clipboard.writeText(text);
+    } catch {
+      setLoadError("לא הצלחנו להעתיק ללוח");
+    }
+  };
+
+  const copySingleLead = async (lead) => {
+    try {
+      await navigator.clipboard.writeText(buildSpaLeadSingleCopy(lead));
+      setCopiedId(lead.id);
+      setTimeout(() => setCopiedId((cur) => (cur === lead.id ? null : cur)), 1500);
     } catch {
       setLoadError("לא הצלחנו להעתיק ללוח");
     }
@@ -463,6 +475,13 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                       alignItems: "center",
                       width: isMobile ? "100%" : "auto",
                     }}>
+                      <button
+                        type="button"
+                        onClick={() => copySingleLead(lead)}
+                        style={actionBtn("#F5F3FF", "#5B21B6", false, isMobile)}
+                      >
+                        {copiedId === lead.id ? "✓ הועתק" : "📋 העתק"}
+                      </button>
                       {onOpenDreamBotChat && resolveLeadPhone(lead) && (
                         <button
                           type="button"
