@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { usePageVisibility } from "../hooks/usePageVisibility";
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { canPerform } from "../utils/auth";
 import {
   computeResortPulse,
@@ -11,10 +12,21 @@ import {
 import {
   isSuiteArrivingToday,
   israelTodayStr,
+  israelDateOffsetStr,
 } from "../utils/guestTiming";
 
 const GUEST_SELECT =
   "phone, status, arrival_date, departure_date, room, room_type, arrival_time, name";
+
+// Scalability guard (2026-08-04) — bounds the guests fetch below so it stops
+// growing with the guest table's full history. Wide enough to never exclude
+// a currently-relevant guest (arrivals/in-resort/departures) or a recently
+// departed one whose phone might still need isGuestDeparted() classification
+// for countActiveInboxAlerts (a guest missing from this fetch entirely reads
+// as "not departed", not "unknown" — so this can't be scoped down to
+// today-only without misclassifying older departed guests). Same window as
+// whatsapp-cron's GUEST_SCAN_LOOKBACK_DAYS for consistency.
+const GUEST_SCAN_LOOKBACK_DAYS = 45;
 
 const ALERT_TYPE_META = {
   complaint: { label: "🔴 תקלה" },
@@ -228,7 +240,10 @@ export default function OperationalDashboard({
           .select("*, guests(name, room, arrival_date, departure_date, status)")
           .order("created_at", { ascending: false })
           .limit(40),
-        supabase.from("guests").select(GUEST_SELECT),
+        supabase
+          .from("guests")
+          .select(GUEST_SELECT)
+          .gte("arrival_date", israelDateOffsetStr(-GUEST_SCAN_LOOKBACK_DAYS)),
         supabase
           .from("whatsapp_conversations")
           .select("phone")
@@ -286,6 +301,12 @@ export default function OperationalDashboard({
     }
   }, [canCreate, userDept]);
 
+  // Realtime fires once per changed row — a burst of guest/task/wa activity
+  // (exactly what a day-pass surge produces) must not trigger a full refetch
+  // per row, in every open staff tab. Trailing debounce collapses a burst
+  // into one refresh; the mount/visibility-change refresh above stays immediate.
+  const debouncedRefresh = useDebouncedCallback(refresh, 2500);
+
   useEffect(() => {
     if (!pageVisible) return undefined;
     refresh();
@@ -296,7 +317,7 @@ export default function OperationalDashboard({
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "tasks" },
-        () => refresh(),
+        () => debouncedRefresh(),
       )
       .subscribe();
     const chAlerts = supabase
@@ -304,7 +325,7 @@ export default function OperationalDashboard({
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "guest_alerts" },
-        () => refresh(),
+        () => debouncedRefresh(),
       )
       .subscribe();
     const chGuests = supabase
@@ -312,7 +333,7 @@ export default function OperationalDashboard({
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "guests" },
-        () => refresh(),
+        () => debouncedRefresh(),
       )
       .subscribe();
     const chWa = supabase
@@ -320,7 +341,7 @@ export default function OperationalDashboard({
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "whatsapp_conversations" },
-        () => refresh(),
+        () => debouncedRefresh(),
       )
       .subscribe();
 
@@ -330,7 +351,7 @@ export default function OperationalDashboard({
       supabase.removeChannel(chGuests);
       supabase.removeChannel(chWa);
     };
-  }, [refresh, pageVisible]);
+  }, [refresh, debouncedRefresh, pageVisible]);
 
   if (loading && !tasks.length && !requests.length) {
     return (

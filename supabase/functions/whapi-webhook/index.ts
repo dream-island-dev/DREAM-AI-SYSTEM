@@ -1237,8 +1237,8 @@ async function handleGuestDirectMessage(
     // to guests who actually received the offer and still have no spa today.
     if (
       guestId && guestRecord &&
-      (await resolveSpaUpsellAcceptanceEligible(supabase, guestRecord as Record<string, unknown>)) &&
-      isSpaUpsellAcceptanceReply(text)
+      isSpaUpsellAcceptanceReply(text) &&
+      (await resolveSpaUpsellAcceptanceEligible(supabase, guestRecord as Record<string, unknown>))
     ) {
       await runSpaUpsellAcceptanceIntercept(
         supabase,
@@ -1434,6 +1434,21 @@ serve(async (req: Request) => {
         { status: 200, headers: { ...CORS, "Content-Type": "application/json" } });
     }
 
+    // ── Fire-and-forget (2026-08-04 scalability fix) — ack Whapi within its
+    // retry window immediately, process in background. Mirrors
+    // whatsapp-webhook/index.ts's processAsync + EdgeRuntime.waitUntil
+    // pattern: previously this whole block (burst-wait + DB round trips +
+    // Gemini/Claude + Whapi send, up to 3 message loops) was awaited
+    // synchronously before responding — a slow message under load could hold
+    // the invocation open 60-90s+, pressuring Edge Function concurrency far
+    // harder than the already-async Meta path. Errors inside are only
+    // logged, never surfaced to the caller — Whapi already has its 200 ack
+    // by the time they'd happen, the same tradeoff whatsapp-webhook already
+    // made for its own background processing. Verified no `return new
+    // Response(...)` exists inside the loops below (grep-checked) — the
+    // caller-visible response only ever came from after them, or from the
+    // synchronous checks above this closure.
+    const processAsync = async () => {
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     await primeGuestChannelConfig(supabase);
     const lockGroup = Deno.env.get("WHAPI_GROUP_ID")?.trim() || null;
@@ -1988,7 +2003,20 @@ serve(async (req: Request) => {
       });
     }
 
-    return new Response(JSON.stringify({ ok: true, results }),
+    }; // end processAsync
+
+    const backgroundTask = processAsync().catch((e) =>
+      console.error("[whapi-webhook] processAsync error:", (e as Error).message)
+    );
+    const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+    if (typeof edgeRuntime?.waitUntil === "function") {
+      edgeRuntime.waitUntil(backgroundTask);
+    } else {
+      // Runtimes without EdgeRuntime (local `supabase functions serve`).
+      await backgroundTask;
+    }
+
+    return new Response(JSON.stringify({ ok: true }),
       { status: 200, headers: { ...CORS, "Content-Type": "application/json" } });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

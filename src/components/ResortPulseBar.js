@@ -2,10 +2,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { usePageVisibility } from "../hooks/usePageVisibility";
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { computeResortPulse, buildGuestsByPhoneKey, countActiveInboxAlerts } from "../utils/resortPulseStats";
+import { israelDateOffsetStr } from "../utils/guestTiming";
 
 const GUEST_SELECT =
   "phone, status, arrival_date, departure_date, room, room_type";
+
+// Scalability guard — see the matching comment in OperationalDashboard.js.
+const GUEST_SCAN_LOOKBACK_DAYS = 45;
 
 const PULSE_CACHE_TTL_MS = 5 * 60_000;
 const pulseMemoryCache = { stats: null, blockedAutomation: 0, at: 0 };
@@ -30,7 +35,10 @@ export default function ResortPulseBar({ onAction, className = "" }) {
     }
     try {
       const [guestsRes, alertsRes] = await Promise.all([
-        supabase.from("guests").select(GUEST_SELECT),
+        supabase
+          .from("guests")
+          .select(GUEST_SELECT)
+          .gte("arrival_date", israelDateOffsetStr(-GUEST_SCAN_LOOKBACK_DAYS)),
         supabase
           .from("whatsapp_conversations")
           .select("phone")
@@ -73,13 +81,18 @@ export default function ResortPulseBar({ onAction, className = "" }) {
     }
   }, []);
 
+  // Trailing debounce so a burst of guest/message activity collapses into one
+  // forced (cache-bypassing) refresh instead of one per changed row — see the
+  // matching comment in OperationalDashboard.js.
+  const debouncedForceRefresh = useDebouncedCallback(() => refresh({ force: true }), 2500);
+
   useEffect(() => {
     if (!pageVisible) return undefined;
     refresh({ force: !pulseMemoryCache.stats });
     const iv = setInterval(() => refresh(), 60_000);
     if (!isSupabaseConfigured || !supabase) return () => clearInterval(iv);
 
-    const onGuests = () => refresh({ force: true });
+    const onGuests = () => debouncedForceRefresh();
     const chGuests = supabase
       .channel("resort-pulse-guests")
       .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, onGuests)
@@ -93,7 +106,7 @@ export default function ResortPulseBar({ onAction, className = "" }) {
       supabase.removeChannel(chGuests);
       supabase.removeChannel(chWa);
     };
-  }, [refresh, pageVisible]);
+  }, [refresh, debouncedForceRefresh, pageVisible]);
 
   if (!stats && !loadError) return null;
 

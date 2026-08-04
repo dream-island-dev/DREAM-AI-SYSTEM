@@ -4857,10 +4857,35 @@ export default function WhatsAppInbox({
           (payload) => {
             console.log("[WA-inbox] ✅ Realtime UPDATE received:", payload.new?.id, payload.new?.phone);
             if (!payload.new?.id) return;
+            const updatedMsg = { ...normalise(payload.new) };
             allMsgsRef.current = allMsgsRef.current.map((m) =>
-              m.id === payload.new.id ? { ...m, ...normalise(payload.new) } : m
+              m.id === payload.new.id ? { ...m, ...updatedMsg } : m
             );
-            setContacts(applyGrouping(allMsgsRef.current));
+            // A status/content tick (delivered→read, edited body) on an
+            // already-loaded message never changes which contact it belongs
+            // to — patch it in place instead of re-running the full
+            // reconcile+group+identity+claim pipeline over every message on
+            // every tick (the dominant realtime event during a busy shift).
+            // Falls back to a full applyGrouping (computed from allMsgsRef,
+            // the source of truth, not from prevContacts) only when the
+            // message isn't found in any loaded contact yet — e.g. still
+            // mid-fetch — so the update is never silently dropped. The
+            // decision is made entirely inside the updater (no side-effect
+            // flag read after the setContacts call) since React does not
+            // guarantee an updater function runs synchronously.
+            setContacts((prevContacts) => {
+              let touched = false;
+              const next = prevContacts.map((contact) => {
+                if (!contact.messages?.length) return contact;
+                const idx = contact.messages.findIndex((m) => m.id === payload.new.id);
+                if (idx === -1) return contact;
+                touched = true;
+                const nextMessages = contact.messages.slice();
+                nextMessages[idx] = { ...nextMessages[idx], ...updatedMsg };
+                return { ...contact, messages: nextMessages };
+              });
+              return touched ? next : applyGrouping(allMsgsRef.current);
+            });
             setLastUpdated(new Date());
           }
         )
@@ -5348,62 +5373,99 @@ export default function WhatsAppInbox({
   }
 
   // ── Derived state ──────────────────────────────────────────────────────────
-  const visibleContacts = contactsWithAnchors.filter((c) => !archivedPhones.has(c.threadKey ?? c.phone));
-  // A departed guest who messages back (new inbound, unread) must still surface in
-  // the main "all" roster — not silently buried in the "אחרי עזיבה" tab nobody
-  // checks by default (Disable Don't Hide, CLAUDE.md §0.2). It lands in the pinned
-  // "🔵 הודעות חדשות" section (buildGroupedRosterSections below) like anyone else's
-  // unread message. Only a departed contact with zero unread stays departed-only.
-  // A departed guest stays in the active roster while unread OR while this
-  // specific thread (phone+channel) heard from them within the last 7 days —
-  // otherwise opening the thread (which clears unread via markPhoneInboundRead)
-  // instantly dropped it out of the roster it was just opened from. Whapi's
-  // post-stay ops conversations on the Suites device are exactly the case
-  // this was breaking hardest.
-  const activeRosterContacts = visibleContacts.filter(
-    (c) =>
-      (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c))
-      // Spa day-pass stays in its tab — EXCEPT human_requested (never bury waiting guests).
-      && (!contactIsDaypassSpaCohort(c) || c.humanRequested),
-  );
-  const departedContacts = visibleContacts.filter(
-    (c) => contactDeparted(c) && contactUnreadCount(c, readCursorsByPhone) === 0 && !hasRecentInboundOnThread(c),
-  );
-  // Day-pass + spa cohort — its own tab, excluded from "all" (Inbox separation).
-  const spaDaypassContacts = visibleContacts.filter((c) => contactIsDaypassSpaCohort(c));
-  // All day-pass (with or without spa) — audience browsing + waiting counts.
-  const daypassAudienceContacts = visibleContacts.filter((c) =>
-    contactIsDaypassAudience(c)
-    && (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c)),
-  );
-  const suiteAudienceContacts = visibleContacts.filter((c) =>
-    contactIsSuiteAudience(c)
-    && (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c)),
-  );
-  // Alerts span EVERY audience — bot reply must never hide a human-waiting guest.
-  const alertContacts = visibleContacts.filter((c) => c.humanRequested && !archivedPhones.has(c.threadKey ?? c.phone));
-  const rosterSource =
-    rosterFilter === "departed" ? departedContacts :
-    rosterFilter === "spa_daypass" ? spaDaypassContacts :
-    rosterFilter === "alerts" ? alertContacts :
-    // Day-pass audience includes spa cohort (otherwise spa blast recipients vanish).
-    audienceFilter === "daypass" ? daypassAudienceContacts :
-    activeRosterContacts;
-  const channelScopedRosterSource = rosterSource.filter((c) =>
-    channelFilter === "all" ? true : contactMatchesChannelFilter(c, channelFilter),
-  );
-  // Audience filter AFTER channel; alerts / spa tab already span or isolate.
-  const audienceScopedRosterSource =
-    rosterFilter === "alerts" || rosterFilter === "spa_daypass" || rosterFilter === "departed"
-      ? channelScopedRosterSource
-      : channelScopedRosterSource.filter((c) => contactMatchesAudienceFilter(c, audienceFilter));
-  // Departed contacts hidden by the current channel filter — surfaced as a
-  // count hint (not silently invisible) so staff filtering to "מכשיר
-  // הסוויטות" know older Whapi conversations exist under "אחרי עזיבה"
-  // instead of reading an empty/short roster as "nothing on this channel."
-  const departedContactsForChannel = channelFilter === "all"
-    ? departedContacts
-    : departedContacts.filter((c) => contactMatchesChannelFilter(c, channelFilter));
+  // Whole chain memoized together (2026-08-04 scalability fix) — every step here
+  // is a filter pass over the full contact list, and this used to re-run on
+  // EVERY render (typing in the reply box, unrelated state changes) because
+  // none of it was wrapped in useMemo — which in turn made displayContacts'
+  // own useMemo below never actually hit its cache, since its dependency
+  // (audienceScopedRosterSource) was a fresh array reference every time. All
+  // helper fns used inside (contactDeparted, contactUnreadCount,
+  // hasRecentInboundOnThread, contactIsDaypassSpaCohort,
+  // contactIsDaypassAudience, contactIsSuiteAudience,
+  // contactMatchesChannelFilter, contactMatchesAudienceFilter) are stable
+  // module-level functions, not component closures — safe to omit from deps.
+  const {
+    visibleContacts,
+    activeRosterContacts,
+    departedContacts,
+    spaDaypassContacts,
+    daypassAudienceContacts,
+    suiteAudienceContacts,
+    alertContacts,
+    rosterSource,
+    audienceScopedRosterSource,
+    departedContactsForChannel,
+  } = useMemo(() => {
+    const visible = contactsWithAnchors.filter((c) => !archivedPhones.has(c.threadKey ?? c.phone));
+    // A departed guest who messages back (new inbound, unread) must still surface in
+    // the main "all" roster — not silently buried in the "אחרי עזיבה" tab nobody
+    // checks by default (Disable Don't Hide, CLAUDE.md §0.2). It lands in the pinned
+    // "🔵 הודעות חדשות" section (buildGroupedRosterSections below) like anyone else's
+    // unread message. Only a departed contact with zero unread stays departed-only.
+    // A departed guest stays in the active roster while unread OR while this
+    // specific thread (phone+channel) heard from them within the last 7 days —
+    // otherwise opening the thread (which clears unread via markPhoneInboundRead)
+    // instantly dropped it out of the roster it was just opened from. Whapi's
+    // post-stay ops conversations on the Suites device are exactly the case
+    // this was breaking hardest.
+    const active = visible.filter(
+      (c) =>
+        (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c))
+        // Spa day-pass stays in its tab — EXCEPT human_requested (never bury waiting guests).
+        && (!contactIsDaypassSpaCohort(c) || c.humanRequested),
+    );
+    const departed = visible.filter(
+      (c) => contactDeparted(c) && contactUnreadCount(c, readCursorsByPhone) === 0 && !hasRecentInboundOnThread(c),
+    );
+    // Day-pass + spa cohort — its own tab, excluded from "all" (Inbox separation).
+    const spaDaypass = visible.filter((c) => contactIsDaypassSpaCohort(c));
+    // All day-pass (with or without spa) — audience browsing + waiting counts.
+    const daypassAudience = visible.filter((c) =>
+      contactIsDaypassAudience(c)
+      && (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c)),
+    );
+    const suiteAudience = visible.filter((c) =>
+      contactIsSuiteAudience(c)
+      && (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c)),
+    );
+    // Alerts span EVERY audience — bot reply must never hide a human-waiting guest.
+    const alerts = visible.filter((c) => c.humanRequested && !archivedPhones.has(c.threadKey ?? c.phone));
+    const source =
+      rosterFilter === "departed" ? departed :
+      rosterFilter === "spa_daypass" ? spaDaypass :
+      rosterFilter === "alerts" ? alerts :
+      // Day-pass audience includes spa cohort (otherwise spa blast recipients vanish).
+      audienceFilter === "daypass" ? daypassAudience :
+      active;
+    const channelScoped = source.filter((c) =>
+      channelFilter === "all" ? true : contactMatchesChannelFilter(c, channelFilter),
+    );
+    // Audience filter AFTER channel; alerts / spa tab already span or isolate.
+    const audienceScoped =
+      rosterFilter === "alerts" || rosterFilter === "spa_daypass" || rosterFilter === "departed"
+        ? channelScoped
+        : channelScoped.filter((c) => contactMatchesAudienceFilter(c, audienceFilter));
+    // Departed contacts hidden by the current channel filter — surfaced as a
+    // count hint (not silently invisible) so staff filtering to "מכשיר
+    // הסוויטות" know older Whapi conversations exist under "אחרי עזיבה"
+    // instead of reading an empty/short roster as "nothing on this channel."
+    const departedForChannel = channelFilter === "all"
+      ? departed
+      : departed.filter((c) => contactMatchesChannelFilter(c, channelFilter));
+
+    return {
+      visibleContacts: visible,
+      activeRosterContacts: active,
+      departedContacts: departed,
+      spaDaypassContacts: spaDaypass,
+      daypassAudienceContacts: daypassAudience,
+      suiteAudienceContacts: suiteAudience,
+      alertContacts: alerts,
+      rosterSource: source,
+      audienceScopedRosterSource: audienceScoped,
+      departedContactsForChannel: departedForChannel,
+    };
+  }, [contactsWithAnchors, archivedPhones, readCursorsByPhone, rosterFilter, audienceFilter, channelFilter]);
 
   // FAIL VISIBLE: other audience has guests waiting for human / unread inbound.
   const otherAudienceWaiting = useMemo(() => {

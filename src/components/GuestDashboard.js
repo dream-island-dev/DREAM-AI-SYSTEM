@@ -30,6 +30,7 @@ import {
   sortCheckinRosterGuests,
 } from "../utils/guestCheckinMatrix";
 import { useCheckinTimelineFilter } from "../hooks/useCheckinTimelineFilter";
+import { applyCheckinScopeSupabaseFilter } from "../utils/checkinGuestsFetch";
 import { formatSpaSchedule } from "../utils/israeliTime";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 import GuestOutboundModal from "./GuestOutboundModal";
@@ -150,10 +151,16 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
   }, []);
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
+  // Scoped to the same timelineScope/customArrivalDate as GuestsPage's
+  // check-in matrix (applyCheckinScopeSupabaseFilter, shared via
+  // checkinGuestsFetch.js) instead of the full guests table — this screen
+  // still applies applyCheckinRosterFilter client-side below for the exact
+  // matrix rules; the server-side filter is only the (wider) superset, so
+  // switching to "ארכיון" still surfaces old guests on purpose.
   const fetchGuests = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
     setLoading(true);
-    const { data, error } = await supabase
+    let query = supabase
       .from("guests")
       .select(
         "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
@@ -164,10 +171,12 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
       )
       .order("arrival_date", { ascending: true })
       .order("name",         { ascending: true });
+    query = applyCheckinScopeSupabaseFilter(query, { scope: timelineScope, customArrivalDate });
+    const { data, error } = await query;
     if (error) showToast("err", "שגיאה בטעינת אורחים: " + error.message);
     else setGuests(data ?? []);
     setLoading(false);
-  }, [showToast]);
+  }, [showToast, timelineScope, customArrivalDate]);
 
   useEffect(() => { fetchGuests(); }, [fetchGuests]);
   // Clear selection when tab or data changes

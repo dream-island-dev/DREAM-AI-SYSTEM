@@ -2697,8 +2697,8 @@ Deno.serve(async (req: Request) => {
         } else if (
           guestId &&
           guest &&
-          (await resolveSpaUpsellAcceptanceEligible(supabase, guest as Record<string, unknown>)) &&
-          isSpaUpsellAcceptanceReply(buttonTitle)
+          isSpaUpsellAcceptanceReply(buttonTitle) &&
+          (await resolveSpaUpsellAcceptanceEligible(supabase, guest as Record<string, unknown>))
         ) {
           await runSpaUpsellAcceptanceIntercept(supabase, {
             phone,
@@ -3054,8 +3054,8 @@ Deno.serve(async (req: Request) => {
         !isButtonReply &&
         guestId &&
         guest &&
-        (await resolveSpaUpsellAcceptanceEligible(supabase, guest as Record<string, unknown>)) &&
-        isSpaUpsellAcceptanceReply(text)
+        isSpaUpsellAcceptanceReply(text) &&
+        (await resolveSpaUpsellAcceptanceEligible(supabase, guest as Record<string, unknown>))
       ) {
         await runSpaUpsellAcceptanceIntercept(supabase, {
           phone,
@@ -3376,8 +3376,8 @@ Deno.serve(async (req: Request) => {
         guestId &&
         guest &&
         effectiveText !== text &&
-        (await resolveSpaUpsellAcceptanceEligible(supabase, guest as Record<string, unknown>)) &&
-        isSpaUpsellAcceptanceReply(effectiveText)
+        isSpaUpsellAcceptanceReply(effectiveText) &&
+        (await resolveSpaUpsellAcceptanceEligible(supabase, guest as Record<string, unknown>))
       ) {
         await runSpaUpsellAcceptanceIntercept(supabase, {
           phone,

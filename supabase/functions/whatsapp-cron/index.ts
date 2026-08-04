@@ -66,6 +66,26 @@ const CORS = {
 /** Sends per batch — logged for observability; still sequential, not parallel. */
 const DISPATCH_BATCH_SIZE = 10;
 
+// Scalability guard (2026-08-04) — day-pass volume growth. Neither constant
+// changes behavior for a normal tick; both exist purely so a large/overlapping
+// cohort can't take the invocation down with it.
+//
+// GUEST_SCAN_LOOKBACK_DAYS bounds the guests fetch below so it stops growing
+// with the guest table's full history. checkout_fb/checkout_fb_daypass fire
+// AT/around departure_date even after status flips to checked_out (see
+// automationSchedule.ts's postStayStage carve-out) — so this filters on
+// arrival_date, not status, and stays wide enough that no realistic stay
+// length crosses it.
+const GUEST_SCAN_LOOKBACK_DAYS = 45;
+
+// TICK_BUDGET_MS/MAX_JOBS_PER_TICK guard the dispatch loop only (never the
+// due[] scan/reconcile passes above it) — mirrors whapi-queue-drain/index.ts's
+// pattern. A cut-off item is never lost: due[] is rebuilt fresh from live
+// guest state every 15-min tick (migration 007), the same fallback the
+// existing missed_window skipReason already relies on.
+const TICK_BUDGET_MS = 120_000;
+const MAX_JOBS_PER_TICK = 150;
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -225,6 +245,10 @@ Deno.serve(async (req: Request) => {
     const now = new Date();
     const todayIsrael = israelYmd(now);
     const checkoutEligible = [...AUTO_CHECKOUT_ELIGIBLE_STATUSES];
+    // Scalability guard — see GUEST_SCAN_LOOKBACK_DAYS comment above.
+    const guestScanCutoffYmd = israelYmd(
+      new Date(now.getTime() - GUEST_SCAN_LOOKBACK_DAYS * 24 * 3600 * 1000),
+    );
 
     // Suite checkout: housekeeping WA group only (2026-07-17). No silent cron archival.
     let autoCheckoutCount = 0;
@@ -323,7 +347,11 @@ Deno.serve(async (req: Request) => {
     const GUEST_SELECT =
       "id, name, phone, arrival_date, departure_date, room, room_type, status, checkin_time, needs_callback, automation_muted, automation_scope, claimed_by, claimed_at, guest_profile, arrival_confirmed, arrival_confirmed_at, spa_date, spa_time, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent, msg_spa_warmup_sent, msg_survey_invite_sent";
 
-    const { data: guests = [] } = await supabase.from("guests").select(GUEST_SELECT);
+    const { data: guests = [] } = await supabase
+      .from("guests")
+      .select(GUEST_SELECT)
+      .neq("status", "cancelled")
+      .gte("arrival_date", guestScanCutoffYmd);
 
     let guestsList = (guests ?? []) as GuestForSchedule[];
 
@@ -378,7 +406,11 @@ Deno.serve(async (req: Request) => {
     const missedConfirmFixed = await reconcileMissedArrivalConfirmations(supabase, guestsList);
     if (missedConfirmFixed > 0) {
       console.log(`[whatsapp-cron] arrival_confirm_reconcile fixed=${missedConfirmFixed}`);
-      const { data: refreshed, error: refreshErr } = await supabase.from("guests").select(GUEST_SELECT);
+      const { data: refreshed, error: refreshErr } = await supabase
+        .from("guests")
+        .select(GUEST_SELECT)
+        .neq("status", "cancelled")
+        .gte("arrival_date", guestScanCutoffYmd);
       if (refreshErr) {
         console.warn("[whatsapp-cron] guest refresh after confirm reconcile failed:", refreshErr.message);
       } else {
@@ -569,12 +601,28 @@ Deno.serve(async (req: Request) => {
     // Delegate each to whatsapp-send (idempotent there), throttled in batches.
     const results: any[] = [];
     const batchCount = Math.max(1, Math.ceil(due.length / DISPATCH_BATCH_SIZE));
+    const dispatchTickStart = Date.now();
+    let dispatchCutShort = false;
     console.log(
       `[whatsapp-cron] dispatch_start queued=${due.length} batches=${batchCount} ` +
-      `batch_size=${DISPATCH_BATCH_SIZE} inter_send_delay_ms=${INTER_SEND_DELAY_MS}`,
+      `batch_size=${DISPATCH_BATCH_SIZE} inter_send_delay_ms=${INTER_SEND_DELAY_MS} ` +
+      `tick_budget_ms=${TICK_BUDGET_MS} max_jobs_per_tick=${MAX_JOBS_PER_TICK}`,
     );
 
     for (let i = 0; i < due.length; i++) {
+      // Scalability guard — a large/overlapping cohort must not risk the
+      // invocation getting killed mid-loop. Unprocessed due[] items are not
+      // lost: the same list is rebuilt fresh from live guest state next tick
+      // (15 min later), same fallback as the existing missed_window path.
+      if (i >= MAX_JOBS_PER_TICK || Date.now() - dispatchTickStart >= TICK_BUDGET_MS) {
+        dispatchCutShort = true;
+        console.warn(
+          `[whatsapp-cron] dispatch_tick_budget_exceeded processed=${i}/${due.length} ` +
+          `elapsed_ms=${Date.now() - dispatchTickStart} — remaining items retry next tick`,
+        );
+        break;
+      }
+
       if (i > 0 && i % DISPATCH_BATCH_SIZE === 0) {
         const batchNum = Math.floor(i / DISPATCH_BATCH_SIZE) + 1;
         console.log(`[whatsapp-cron] dispatch_batch_start batch=${batchNum}/${batchCount} index=${i}`);
@@ -685,6 +733,8 @@ Deno.serve(async (req: Request) => {
       throttled: due.length > 1,
       dispatch_batch_size: DISPATCH_BATCH_SIZE,
       inter_send_delay_ms: INTER_SEND_DELAY_MS,
+      dispatch_cut_short: dispatchCutShort,
+      guest_scan_lookback_days: GUEST_SCAN_LOOKBACK_DAYS,
       results,
     }), {
       headers: { ...CORS, "Content-Type": "application/json" },
