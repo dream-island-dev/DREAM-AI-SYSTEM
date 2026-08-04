@@ -230,6 +230,64 @@ export async function matchDoc1Record(
   };
 }
 
+const AUTO_APPLY_ORDER_MATCH_MIN_CONFIDENCE = 0.9;
+
+/**
+ * Mike's ask (2026-08-04): suite spa-hours + meal-plan (פנסיון) enrichment should
+ * write itself the moment a scan finds a CERTAIN match — no manual "אשר" click —
+ * while every other Doc1/Doc2 workflow (arrivals, day-pass, phone/fuzzy matches,
+ * conflicts) stays exactly as manual as before. "Certain" here means the same
+ * order-number tier the existing "אשר הכל" batch button already trusts
+ * (match_method==="order"), never phone/fuzzy.
+ *
+ * Reuses buildDoc1EnrichmentPatch(), which by construction never writes stay
+ * dates, room, name, or phone — only spa_time/spa_date/meal_time/meal_location/
+ * treatment_count/guest_profile.spa. Re-fetches the guest fresh (incl.
+ * guest_profile) right before writing, exactly like the manual "אשר" button does
+ * (EzgoMailSyncPanel.js applyLine) — the guest row used for matching omits
+ * guest_profile, and building the spa_slots patch against a stale/undefined
+ * profile would silently wipe unrelated keys (VIP flags, sensitivities,
+ * therapist_pref, etc.). Returns false (never applies) on any ambiguity or
+ * error — the line then falls back to its normal pending_review flow untouched.
+ */
+export async function applyCertainSuiteSpaEnrichment(
+  supabase: SupabaseClient,
+  rec: Doc1Record,
+  match: MatchResult,
+): Promise<boolean> {
+  if (
+    !match.guest?.id
+    || match.action !== "enrich"
+    || match.method !== "order"
+    || match.confidence < AUTO_APPLY_ORDER_MATCH_MIN_CONFIDENCE
+    || match.patch?._workflow !== "suite_spa_sync"
+  ) {
+    return false;
+  }
+
+  const { data: freshGuest, error: fetchErr } = await supabase
+    .from("guests")
+    .select(
+      "id, name, phone, order_number, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, treatment_count, guest_profile",
+    )
+    .eq("id", match.guest.id)
+    .maybeSingle();
+  if (fetchErr || !freshGuest) return false;
+
+  const rawPatch = buildDoc1EnrichmentPatch(rec, freshGuest);
+  const safePatch: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rawPatch)) {
+    if (!k.startsWith("_")) safePatch[k] = v;
+  }
+  if (!Object.keys(safePatch).length) return false;
+
+  const { error: updateErr } = await supabase
+    .from("guests")
+    .update(safePatch)
+    .eq("id", freshGuest.id);
+  return !updateErr;
+}
+
 export async function loadGuestCacheForReport(
   supabase: SupabaseClient,
   reportDateYmd: string | null,

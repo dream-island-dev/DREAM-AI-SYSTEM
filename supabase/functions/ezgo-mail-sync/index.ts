@@ -30,6 +30,7 @@ import {
 import { matchDoc2Record } from "../_shared/ezgoDoc2MailMatch.ts";
 import { parseSuiteArrivalsCsvBuffer } from "../_shared/ezgoDoc2SuiteCsvParser.ts";
 import {
+  applyCertainSuiteSpaEnrichment,
   enrichRecordsPhoneFromDb,
   loadGuestCacheForReport,
   matchDoc1Record,
@@ -287,6 +288,13 @@ async function insertDoc1IngestLines(
   for (let i = 0; i < records.length; i++) {
     const rec = records[i] as Doc1Record;
     const match = await matchDoc1Record(supabase, rec, guestCache, reportDate);
+
+    // Certain (order-number) suite spa/meal-plan matches write themselves —
+    // everything else (arrivals, day-pass, phone/fuzzy, conflicts) stays
+    // pending_review exactly as before. Never throws: a failed auto-apply
+    // just falls back to the normal manual-review row (Zero Data Loss).
+    const autoApplied = await applyCertainSuiteSpaEnrichment(supabase, rec, match);
+
     lineRows.push({
       ingest_id: ingestId,
       line_index: i,
@@ -294,10 +302,13 @@ async function insertDoc1IngestLines(
       match_guest_id: match.guest?.id ?? null,
       match_method: match.method === "none" ? null : match.method,
       match_confidence: match.confidence,
-      match_label: match.label,
+      match_label: autoApplied
+        ? `🤖 עודכן אוטומטית (התאמה ודאית · מס׳ הזמנה) · ${match.label}`
+        : match.label,
       action: match.action,
       proposed_patch: match.patch,
-      status: "pending_review",
+      status: autoApplied ? "applied" : "pending_review",
+      ...(autoApplied ? { applied_at: new Date().toISOString() } : {}),
     });
   }
 
