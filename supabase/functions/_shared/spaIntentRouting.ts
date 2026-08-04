@@ -16,6 +16,11 @@ import {
   isEffectiveSuiteGuest,
   type GuestRoomFields,
 } from "./suiteNames.ts";
+import {
+  isSpaGroupLeadGuest,
+  notifySpaGroupLeadByEmail,
+  resolveSpaGroupLabel,
+} from "./spaGroupLeadNotify.ts";
 
 export const SPA_COORDINATOR_ALERT_TYPES = ["spa_upsell_accept", "spa_request"] as const;
 export type SpaCoordinatorAlertType = typeof SPA_COORDINATOR_ALERT_TYPES[number];
@@ -176,6 +181,27 @@ export async function dispatchGuestSpaIntent(
     console.info(
       `[spaIntentRouting] suite spa on arrival day — guest:${opts.guestId} adirDm:${alsoPersonalDm}`,
     );
+  }
+
+  // Group leads only (never regular guests) — fresh read, not opts.guest, so this
+  // never depends on every caller remembering to select guest_profile.
+  if (opts.alertType === "spa_upsell_accept") {
+    const { data: freshGuest } = await supabase
+      .from("guests")
+      .select("guest_profile")
+      .eq("id", opts.guestId)
+      .maybeSingle();
+    if (isSpaGroupLeadGuest(freshGuest)) {
+      await notifySpaGroupLeadByEmail(supabase, {
+        guestName,
+        phone: opts.phone,
+        arrivalDate: (opts.guest.arrival_date as string | null) ?? null,
+        groupLabel: resolveSpaGroupLabel(freshGuest),
+        guestReply: opts.guestReplyForOwnerDm ?? opts.message,
+      }).catch((e: Error) =>
+        console.warn("[spaIntentRouting] group lead email failed:", e.message),
+      );
+    }
   }
 
   return { ok: true, alertId: inserted?.id as number | undefined };

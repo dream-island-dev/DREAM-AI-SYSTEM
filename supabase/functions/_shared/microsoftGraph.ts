@@ -147,14 +147,13 @@ export async function sendGraphMessageReply(
   return `reply-${Date.now()}`;
 }
 
-/** New mail (breaks thread) — fallback when no anchor message id. */
-export async function sendGraphReply(
+async function postGraphSendMail(
   accessToken: string,
   opts: { toEmail: string; toName?: string | null; subject: string; bodyText: string },
 ): Promise<string | null> {
   const payload = {
     message: {
-      subject: opts.subject.startsWith("Re:") ? opts.subject : `Re: ${opts.subject}`,
+      subject: opts.subject,
       body: { contentType: "Text", content: opts.bodyText },
       toRecipients: [{
         emailAddress: {
@@ -182,6 +181,26 @@ export async function sendGraphReply(
   }
 
   return `sent-${Date.now()}`;
+}
+
+/** New mail (breaks thread) — fallback when no anchor message id. Forces "Re:" — this
+ * path only ever fires as a reply-to-guest fallback, never a fresh notification. */
+export async function sendGraphReply(
+  accessToken: string,
+  opts: { toEmail: string; toName?: string | null; subject: string; bodyText: string },
+): Promise<string | null> {
+  return postGraphSendMail(accessToken, {
+    ...opts,
+    subject: opts.subject.startsWith("Re:") ? opts.subject : `Re: ${opts.subject}`,
+  });
+}
+
+/** Fresh new mail — no thread, no "Re:" prefix. For staff notifications, not guest replies. */
+export async function sendGraphNewMail(
+  accessToken: string,
+  opts: { toEmail: string; toName?: string | null; subject: string; bodyText: string },
+): Promise<string | null> {
+  return postGraphSendMail(accessToken, opts);
 }
 
 export async function fetchGraphProfileEmail(accessToken: string): Promise<string | null> {
