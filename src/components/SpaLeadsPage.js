@@ -10,6 +10,7 @@ import {
 } from "../utils/spaUpsellHub";
 import { isEffectiveDayPassGuest, isEffectiveSuiteGuest } from "../utils/pipelineSegment";
 import { isManualSpaUpsellLeadMessage } from "../utils/spaUpsellLeadManual";
+import useIsMobile from "../utils/useIsMobile";
 
 const FILTER_ALL = "all";
 const FILTER_TODAY = "today";
@@ -71,6 +72,7 @@ function fmtArrivalDate(ymd) {
 }
 
 export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
+  const isMobile = useIsMobile();
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -154,7 +156,7 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
       type="button"
       onClick={() => setDateFilter(id)}
       style={{
-        padding: "8px 14px",
+        padding: isMobile ? "9px 14px" : "8px 14px",
         borderRadius: 20,
         fontSize: 13,
         fontWeight: 700,
@@ -162,6 +164,8 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
         border: dateFilter === id ? "2px solid #7C3AED" : "1px solid #DDD6FE",
         background: dateFilter === id ? "#F3E8FF" : "#fff",
         color: dateFilter === id ? "#5B21B6" : "#6B7280",
+        flex: isMobile ? "1 1 auto" : "0 0 auto",
+        minHeight: isMobile ? 40 : "auto",
       }}
     >
       {label}
@@ -173,17 +177,17 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
       <div style={{
         background: "linear-gradient(135deg, #5B21B6 0%, #7C3AED 55%, #A78BFA 100%)",
         borderRadius: 16,
-        padding: "22px 24px",
+        padding: isMobile ? "16px 16px" : "22px 24px",
         color: "#fff",
-        marginBottom: 20,
+        marginBottom: isMobile ? 14 : 20,
         boxShadow: "0 8px 28px rgba(91,33,182,0.25)",
       }}>
-        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>💆 לידים לתיאום ספא</div>
+        <div style={{ fontSize: isMobile ? 19 : 22, fontWeight: 800, marginBottom: 6 }}>💆 לידים לתיאום ספא</div>
         <div style={{ fontSize: 13.5, opacity: 0.92, lineHeight: 1.55, maxWidth: 560 }}>
           אורחים שרוצים לתאם טיפול בספא (בילוי יומי, סוויטה, פורטל) — שבצי בלוח הספא, חזרי לאורח בוואטסאפ, וסמני ✓ בוצע.
         </div>
         <div style={{
-          marginTop: 16,
+          marginTop: 14,
           display: "inline-flex",
           alignItems: "center",
           gap: 10,
@@ -198,76 +202,94 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
 
       <div style={{
         display: "flex",
-        gap: 8,
-        flexWrap: "wrap",
-        alignItems: "center",
+        flexDirection: isMobile ? "column" : "row",
+        gap: 10,
         marginBottom: 16,
       }}>
-        {filterBtn(FILTER_ALL, "הכל")}
-        {filterBtn(FILTER_TODAY, "היום")}
-        {filterBtn(FILTER_TOMORROW, "מחר")}
-        {filterBtn(FILTER_CUSTOM, "תאריך…")}
-        {dateFilter === FILTER_CUSTOM && (
-          <input
-            type="date"
-            value={customDate}
-            onChange={(e) => setCustomDate(e.target.value)}
-            style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #DDD6FE" }}
-          />
-        )}
-        <button
-          type="button"
-          onClick={loadLeads}
-          disabled={loading}
-          style={{
-            marginRight: "auto",
-            padding: "8px 14px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "#fff",
-            fontWeight: 700,
-            fontSize: 13,
-            cursor: "pointer",
-          }}
-        >
-          ↺ רענון
-        </button>
-        {filteredLeads.length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", flex: 1, minWidth: 0 }}>
+          {filterBtn(FILTER_ALL, "הכל")}
+          {filterBtn(FILTER_TODAY, "היום")}
+          {filterBtn(FILTER_TOMORROW, "מחר")}
+          {filterBtn(FILTER_CUSTOM, "תאריך…")}
+          {dateFilter === FILTER_CUSTOM && (
+            <input
+              type="date"
+              value={customDate}
+              onChange={(e) => setCustomDate(e.target.value)}
+              style={{
+                padding: isMobile ? "9px 10px" : "6px 10px",
+                borderRadius: 8,
+                border: "1px solid #DDD6FE",
+                fontSize: 14,
+                flex: isMobile ? "1 1 100%" : "0 0 auto",
+                minHeight: isMobile ? 40 : "auto",
+              }}
+            />
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             type="button"
-            onClick={copyList}
+            onClick={loadLeads}
+            disabled={loading}
             style={{
               padding: "8px 14px",
               borderRadius: 8,
-              border: "1px solid #C4B5FD",
-              background: "#F5F3FF",
+              border: "1px solid var(--border)",
+              background: "#fff",
               fontWeight: 700,
               fontSize: 13,
               cursor: "pointer",
-              color: "#5B21B6",
+              flex: isMobile ? "1 1 0" : "0 0 auto",
+              minHeight: isMobile ? 40 : "auto",
+              whiteSpace: "nowrap",
             }}
           >
-            📋 העתק רשימה
+            ↺ רענון
           </button>
-        )}
-        {onNavigate && (
-          <button
-            type="button"
-            onClick={() => onNavigate("spa_board")}
-            style={{
-              padding: "8px 14px",
-              borderRadius: 8,
-              border: "none",
-              background: "var(--gold)",
-              fontWeight: 700,
-              fontSize: 13,
-              cursor: "pointer",
-              color: "#412402",
-            }}
-          >
-            📅 לוח ספא
-          </button>
-        )}
+          {filteredLeads.length > 0 && (
+            <button
+              type="button"
+              onClick={copyList}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 8,
+                border: "1px solid #C4B5FD",
+                background: "#F5F3FF",
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: "pointer",
+                color: "#5B21B6",
+                flex: isMobile ? "1 1 0" : "0 0 auto",
+                minHeight: isMobile ? 40 : "auto",
+                whiteSpace: "nowrap",
+              }}
+            >
+              📋 העתק רשימה
+            </button>
+          )}
+          {onNavigate && (
+            <button
+              type="button"
+              onClick={() => onNavigate("spa_board")}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 8,
+                border: "none",
+                background: "var(--gold)",
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: "pointer",
+                color: "#412402",
+                flex: isMobile ? "1 1 0" : "0 0 auto",
+                minHeight: isMobile ? 40 : "auto",
+                whiteSpace: "nowrap",
+              }}
+            >
+              📅 לוח ספא
+            </button>
+          )}
+        </div>
       </div>
 
       {loadError && (
@@ -329,11 +351,12 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                       border: "1px solid #E9D5FF",
                       borderRight: "5px solid #7C3AED",
                       borderRadius: 14,
-                      padding: "18px 20px",
+                      padding: isMobile ? "14px 16px" : "18px 20px",
                       display: "flex",
+                      flexDirection: isMobile ? "column" : "row",
                       justifyContent: "space-between",
-                      alignItems: "flex-start",
-                      gap: 16,
+                      alignItems: isMobile ? "stretch" : "flex-start",
+                      gap: isMobile ? 12 : 16,
                       flexWrap: "wrap",
                       boxShadow: "0 2px 12px rgba(91,33,182,0.06)",
                     }}
@@ -433,7 +456,13 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                         התקבל {fmtLeadTime(lead.created_at)}
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <div style={{
+                      display: "flex",
+                      gap: 8,
+                      flexWrap: "wrap",
+                      alignItems: "center",
+                      width: isMobile ? "100%" : "auto",
+                    }}>
                       {onOpenDreamBotChat && resolveLeadPhone(lead) && (
                         <button
                           type="button"
@@ -443,7 +472,7 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                             returnPage: "spa_leads",
                             returnPageLabel: "לידים ספא",
                           })}
-                          style={actionBtn("#EEF2FF", "#3730A3")}
+                          style={actionBtn("#EEF2FF", "#3730A3", false, isMobile)}
                         >
                           💬 שיחה
                         </button>
@@ -452,7 +481,7 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                         <button
                           type="button"
                           onClick={() => onNavigate("spa_board")}
-                          style={actionBtn("#FEF3C7", "#92400E")}
+                          style={actionBtn("#FEF3C7", "#92400E", false, isMobile)}
                         >
                           📅 שבץ
                         </button>
@@ -461,7 +490,7 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                         type="button"
                         onClick={() => handleResolve(lead.id)}
                         disabled={resolvingId === lead.id}
-                        style={actionBtn("#DCFCE7", "#166534", true)}
+                        style={actionBtn("#DCFCE7", "#166534", true, isMobile, true)}
                       >
                         {resolvingId === lead.id ? "…" : "✓ בוצע"}
                       </button>
@@ -478,7 +507,7 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
   );
 }
 
-function actionBtn(bg, color, bold) {
+function actionBtn(bg, color, bold, isMobile, fullWidthMobile) {
   return {
     padding: "12px 18px",
     minHeight: 48,
@@ -491,5 +520,7 @@ function actionBtn(bg, color, bold) {
     cursor: "pointer",
     fontFamily: "Heebo, sans-serif",
     whiteSpace: "nowrap",
+    flex: isMobile ? (fullWidthMobile ? "1 1 100%" : "1 1 130px") : "0 0 auto",
+    textAlign: "center",
   };
 }
