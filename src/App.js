@@ -2546,7 +2546,14 @@ export default function App({ initialPage = "dashboard" }) {
       case "ops_board":
       case "tasks":
       case "calls":
-        return <OperationsBoard user={user} isAdmin={isAdmin} onOpenDreamBotChat={openDreamBotChat} />;
+        return (
+          <OperationsBoard
+            user={user}
+            isAdmin={isAdmin}
+            onOpenDreamBotChat={openDreamBotChat}
+            onOpenDataSync={canAccessRoute("data_sync", user) ? () => setActivePage("data_sync") : null}
+          />
+        );
       case "bot_config":
         return guardPage(
           "bot_config",

@@ -19,7 +19,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { usePageVisibility } from "../hooks/usePageVisibility";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { canPerform } from "../utils/auth";
-import ArrivalImportPanel from "./ArrivalImportPanel";
+import { Toast, useToast } from "./Toast";
 import { getGuestTimingBadge } from "../utils/guestTiming";
 import { fetchGuestSuiteRooms } from "../utils/guestStaySummary";
 import {
@@ -586,20 +586,15 @@ function TaskCard({ task, onClaim, onMarkDone, onApprove, onReject, isUpdating, 
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
+export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat, onOpenDataSync }) {
   const pageVisible = usePageVisibility();
   const [tasks,       setTasks]       = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [updatingId,  setUpdatingId]  = useState(null);
-  const [toast,       setToast]       = useState(null);
+  const [toast, showToast] = useToast(4000);
   const [activeFilter, setActiveFilter] = useState("open"); // pending_approval | open | in_progress | done | all
   const [hasAppliedDefaultFilter, setHasAppliedDefaultFilter] = useState(false);
   const managerDept = user?.department || "";
-
-  const showToast = useCallback((type, msg) => {
-    setToast({ type, msg });
-    setTimeout(() => setToast(null), 4000);
-  }, []);
 
   const canCreate = canPerform("create_ops_task", user);
   const userDept  = user?.department || "";
@@ -822,19 +817,31 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
         }
       `}</style>
 
-      {toast && (
-        <div style={{
-          position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
-          zIndex: 9999, padding: "12px 24px", borderRadius: 10,
-          fontWeight: 700, fontSize: 13, maxWidth: "90vw",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.15)",
-          background: toast.type === "ok" ? "#E8F5EF" : "#FFF0EE",
-          color:      toast.type === "ok" ? "#1A7A4A"  : "#C0392B",
-          border: `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
-        }}>{toast.msg}</div>
-      )}
+      <Toast toast={toast} />
 
-      {canCreate && <ArrivalImportPanel />}
+      {canCreate && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          gap: 12, flexWrap: "wrap", padding: "12px 16px", marginBottom: 16,
+          borderRadius: 10, background: "var(--card-bg)", border: "1px solid var(--border)",
+        }}>
+          <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            📥 ייבוא דוחות הגעות/EZGO עבר ל"סנכרון נתונים" — כאן זו הייתה עותק כפול של אותו כלי.
+          </span>
+          {onOpenDataSync && (
+            <button
+              type="button"
+              onClick={onOpenDataSync}
+              style={{
+                padding: "6px 14px", borderRadius: 8, border: "none", cursor: "pointer",
+                background: "var(--gold)", color: "#412402", fontWeight: 700, fontSize: 12,
+              }}
+            >
+              📥 פתח סנכרון נתונים
+            </button>
+          )}
+        </div>
+      )}
 
       {canCreate && (
         <NewTaskForm
