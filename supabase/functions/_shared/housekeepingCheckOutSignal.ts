@@ -53,8 +53,22 @@ async function loadIncomingTurnoverName(
   return incoming.name?.trim() || null;
 }
 
+/** Actions where staff need to see the outcome no matter what — genuine
+ * failures/uncertainty, never gated behind HOUSEKEEPING_WA_GROUP_REPLY
+ * (Zero Data Loss / Fail Visible, CLAUDE.md §0). Success/no-op confirmations
+ * ("updated", "already_checked_out", "dedup") stay opt-in — see whapi-webhook. */
+export const HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS: ReadonlySet<HousekeepingCheckOutAction> = new Set([
+  "skipped_no_suite",
+  "no_guest",
+  "ambiguous_guest",
+  "error",
+]);
+
 export function buildHousekeepingCheckOutAckLine(result: HousekeepingCheckOutResult): string | null {
-  const { roomId, guestName, action, noGuestHint, incomingGuestName } = result;
+  const { roomNumber, roomId, guestName, action, noGuestHint, incomingGuestName } = result;
+  if (action === "skipped_no_suite") {
+    return `⚠️ מספר חדר #${roomNumber} לא מוכר במערכת — צ'ק-אאוט לא נקלט, בדקו את המספר`;
+  }
   if (!roomId) return null;
   const incomingHint = formatTurnoverIncomingHint(incomingGuestName);
   switch (action) {
@@ -68,6 +82,12 @@ export function buildHousekeepingCheckOutAckLine(result: HousekeepingCheckOutRes
         : `⚠️ חדר ${roomId} — צ'ק-אאוט: לא נמצא אורח שעוזב היום בחדר`;
     case "ambiguous_guest":
       return `⚠️ חדר ${roomId} — כמה אורחים עם עזיבה היום. בדקו ב-XOS.${guestName ? ` (${guestName})` : ""}`;
+    case "error":
+      return `🚨 חדר ${roomId} — שגיאת מערכת בקליטת צ'ק-אאוט. בדקו ב-XOS ונסו לשלוח שוב, או פנו לתמיכה.`;
+    case "dedup":
+      // Duplicate WhatsApp delivery of an already-processed message — the first
+      // attempt already handled it, not a drop. Intentionally silent.
+      return null;
     default:
       return null;
   }

@@ -35,7 +35,10 @@ const FORWARDED_PREFIX_RE = /^הועברה\s*/i;
 /** ✅ always takes priority over check-in phrasing in the same line — see header note. */
 const HAS_CHECKMARK_RE = /✅/;
 
-/** Housekeeping anchor tokens — used for near-miss gate (not LLM). */
+/** Housekeeping anchor tokens — used for near-miss gate (not LLM). Deliberately
+ * ✅-only, not ✔/☑/✓ — those plain tick glyphs are common casual "ok/got it"
+ * chat in Hebrew ("✓ 5 דקות ומגיע") and would turn every such message with an
+ * incidental 1-26 number nearby into a false-positive "which room?" clarify. */
 const HK_ANCHOR_RE =
   /✅|מוכן|\bready\b|\bco\b|check\s*[- ]?\s*(?:in|out)|צק\s*א(?:ין|אוט)/i;
 

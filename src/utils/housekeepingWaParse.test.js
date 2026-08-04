@@ -173,6 +173,51 @@ describe("housekeepingWaParse", () => {
     })).toBe("ℹ️ רובי 6 — כבר ממתין לאישור");
   });
 
+  describe("known parse gaps — documented, not yet fixed (see CLAUDE.md Epic A follow-up)", () => {
+    test("alternate checkmark glyphs (✔ ☑ ✓) are NOT recognized as an HK anchor — deliberate, not a gap", () => {
+      // Considered widening HK_ANCHOR_RE to catch these too (a staff phone that
+      // renders a different checkmark than ✅), but ✔/☑/✓ are common casual
+      // "ok/got it" chat in Hebrew — doing so turned ordinary messages like
+      // "✓ 5 דקות ומגיע" into false-positive "which room?" clarifies. Reverted;
+      // staying ✅-only is the safer tradeoff.
+      expect(looksLikeHousekeepingNearMiss("✔️ 14")).toBe(false);
+      expect(parseHousekeepingReadyRoomNumbers("✔️ 14")).toEqual([]);
+    });
+
+
+    test("Hebrew 'ו' (and) between two rooms — parse fails whole-line, but the near-miss safety net catches it", () => {
+      // "4 ו-5 צק אין" — real staff phrasing meaning "rooms 4 and 5, check in".
+      // The Hebrew ו breaks every regex's contiguous room-list match, so the
+      // WHOLE line fails to parse (not a partial 4-only capture, as it might look
+      // at a glance) — but looksLikeHousekeepingNearMiss (now unconditionally
+      // visible, this PR) still fires because the line keeps its housekeeping
+      // anchor + a suite-range digit, so staff get a "which room?" clarify rather
+      // than a silent drop. Still worth teaching the parser this phrasing
+      // properly (0 rooms recorded is still 0 rooms recorded) — flagged as a
+      // follow-up, but no longer a *silent* gap.
+      expect(parseHousekeepingCheckInRoomNumbers("4 ו-5 צק אין")).toEqual([]);
+      expect(looksLikeHousekeepingNearMiss("4 ו-5 צק אין")).toBe(true);
+    });
+
+    test("dash is read as a list separator, not a range — '4-6' silently checks in {4,6}, room 5 vanishes with NO clarify", () => {
+      // Unlike the ו case above, this one parses successfully (non-empty), so the
+      // near-miss gate never sees it — the more dangerous of the two gaps, since
+      // there's no signal anything is wrong at all. Flagged as a follow-up.
+      expect(parseHousekeepingCheckInRoomNumbers("4-6 צק אין")).toEqual([4, 6]);
+      expect(looksLikeHousekeepingNearMiss("4-6 צק אין")).toBe(false);
+    });
+
+    test("suite name instead of room number never parses and never near-misses", () => {
+      // Parser is 100% digit-based — a message using the suite's name ("רובי")
+      // instead of its number has no digit for extractBareRoomNumbers/addRoom to
+      // find, so all three parsers return [] AND looksLikeHousekeepingNearMiss's
+      // final hasSuiteRangeNumber() check also fails (no digit at all) — this is
+      // silently classified as ordinary chat, not even a near-miss clarify.
+      expect(parseHousekeepingReadyRoomNumbers("רובי מוכן")).toEqual([]);
+      expect(looksLikeHousekeepingNearMiss("רובי מוכן")).toBe(false);
+    });
+  });
+
   test("check-in group ack lines", () => {
     expect(buildHousekeepingCheckInAckLine({
       roomId: "רובי 14",
@@ -185,6 +230,31 @@ describe("housekeepingWaParse", () => {
       action: "already_checked_in",
     })).toBe("ℹ️ חדר רובי 14 — כבר מסומן כצ'ק-אין (ישראל)");
     expect(buildHousekeepingCheckInAckLine({
+      roomId: "רובי 14",
+      action: "dedup",
+    })).toBe(null);
+    expect(buildHousekeepingCheckInAckLine({
+      roomNumber: 99,
+      roomId: null,
+      action: "skipped_no_suite",
+    })).toBe("⚠️ מספר חדר #99 לא מוכר במערכת — צ'ק-אין לא נקלט, בדקו את המספר");
+    expect(buildHousekeepingCheckInAckLine({
+      roomId: "רובי 14",
+      action: "error",
+    })).toBe("🚨 חדר רובי 14 — שגיאת מערכת בקליטת צ'ק-אין. בדקו ב-XOS ונסו לשלוח שוב, או פנו לתמיכה.");
+  });
+
+  test("ready ack lines for skipped_no_suite / error", () => {
+    expect(buildHousekeepingReadyAckLine({
+      roomNumber: 99,
+      roomId: null,
+      action: "skipped_no_suite",
+    })).toBe('⚠️ מספר חדר #99 לא מוכר במערכת — סטטוס "מוכן" לא נקלט, בדקו את המספר');
+    expect(buildHousekeepingReadyAckLine({
+      roomId: "רובי 14",
+      action: "error",
+    })).toBe('🚨 רובי 14 — שגיאת מערכת בסימון "מוכן". בדקו ב-XOS ונסו לשלוח שוב, או פנו לתמיכה.');
+    expect(buildHousekeepingReadyAckLine({
       roomId: "רובי 14",
       action: "dedup",
     })).toBe(null);

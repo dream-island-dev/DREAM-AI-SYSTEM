@@ -70,14 +70,17 @@ import {
 import {
   applyHousekeepingReadySignal,
   buildHousekeepingReadyAckLine,
+  HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS,
 } from "../_shared/housekeepingReadySignal.ts";
 import {
   applyHousekeepingCheckInSignal,
   buildHousekeepingCheckInAckLine,
+  HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS,
 } from "../_shared/housekeepingCheckInSignal.ts";
 import {
   applyHousekeepingCheckOutSignal,
   buildHousekeepingCheckOutAckLine,
+  HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS,
 } from "../_shared/housekeepingCheckOutSignal.ts";
 import { isWhapiGuestSosActive, shouldAutoReplyGuestWhapiDm, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
@@ -185,6 +188,7 @@ import {
   stripOutboundDispatchTag,
 } from "../_shared/outboundDispatchTag.ts";
 import { applyTimeGreetingToGuestReply } from "../_shared/guestTimeGreeting.ts";
+import { selectHousekeepingAckLines } from "../_shared/housekeepingAckSelect.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -1678,7 +1682,10 @@ serve(async (req: Request) => {
         const checkOutRooms = parseHousekeepingCheckOutRoomNumbers(msg.text);
         if (readyRooms.length === 0 && checkInRooms.length === 0 && checkOutRooms.length === 0) {
           let nearMissAck = false;
-          if (hkGroupReply && looksLikeHousekeepingNearMiss(msg.text)) {
+          // Fail Visible: a message that LOOKS like a housekeeping signal but didn't
+          // parse (e.g. an unrecognized format) is exactly the silent-drop risk this
+          // gate exists to catch — always clarify, regardless of hkGroupReply.
+          if (looksLikeHousekeepingNearMiss(msg.text)) {
             const clarify = buildHousekeepingNearMissClarification(msg.text);
             try {
               await sendWhapiText(msg.chatId, clarify, { noLinkPreview: true });
@@ -1760,14 +1767,23 @@ serve(async (req: Request) => {
           }));
         }
 
+        // Fail Visible (CLAUDE.md §0): failure/uncertainty lines always post, so a
+        // signal that didn't update the DB is never silently dropped. Plain success
+        // confirmations stay behind hkGroupReply — see selectHousekeepingAckLines.
         const ackLines = [
-          ...readySignals.map(buildHousekeepingReadyAckLine).filter((l): l is string => !!l),
-          ...checkInSignals.map(buildHousekeepingCheckInAckLine).filter((l): l is string => !!l),
-          ...checkOutSignals.map(buildHousekeepingCheckOutAckLine).filter((l): l is string => !!l),
+          ...selectHousekeepingAckLines(
+            readySignals, buildHousekeepingReadyAckLine, HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS, hkGroupReply,
+          ),
+          ...selectHousekeepingAckLines(
+            checkInSignals, buildHousekeepingCheckInAckLine, HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS, hkGroupReply,
+          ),
+          ...selectHousekeepingAckLines(
+            checkOutSignals, buildHousekeepingCheckOutAckLine, HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS, hkGroupReply,
+          ),
         ];
         const ackText = ackLines.join("\n");
         let ackSent = false;
-        if (hkGroupReply && ackText) {
+        if (ackText) {
           try {
             await sendWhapiText(msg.chatId, ackText, { noLinkPreview: true });
             ackSent = true;

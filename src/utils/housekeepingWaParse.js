@@ -387,3 +387,9 @@ export function buildHousekeepingNearMissClarification(text) {
   }
   return "⚠️ לא הבנתי — איזה חדר? (למשל 6✅ / 6 צק אין / 6 co)";
 }
+
+/** Deno.env check, not meaningful in a browser bundle — kept only so the TS/JS
+ * export surface stays in sync for the mirror-diff test above. Always false. */
+export function isHousekeepingGroupReplyEnabled() {
+  return false;
+}

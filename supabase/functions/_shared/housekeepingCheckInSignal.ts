@@ -37,8 +37,23 @@ export interface HousekeepingCheckInResult {
   error?: string;
 }
 
+/** Actions where staff need to see the outcome no matter what — genuine
+ * failures/uncertainty, never gated behind HOUSEKEEPING_WA_GROUP_REPLY
+ * (Zero Data Loss / Fail Visible, CLAUDE.md §0). Success/no-op confirmations
+ * ("updated", "already_checked_in", "dedup") stay opt-in — see whapi-webhook. */
+export const HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS: ReadonlySet<HousekeepingCheckInAction> = new Set([
+  "skipped_no_suite",
+  "no_guest",
+  "ambiguous_guest",
+  "guest_not_eligible",
+  "error",
+]);
+
 export function buildHousekeepingCheckInAckLine(result: HousekeepingCheckInResult): string | null {
-  const { roomId, guestName, action, previousGuestName } = result;
+  const { roomNumber, roomId, guestName, action, previousGuestName } = result;
+  if (action === "skipped_no_suite") {
+    return `⚠️ מספר חדר #${roomNumber} לא מוכר במערכת — צ'ק-אין לא נקלט, בדקו את המספר`;
+  }
   if (!roomId) return null;
   switch (action) {
     case "updated":
@@ -54,6 +69,12 @@ export function buildHousekeepingCheckInAckLine(result: HousekeepingCheckInResul
       return `⚠️ חדר ${roomId} — כמה אורחים מתאימים (תאריכים חופפים). בדקו ב-XOS וסמנו ידנית.${guestName ? ` (${guestName})` : ""}`;
     case "guest_not_eligible":
       return `⚠️ חדר ${roomId} — אורח${guestName ? ` ${guestName}` : ""} לא במצב צ'ק-אין (סטטוס לא מתאים)`;
+    case "error":
+      return `🚨 חדר ${roomId} — שגיאת מערכת בקליטת צ'ק-אין. בדקו ב-XOS ונסו לשלוח שוב, או פנו לתמיכה.`;
+    case "dedup":
+      // Duplicate WhatsApp delivery of an already-processed message — the first
+      // attempt already handled it, not a drop. Intentionally silent.
+      return null;
     default:
       return null;
   }
