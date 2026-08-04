@@ -32,6 +32,7 @@ export function toInboxGuestMapEntry(g) {
   return {
     id: g.id,
     name: g.name ?? null,
+    phone: g.phone ?? null,
     status: g.status ?? null,
     arrival_date: g.arrival_date ?? null,
     departure_date: g.departure_date ?? null,

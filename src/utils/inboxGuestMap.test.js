@@ -91,6 +91,11 @@ describe("inboxGuestMap", () => {
     expect(merged[0].guestId).toBe(99);
     expect(merged[0].isRosterAnchor).toBe(true);
     expect(merged[0].messages).toEqual([]);
+    // Regression guard: ghost contacts are built from toInboxGuestMapEntry()
+    // output, not the raw row — phone must survive that trip or every
+    // ContactItem render (contact.phone.replace(...)) throws on mount.
+    expect(merged[0].phone).toBe("972501234567");
+    expect(merged[0].threadKey).toBe("972501234567");
   });
 
   test("mergeRosterAnchorContacts skips duplicate phone", () => {
