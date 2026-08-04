@@ -68,6 +68,60 @@ export function spaUpsellChannelLabel(forceChannel) {
   return forceChannel || "—";
 }
 
+/**
+ * Spa lead audience — tagged on guest_profile.spa.lead_audience before a manual
+ * send so a later "אשמח לתאם" reply already knows whether the resulting
+ * guest_alerts lead is a regular guest or a group booking. Mirrors the marker
+ * spaGroupCampaign.ts already sets (group_campaign/source='wa_group_link') for
+ * the automated wa.me link path — both paths converge on the same field so
+ * downstream lead-routing (SpaLeadsPage, Meirav email) has one source of truth.
+ */
+export const SPA_LEAD_AUDIENCE_REGULAR = "regular";
+export const SPA_LEAD_AUDIENCE_GROUP = "group";
+
+export const SPA_LEAD_AUDIENCE_OPTIONS = [
+  { id: SPA_LEAD_AUDIENCE_REGULAR, label: "👤 אורח רגיל" },
+  { id: SPA_LEAD_AUDIENCE_GROUP, label: "👥 קבוצה" },
+];
+
+/** Read the tagged audience off a guest row — untagged/legacy guests default to "regular". */
+export function resolveSpaLeadAudience(guest) {
+  const spa = guest?.guest_profile?.spa;
+  if (!spa) return SPA_LEAD_AUDIENCE_REGULAR;
+  if (spa.lead_audience === SPA_LEAD_AUDIENCE_GROUP) return SPA_LEAD_AUDIENCE_GROUP;
+  if (spa.group_campaign || spa.source === "wa_group_link") return SPA_LEAD_AUDIENCE_GROUP;
+  return SPA_LEAD_AUDIENCE_REGULAR;
+}
+
+/**
+ * Tag guest_profile.spa.lead_audience="group" (+ optional free-text group_label)
+ * on a batch of guests right before a manual "קבוצה" send. No-op for "regular"
+ * (untagged already reads back as regular — nothing to write). Best-effort:
+ * a failed tag never blocks the WhatsApp send itself, so callers should not
+ * await this before dispatching — it only affects later lead routing.
+ */
+export async function tagSpaUpsellLeadAudience(supabase, guestIds, { audience, groupLabel } = {}) {
+  if (!supabase || !guestIds?.length || audience !== SPA_LEAD_AUDIENCE_GROUP) return { error: null };
+
+  const { data: rows, error: fetchErr } = await supabase
+    .from("guests")
+    .select("id, guest_profile")
+    .in("id", guestIds);
+  if (fetchErr) return { error: fetchErr };
+
+  const label = String(groupLabel ?? "").trim();
+  for (const row of rows ?? []) {
+    const profile = (row.guest_profile && typeof row.guest_profile === "object") ? { ...row.guest_profile } : {};
+    const spa = (profile.spa && typeof profile.spa === "object") ? { ...profile.spa } : {};
+    spa.lead_audience = SPA_LEAD_AUDIENCE_GROUP;
+    if (label) spa.group_label = label;
+    profile.spa = spa;
+    const { error } = await supabase.from("guests").update({ guest_profile: profile }).eq("id", row.id);
+    if (error) return { error };
+  }
+  return { error: null };
+}
+
 /** Guest has a spa booking on the visit date (time or spa_date match). */
 export function guestHasSpaOnDate(guest, dateYmd) {
   const arrival = dateYmd || guest?.arrival_date;

@@ -1,11 +1,16 @@
 import { useMemo, useState } from "react";
 import IsraeliTimeSelect from "./IsraeliTimeSelect";
+import { supabase } from "../supabaseClient";
 import { formatIsraelDateTime, israelTodayYmd } from "../utils/israelTime";
 import {
+  SPA_LEAD_AUDIENCE_GROUP,
+  SPA_LEAD_AUDIENCE_OPTIONS,
+  SPA_LEAD_AUDIENCE_REGULAR,
   SPA_UPSELL_CHANNEL_META,
   SPA_UPSELL_CHANNEL_OPTIONS,
   SPA_UPSELL_META_TEMPLATE_DEFAULT,
   previewSpaUpsellMetaTemplate,
+  tagSpaUpsellLeadAudience,
 } from "../utils/spaUpsellAudience";
 
 function previewSpaUpsellText(template, guestName) {
@@ -34,6 +39,9 @@ export default function SpaUpsellConfirmModal({
   const [scheduleDate, setScheduleDate] = useState(israelTodayYmd);
   const [scheduleTime, setScheduleTime] = useState("10:00");
   const [confirmed, setConfirmed] = useState(false);
+  const [audience, setAudience] = useState(SPA_LEAD_AUDIENCE_REGULAR);
+  const [groupLabel, setGroupLabel] = useState("");
+  const isGroupAudience = audience === SPA_LEAD_AUDIENCE_GROUP;
 
   const sampleGuest = targets[0];
   const isMetaChannel = dispatchChannel === SPA_UPSELL_CHANNEL_META;
@@ -78,6 +86,16 @@ export default function SpaUpsellConfirmModal({
 
   const handleConfirm = () => {
     if (!canConfirm) return;
+    if (isGroupAudience) {
+      // Best-effort, never awaited — tagging guest_profile must not delay the
+      // WhatsApp send itself, only affects later lead routing (Meirav email).
+      tagSpaUpsellLeadAudience(supabase, targets.map((g) => g.id), {
+        audience: SPA_LEAD_AUDIENCE_GROUP,
+        groupLabel,
+      }).then(({ error }) => {
+        if (error) console.warn("[SpaUpsellConfirmModal] group audience tag failed:", error.message);
+      });
+    }
     const metaTemplateName = isMetaChannel ? activeMetaRow?.name : null;
     if (sendMode === "now") {
       onSendNow(dispatchChannel, metaTemplateName);
@@ -111,6 +129,49 @@ export default function SpaUpsellConfirmModal({
         <p style={{ fontSize: 12.5, color: "#701A75", lineHeight: 1.55, margin: "0 0 14px" }}>
           {targets.length} אורחים · {pulseSeconds} שניות בין הודעה להודעה.
         </p>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#6B21A8", marginBottom: 8 }}>
+            סוג נמענים
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {SPA_LEAD_AUDIENCE_OPTIONS.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                disabled={sending}
+                onClick={() => setAudience(opt.id)}
+                style={{
+                  padding: "8px 14px", borderRadius: 10, cursor: sending ? "not-allowed" : "pointer",
+                  border: audience === opt.id ? "2px solid #A21CAF" : "1px solid #E9D5FF",
+                  background: audience === opt.id ? "#F3E8FF" : "#fff",
+                  fontWeight: audience === opt.id ? 800 : 500,
+                  fontSize: 12.5,
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {isGroupAudience && (
+            <div style={{ marginTop: 8 }}>
+              <input
+                type="text"
+                value={groupLabel}
+                onChange={(e) => setGroupLabel(e.target.value)}
+                disabled={sending}
+                placeholder="שם הקבוצה (אופציונלי) — למשל: חתונת כהן, אוורסט טכנולוגיות"
+                style={{
+                  width: "100%", boxSizing: "border-box", padding: "8px 10px",
+                  borderRadius: 8, border: "1px solid #D8B4FE", fontSize: 12.5, fontFamily: "inherit",
+                }}
+              />
+              <div style={{ fontSize: 11, color: "#9D174D", marginTop: 4 }}>
+                תשובות «אשמח לתאם» מהנמענים האלה ינותבו כליד קבוצה.
+              </div>
+            </div>
+          )}
+        </div>
 
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: "#6B21A8", marginBottom: 8 }}>

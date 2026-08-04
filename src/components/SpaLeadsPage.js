@@ -1,7 +1,7 @@
 // Dedicated spa coordinator view — open upsell acceptance leads, no dispatch UI.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
-import { israelTodayYmd } from "../utils/spaUpsellAudience";
+import { israelTodayYmd, resolveSpaLeadAudience, SPA_LEAD_AUDIENCE_GROUP } from "../utils/spaUpsellAudience";
 import {
   buildSpaLeadSingleCopy,
   buildSpaUpsellStaffCopy,
@@ -63,6 +63,12 @@ function leadCohortLabel(guest) {
   if (isEffectiveSuiteGuest(guest)) return "👑 סוויטה";
   if (isEffectiveDayPassGuest(guest)) return "🌴 בילוי יומי";
   return null;
+}
+
+function leadGroupLabel(guest) {
+  if (resolveSpaLeadAudience(guest) !== SPA_LEAD_AUDIENCE_GROUP) return null;
+  const label = String(guest?.guest_profile?.spa?.group_label ?? "").trim();
+  return label ? `👥 קבוצה · ${label}` : "👥 קבוצה";
 }
 
 function fmtArrivalDate(ymd) {
@@ -398,6 +404,15 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                           }}
                           >
                             {leadCohortLabel(lead.guests)}
+                          </span>
+                        ) : null}
+                        {leadGroupLabel(lead.guests) ? (
+                          <span style={{
+                            fontSize: 11, fontWeight: 800, color: "#9A3412",
+                            background: "#FFEDD5", padding: "3px 10px", borderRadius: 8,
+                          }}
+                          >
+                            {leadGroupLabel(lead.guests)}
                           </span>
                         ) : null}
                         {lead.guests?.room ? (
