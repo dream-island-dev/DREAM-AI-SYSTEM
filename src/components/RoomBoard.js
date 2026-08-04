@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "../supabaseClient";
+import { usePageVisibility } from "../hooks/usePageVisibility";
 import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
 import {
   performSuiteCheckIn,
@@ -165,6 +166,7 @@ const STATUSES = ["תפוס", "פנוי", "לניקיון", "בניקיון", "�
 
 // ── Main component ────────────────────────────────────────────────────────
 export default function RoomBoard({ isKioskMode = false, onLogout }) {
+  const pageVisible = usePageVisibility();
   const [statusMap,   setStatusMap]   = useState({});
   const [guests,      setGuests]      = useState([]);
   const [suiteRows,   setSuiteRows]   = useState([]);
@@ -249,9 +251,12 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
 
   useEffect(() => { syncBoard(); }, [syncBoard]);
 
-  // ── Realtime ────────────────────────────────────────────────────────────
+  // ── Realtime — paused while the tab is hidden (kiosk tablets are often left
+  // open in the background all day; an unconditional subscription here was the
+  // one screen still resyncing on every guests/room_status/suite_rooms change
+  // with nobody watching) ───────────────────────────────────────────────────
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase || !pageVisible) return undefined;
     const ch = supabase
       .channel("room-board-rt")
       .on("postgres_changes", { event: "*", schema: "public", table: "room_status" }, syncBoard)
@@ -259,7 +264,12 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
       .on("postgres_changes", { event: "*", schema: "public", table: "suite_rooms" }, syncBoard)
       .subscribe();
     return () => supabase.removeChannel(ch);
-  }, [syncBoard]);
+  }, [syncBoard, pageVisible]);
+
+  // Catch up on whatever changed while the tab was hidden, the moment it's visible again.
+  useEffect(() => {
+    if (pageVisible) syncBoard();
+  }, [pageVisible, syncBoard]);
 
   // ── Toast ───────────────────────────────────────────────────────────────
   function showToast(msg, type = "ok") {
@@ -586,22 +596,24 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
         </div>
       </div>
 
-      {/* Stats bar — click to filter. auto-fit/minmax (not a fixed column count) so it
-          reflows on tablet widths instead of clipping — also fixes the 6-status/5-column
-          mismatch that left the 6th tile wrapping alone even on desktop. */}
+      {/* Stats bar — read-only KPI display. Used to also be a second, redundant
+          click-to-filter control duplicating the chip row below (same STATUSES,
+          same setFilter) — the chips row already covers every one of these plus
+          "הכל"/"הגעות היום", which the tiles never had, so this stays a plain
+          counter and the chips are the one interactive filter control.
+          auto-fit/minmax (not a fixed column count) so it reflows on tablet
+          widths instead of clipping — also fixes the 6-status/5-column mismatch
+          that left the 6th tile wrapping alone even on desktop. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 16 }}>
         {STATUSES.map(st => (
           <div
             key={st}
-            onClick={() => setFilter(filter === st ? "הכל" : st)}
             style={{
               background: "var(--card-bg)",
               border:     "1px solid var(--border)",
               borderTop:  `3px solid ${STATUS_META[st].border}`,
               borderRadius: 10, padding: "10px 8px",
-              textAlign: "center", cursor: "pointer",
-              opacity: filter !== "הכל" && filter !== st ? 0.4 : 1,
-              transition: "opacity 0.2s",
+              textAlign: "center",
             }}
           >
             <div style={{ fontSize: 24, fontWeight: 700, color: STATUS_META[st].border, lineHeight: 1.2 }}>
@@ -614,7 +626,7 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
         ))}
       </div>
 
-      {/* Filter chips */}
+      {/* Filter chips — the one interactive filter control */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 20 }}>
         {["הכל", "הגעות היום", ...STATUSES].map(f => {
           const active = filter === f;
