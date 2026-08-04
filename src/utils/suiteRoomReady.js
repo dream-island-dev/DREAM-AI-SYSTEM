@@ -98,6 +98,31 @@ export async function sendGuestRoomReadyMessage(supabase, { guestId, roomLabel }
   });
 }
 
+/**
+ * Normalizes the { data, error } response from sendGuestRoomReadyMessage into
+ * one shared verdict — 3 independent call sites (GuestDashboard, GuestsPage,
+ * SuitesDashboard) used to interpret this response with 3 different branch sets,
+ * and two of them silently mislabeled a skipped/duplicate-blocked send as a
+ * plain success toast (FAIL VISIBLE gap — the guest may not actually have
+ * received anything). Callers build their own Hebrew message text per kind;
+ * this only classifies.
+ */
+export function classifyRoomReadySendResult({ data, error }) {
+  if (error || data?.ok === false) {
+    return { ok: false, kind: "error", reason: data?.error ?? error?.message ?? "שגיאה לא ידועה" };
+  }
+  if (data?.status === "timeout") {
+    return { ok: true, kind: "timeout" };
+  }
+  if (data?.skipped && data?.status === "duplicate_blocked") {
+    return { ok: true, kind: "duplicate" };
+  }
+  if (data?.skipped) {
+    return { ok: true, kind: "skipped", reason: data?.reason ?? null };
+  }
+  return { ok: true, kind: "sent", simulation: !!data?.simulation };
+}
+
 export function findSuiteRoomRowForLabel(rows, roomLabel) {
   const target = String(roomLabel ?? "").trim();
   if (!target || !rows?.length) return null;

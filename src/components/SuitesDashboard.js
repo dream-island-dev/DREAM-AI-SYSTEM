@@ -5,7 +5,11 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
-import { resolveSuiteRoomDisplayLabel } from "../utils/suiteRoomReady";
+import {
+  resolveSuiteRoomDisplayLabel,
+  sendGuestRoomReadyMessage,
+  classifyRoomReadySendResult,
+} from "../utils/suiteRoomReady";
 import MissingDepartureBadge from "./MissingDepartureBadge";
 import QuietHoursGate from "./QuietHoursGate";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
@@ -97,21 +101,19 @@ export default function SuitesDashboard() {
     const waKey = `${phone}:${roomId || ""}`;
     setSendingWa((prev) => new Set([...prev, waKey]));
     try {
-      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: "room_ready", guestId, roomId: roomId || undefined },
-      });
-      if (error) throw new Error(error.message);
-      if (data?.status === "timeout") {
-        showToast("ℹ️ לא ודאי אם ההודעה הגיעה — בדקו בוואטסאפ לפני שליחה חוזרת");
-        return;
-      }
-      if (!data?.ok) throw new Error(data?.error ?? "שגיאה לא ידועה");
+      const result = await sendGuestRoomReadyMessage(supabase, { guestId, roomLabel: roomId });
+      const verdict = classifyRoomReadySendResult(result);
+      if (!verdict.ok) throw new Error(verdict.reason);
+
       // Anti-duplication guard — a skipped send must never masquerade as a
       // fresh "sent" success toast (FAIL VISIBLE §0.3).
-      if (data?.skipped && data?.status === "duplicate_blocked") {
+      if (verdict.kind === "timeout") {
+        showToast("ℹ️ לא ודאי אם ההודעה הגיעה — בדקו בוואטסאפ לפני שליחה חוזרת");
+        return;
+      } else if (verdict.kind === "duplicate") {
         showToast("ℹ️ נחסם כפול — הודעת 'חדר מוכן' כבר נשלחה לאורח בעבר");
-      } else if (data?.skipped) {
-        showToast(`ℹ️ השליחה דולגה (${data.reason ?? "ללא סיבה"})`);
+      } else if (verdict.kind === "skipped") {
+        showToast(`ℹ️ השליחה דולגה (${verdict.reason ?? "ללא סיבה"})`);
       } else {
         showToast("✅ הודעת 'חדר מוכן' נשלחה");
       }

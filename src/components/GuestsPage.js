@@ -49,6 +49,7 @@ import {
   isSuiteRoomReadySent,
   resolveSuiteRoomDisplayLabel,
   sendGuestRoomReadyMessage,
+  classifyRoomReadySendResult,
 } from "../utils/suiteRoomReady";
 import { formatSuiteRoomLine } from "../utils/guestStaySummary";
 
@@ -266,16 +267,16 @@ export default function GuestsPage({
     }
     setBusy(`${guest.id}:${roomLabel}`);
     try {
-      const { data: waData, error: waError } = await sendGuestRoomReadyMessage(supabase, {
-        guestId: guest.id,
-        roomLabel,
-      });
-      if (waError || waData?.ok === false) {
-        const reason = waData?.error ?? waError?.message ?? "שגיאה לא ידועה";
-        showToast("err", `שליחת WA ל${roomLabel} נכשלה: ${reason}`);
+      const result = await sendGuestRoomReadyMessage(supabase, { guestId: guest.id, roomLabel });
+      const verdict = classifyRoomReadySendResult(result);
+      if (!verdict.ok) {
+        showToast("err", `שליחת WA ל${roomLabel} נכשלה: ${verdict.reason}`);
         return;
       }
-      if (waData?.skipped) {
+      if (verdict.kind === "timeout") {
+        patchSuiteRoomReadyLocal(guest.id, roomLabel);
+        showToast("ok", `ℹ ${roomLabel} — לא ודאי אם ההודעה הגיעה, בדקו בוואטסאפ לפני שליחה חוזרת`);
+      } else if (verdict.kind === "duplicate" || verdict.kind === "skipped") {
         patchSuiteRoomReadyLocal(guest.id, roomLabel);
         showToast("ok", `ℹ ${roomLabel} — ההודעה כבר נשלחה קודם`);
       } else {
@@ -289,7 +290,7 @@ export default function GuestsPage({
         )));
         showToast(
           "ok",
-          `✅ חדר מוכן (${roomLabel}) + הודעת WA נשלחה ל${guest.name}${waData?.simulation ? " (סימולציה)" : ""}`,
+          `✅ חדר מוכן (${roomLabel}) + הודעת WA נשלחה ל${guest.name}${verdict.simulation ? " (סימולציה)" : ""}`,
         );
       }
     } catch (e) {
@@ -365,17 +366,26 @@ export default function GuestsPage({
       }
       const singleRoomLabel = roomLabel || guest.room || resolveSuiteRoomDisplayLabel(suiteRooms[0]) || undefined;
       try {
-        const { data: waData, error: waError } = await sendGuestRoomReadyMessage(supabase, {
+        const result = await sendGuestRoomReadyMessage(supabase, {
           guestId: guest.id,
           roomLabel: singleRoomLabel,
         });
-        if (waError || !waData?.ok) {
-          const reason = waData?.error ?? waError?.message ?? "שגיאה לא ידועה";
-          showToast("err", `חדר סומן כמוכן — אך הודעת WA נכשלה: ${reason}`);
+        const verdict = classifyRoomReadySendResult(result);
+        if (!verdict.ok) {
+          showToast("err", `חדר סומן כמוכן — אך הודעת WA נכשלה: ${verdict.reason}`);
           setBusy(null);
           return;
         }
-        showToast("ok", `✅ חדר מוכן + הודעת WA נשלחה ל${guest.name}${waData.simulation ? " (סימולציה)" : ""}`);
+        // A skipped/duplicate-blocked/timeout send is still "ok" (no error) but
+        // must never read as a fresh "sent" toast — the guest may not have
+        // actually received a new message this time (FAIL VISIBLE).
+        if (verdict.kind === "timeout") {
+          showToast("ok", "ℹ️ חדר סומן כמוכן — לא ודאי אם הודעת ה-WA הגיעה, בדקו לפני שליחה חוזרת");
+        } else if (verdict.kind === "duplicate" || verdict.kind === "skipped") {
+          showToast("ok", `ℹ חדר סומן כמוכן — הודעת WA כבר נשלחה בעבר ל${guest.name}`);
+        } else {
+          showToast("ok", `✅ חדר מוכן + הודעת WA נשלחה ל${guest.name}${verdict.simulation ? " (סימולציה)" : ""}`);
+        }
       } catch (e) {
         showToast("err", `חדר סומן כמוכן — אך הודעת WA נכשלה: ${e?.message ?? String(e)}`);
         setBusy(null);

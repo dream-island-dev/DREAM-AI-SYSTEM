@@ -34,6 +34,7 @@ import { formatSpaSchedule } from "../utils/israeliTime";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 import GuestOutboundModal from "./GuestOutboundModal";
 import GuestWhapiQuickTestPanel from "./GuestWhapiQuickTestPanel";
+import { sendGuestRoomReadyMessage, classifyRoomReadySendResult } from "../utils/suiteRoomReady";
 
 // ── Date helpers (local time) ─────────────────────────────────────────────────
 function localISO(offsetDays = 0) {
@@ -193,15 +194,25 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
     }
     setLoadingId(guest.id);
     try {
-      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: "room_ready", guestId: guest.id },
-      });
-      if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
-      if (!data?.ok) throw new Error(data?.error ?? "שליחת ההודעה נכשלה");
-      setGuests((prev) =>
-        prev.map((g) => g.id === guest.id ? { ...g, msg_room_ready_sent: true } : g)
-      );
-      showToast("ok", `✅ הודעת חדר מוכן נשלחה ל${guest.name}${data.simulation ? " (סימולציה)" : ""}`);
+      const result = await sendGuestRoomReadyMessage(supabase, { guestId: guest.id });
+      const verdict = classifyRoomReadySendResult(result);
+      if (!verdict.ok) throw new Error(verdict.reason);
+
+      if (verdict.kind === "sent") {
+        setGuests((prev) =>
+          prev.map((g) => g.id === guest.id ? { ...g, msg_room_ready_sent: true } : g)
+        );
+      }
+
+      if (verdict.kind === "timeout") {
+        showToast("ok", "ℹ️ לא ודאי אם ההודעה הגיעה — בדקו בוואטסאפ לפני שליחה חוזרת");
+      } else if (verdict.kind === "duplicate") {
+        showToast("ok", `ℹ ${guest.name} — הודעת חדר מוכן כבר נשלחה בעבר`);
+      } else if (verdict.kind === "skipped") {
+        showToast("ok", `ℹ השליחה דולגה (${verdict.reason ?? "ללא סיבה"})`);
+      } else {
+        showToast("ok", `✅ הודעת חדר מוכן נשלחה ל${guest.name}${verdict.simulation ? " (סימולציה)" : ""}`);
+      }
     } catch (err) {
       showToast("err", "שגיאה בשליחה: " + (err?.message ?? String(err)));
     } finally {
