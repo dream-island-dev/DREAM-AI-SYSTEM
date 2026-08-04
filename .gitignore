@@ -31,3 +31,6 @@ make-blueprint-spa.json
 
 # Cursor IDE session/recovery dumps — contain session headers/token-like keys, never commit
 docs/cursor_*.json
+
+# One-shot script inputs — real guest names/phone numbers, never commit
+scripts/data/
