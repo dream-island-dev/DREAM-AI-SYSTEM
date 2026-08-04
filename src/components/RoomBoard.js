@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "../supabaseClient";
 import { usePageVisibility } from "../hooks/usePageVisibility";
+import { Toast, useToast } from "./Toast";
 import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
 import {
   performSuiteCheckIn,
@@ -173,7 +174,7 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
   const [loading,     setLoading]     = useState(true);
   const [filter,      setFilter]      = useState(isKioskMode ? "לניקיון" : "הכל");
   const [updating,    setUpdating]    = useState(null);
-  const [toast,       setToast]       = useState(null);
+  const [toast, showToastShared] = useToast(3500);
   const [lang,        setLang]        = useState("he");
   const [confirmRoom, setConfirmRoom] = useState(null);
   // WA notification state per room: "sending" | "sent" | "failed"
@@ -271,10 +272,11 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
     if (pageVisible) syncBoard();
   }, [pageVisible, syncBoard]);
 
-  // ── Toast ───────────────────────────────────────────────────────────────
+  // ── Toast — thin adapter so the ~13 existing showToast(msg, type) call
+  // sites below don't all need touching; only the render/positioning was the
+  // actual outlier (top-right instead of the app-wide top-center convention).
   function showToast(msg, type = "ok") {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3500);
+    showToastShared(type, msg);
   }
 
   // ── WA notify helper (shared by confirm + retry) ───────────────────────
@@ -491,19 +493,7 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
     <div style={{ direction: "rtl", padding: "20px 24px", fontFamily: "Heebo, sans-serif",
       background: "var(--ivory)", minHeight: "100%" }}>
 
-      {/* Toast */}
-      {toast && (
-        <div style={{
-          position: "fixed", top: 20, right: 20, zIndex: 9999,
-          padding: "12px 20px", borderRadius: 10, fontWeight: 700, fontSize: 14,
-          boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
-          background: toast.type === "err" ? "#FCEBEB" : "#EAF3DE",
-          color:      toast.type === "err" ? "#A32D2D"  : "#3B6D11",
-          border:     `1px solid ${toast.type === "err" ? "#E24B4A" : "#639922"}`,
-        }}>
-          {toast.msg}
-        </div>
-      )}
+      <Toast toast={toast} />
 
       {/* Confirmation Modal */}
       {confirmRoom && (

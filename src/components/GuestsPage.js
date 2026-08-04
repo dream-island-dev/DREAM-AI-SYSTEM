@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { usePageVisibility } from "../hooks/usePageVisibility";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { Toast, useToast } from "./Toast";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
 import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict } from "../utils/guestTiming";
 import { loadCheckinFilter } from "../utils/checkinFilterStorage";
@@ -80,7 +81,7 @@ export default function GuestsPage({
   const [busy, setBusy]       = useState(null);
   const skipRealtimeUntilRef = useRef(0);
   const realtimeDebounceRef = useRef(null);
-  const [toast, setToast]     = useState(null);
+  const [toast, showToast] = useToast(3500);
   const [profileGuest, setProfileGuest] = useState(null); // guest object or null — GuestContextDrawer
   const [profileEditOnOpen, setProfileEditOnOpen] = useState(false);
   const [etaBoardOpen, setEtaBoardOpen] = useState(() => {
@@ -107,8 +108,6 @@ export default function GuestsPage({
     initialCustomDate: initialCustomArrivalDate,
     onInitialConsumed: onTimelineScopeConsumed,
   });
-
-  const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
   const persistScopeCache = useCallback((rows, suiteMap) => {
     writeCachedCheckinScope(timelineScope, customArrivalDate, {
@@ -150,7 +149,7 @@ export default function GuestsPage({
       persistScopeCache(rows, suiteMap);
     }
     if (showSpinner && !hasCachedScope) setLoading(false);
-  }, [timelineScope, customArrivalDate, persistScopeCache]);
+  }, [timelineScope, customArrivalDate, persistScopeCache, showToast]);
 
   const fetchGuestsSilent = useCallback(() => loadGuests(), [loadGuests]);
 
@@ -835,16 +834,7 @@ export default function GuestsPage({
         />
       )}
 
-      {toast && (
-        <div style={{
-          position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
-          padding: "12px 24px", borderRadius: 10, fontWeight: 700, fontSize: 14,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.15)",
-          background: toast.type === "ok" ? "#E8F5EF" : "#FFF0EE",
-          color:      toast.type === "ok" ? "#1A7A4A" : "#C0392B",
-          border:     `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
-        }}>{toast.msg}</div>
-      )}
+      <Toast toast={toast} />
 
       <CheckinTimelineFilterBar
         timelineScope={timelineScope}

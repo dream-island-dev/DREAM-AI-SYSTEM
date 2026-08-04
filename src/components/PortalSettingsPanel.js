@@ -11,32 +11,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Shared helpers
-// ─────────────────────────────────────────────────────────────────────────────
-function Toast({ toast }) {
-  if (!toast) return null;
-  return (
-    <div style={{
-      position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
-      padding: "12px 24px", borderRadius: 10, fontWeight: 700, fontSize: 14,
-      boxShadow: "0 8px 32px rgba(0,0,0,0.15)",
-      background: toast.type === "ok" ? "#E8F5EF" : "#FFF0EE",
-      color:      toast.type === "ok" ? "#1A7A4A" : "#C0392B",
-      border:     `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
-    }}>{toast.msg}</div>
-  );
-}
-
-function useToast() {
-  const [toast, setToast] = useState(null);
-  const showToast = useCallback((type, msg) => {
-    setToast({ type, msg });
-    setTimeout(() => setToast(null), 3000);
-  }, []);
-  return [toast, showToast];
-}
+import { Toast, useToast } from "./Toast";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SCENES TAB — portal_scenes CRUD (existing logic, moved into a tab)

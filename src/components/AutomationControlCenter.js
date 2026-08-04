@@ -20,6 +20,7 @@
 // offset_hours applies to cron/ACC catch-up for guests who confirmed but never received Stage 2.
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { Toast, useToast } from "./Toast";
 import TemplateManagerPanel, { STATUS_META } from "./TemplateManagerPanel";
 import TemplateTestPanel from "./TemplateTestPanel";
 import ScheduledOverrideConfirmModal from "./ScheduledOverrideConfirmModal";
@@ -2151,7 +2152,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [availableScriptKeys, setAvailableScriptKeys] = useState([]);
   const [loadingStages, setLoadingStages] = useState(true);
   const [expanded, setExpanded] = useState(null);
-  const [toast, setToast] = useState(null);
+  const [toast, showToast] = useToast(4000);
   const [templateDraft, setTemplateDraft] = useState(null);
   const [metaTemplatesByName, setMetaTemplatesByName] = useState({});
   const [postCheckoutSurveyDelayMinutes, setPostCheckoutSurveyDelayMinutes] = useState(
@@ -2231,11 +2232,6 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [sendNowError, setSendNowError] = useState(null);
   const [suppressBusyKey, setSuppressBusyKey] = useState(null);
   const [staffTestPhone, setStaffTestPhone] = useState("");
-
-  const showToast = useCallback((type, msg) => {
-    setToast({ type, msg });
-    setTimeout(() => setToast(null), 4000);
-  }, []);
 
   const dismissAttentionItem = useCallback((key) => {
     setDismissedAttentionKeys((prev) => {
@@ -3048,16 +3044,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
         .actr-scroll::-webkit-scrollbar-thumb { background: var(--gold); border-radius: 3px; }
         .actr-scroll::-webkit-scrollbar-thumb:hover { background: var(--gold-dark); }
       `}</style>
-      {toast && (
-        <div style={{
-          position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
-          padding: "12px 24px", borderRadius: 10, fontWeight: 700, fontSize: 14, maxWidth: "90vw",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.15)",
-          background: toast.type === "ok" ? "#E8F5EF" : "#FFF0EE",
-          color:      toast.type === "ok" ? "#1A7A4A" : "#C0392B",
-          border:     `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
-        }}>{toast.msg}</div>
-      )}
+      <Toast toast={toast} />
 
       <div className="actr-tabs" style={{ display: "flex", borderBottom: "2px solid var(--border)", marginBottom: 20, gap: 4 }}>
         {[
