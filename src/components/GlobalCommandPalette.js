@@ -15,9 +15,8 @@ export default function GlobalCommandPalette({
   open,
   onClose,
   onOpenInbox,
-  onOpenGuests,
-  onOpenGuestManage,
-  onOpenAutomation,
+  navItems = [],
+  onNavigate,
 }) {
   const [query, setQuery] = useState("");
   const [guests, setGuests] = useState([]);
@@ -46,12 +45,24 @@ export default function GlobalCommandPalette({
     }
   }, [open]);
 
-  const navActions = useMemo(() => [
-    { id: "nav-inbox", label: "💬 DREAM BOT — שיחות", run: () => onOpenInbox?.({}) },
-    { id: "nav-guests", label: "🛎️ צ׳ק-אין", run: () => onOpenGuests?.({}) },
-    { id: "nav-vip", label: "🏨 ניהול אורחים", run: () => onOpenGuestManage?.() },
-    { id: "nav-auto", label: "📡 בקרת אוטומציה", run: () => onOpenAutomation?.() },
-  ], [onOpenInbox, onOpenGuests, onOpenGuestManage, onOpenAutomation]);
+  // Role-filtered — App.js already excludes anything this user can't see/reach
+  // (see paletteNavItems there), so no further permission check needed here.
+  const navActions = useMemo(() => (
+    navItems.map((item) => ({
+      id: `nav-${item.id}`,
+      label: `${item.icon ?? ""} ${item.label}`.trim(),
+      run: () => onNavigate?.(item.id),
+    }))
+  ), [navItems, onNavigate]);
+
+  // Searchable by label, not just shown as a static default list — previously
+  // nav actions vanished entirely the moment you typed anything (guestMatches
+  // was the only thing query filtered), so typing e.g. "אוטומציה" found nothing.
+  const navMatches = useMemo(() => {
+    const q = normalizeSearch(query);
+    if (!q) return navActions;
+    return navActions.filter((a) => a.label.toLowerCase().includes(q)).slice(0, 8);
+  }, [navActions, query]);
 
   const guestMatches = useMemo(() => {
     const q = normalizeSearch(query);
@@ -66,11 +77,8 @@ export default function GlobalCommandPalette({
   }, [guests, query]);
 
   const items = useMemo(() => {
-    const q = normalizeSearch(query);
     const list = [];
-    if (!q) {
-      list.push(...navActions);
-    }
+    list.push(...navMatches);
     guestMatches.forEach((g) => {
       list.push({
         id: `guest-${g.id}`,
@@ -81,7 +89,7 @@ export default function GlobalCommandPalette({
       });
     });
     return list;
-  }, [guestMatches, navActions, query]);
+  }, [guestMatches, navMatches]);
 
   const runItem = useCallback((item) => {
     if (!item) return;

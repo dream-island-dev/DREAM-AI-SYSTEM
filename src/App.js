@@ -1369,33 +1369,55 @@ function DepartmentOnboardingModal({ user, onComplete }) {
   );
 }
 
-function Sidebar({ user, active, setActive, openOpsCount, spaLeadsCount, onLogout, isAdmin, isSuperAdminUser, mobileOpen, onCloseMobile }) {
-  const allNavItems = [
-    { id: "dashboard",  icon: "📊", label: "דאשבורד" },
-    { id: "spa_leads",  icon: "💆", label: "לידים ספא", badge: spaLeadsCount, managerOnly: true, receptionistOk: true },
-    { id: "shifts",     icon: "🕐", label: "משמרות" },
-    { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
-    { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
-    { id: "requests_board", icon: "📋", label: "לוח בקשות", managerOnly: true, receptionistOk: true },
-    { id: "orit_cs_agent", icon: "👑", label: "סוכן שירות לקוחות", oritCsAgentOnly: true },
-    { id: "ops_board",  icon: "🛠️", label: "תפעול ואחזקה", badge: openOpsCount,       managerOnly: false },
-    { id: "vip_guests", icon: "🏨", label: "ניהול אורחים",                            managerOnly: true },
-    { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
-    { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true, receptionistOk: true },
-    { id: "guests",     icon: "🛎️", label: "צ'ק-אין",                               managerOnly: true },
-    { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
-    { id: "spa_board",  icon: "💆", label: "לוח ספא",                                 managerOnly: true, receptionistOk: true },
-    { id: "restaurant_dinner_board", icon: "🍽️", label: "לוח מסעדה", restaurantBoardOnly: true, managerOnly: true, receptionistOk: true },
-    { id: "housekeeping_tablet", icon: "🧹", label: "לוח ניקיון (טאבלט)",              managerOnly: false },
-    { id: "feedback_dashboard", icon: "🌟", label: "משוב אורחים",                     managerOnly: true, receptionistOk: true },
-    { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
-    { id: "agent",      icon: "📦", label: "ניהול מלאי" },
-    { id: "data_sync",  icon: "📥", label: "סנכרון נתונים",                          managerOnly: true, receptionistOk: true },
-    { id: "voucher_reconciliation", icon: "🧾", label: "התאמת שוברים",               managerOnly: true, receptionistOk: true },
-  ];
+// Single source of truth for the main sidebar list — also drives GlobalCommandPalette's
+// nav search (see paletteNavItems below), which used to hardcode its own 4-item list
+// that silently fell behind as routes were added here.
+const ALL_NAV_ITEMS = [
+  { id: "dashboard",  icon: "📊", label: "דאשבורד" },
+  { id: "spa_leads",  icon: "💆", label: "לידים ספא", managerOnly: true, receptionistOk: true },
+  { id: "shifts",     icon: "🕐", label: "משמרות" },
+  { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
+  { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
+  { id: "requests_board", icon: "📋", label: "לוח בקשות", managerOnly: true, receptionistOk: true },
+  { id: "orit_cs_agent", icon: "👑", label: "סוכן שירות לקוחות", oritCsAgentOnly: true },
+  { id: "ops_board",  icon: "🛠️", label: "תפעול ואחזקה",       managerOnly: false },
+  { id: "vip_guests", icon: "🏨", label: "ניהול אורחים",                            managerOnly: true },
+  { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
+  { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true, receptionistOk: true },
+  { id: "guests",     icon: "🛎️", label: "צ'ק-אין",                               managerOnly: true },
+  { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
+  { id: "spa_board",  icon: "💆", label: "לוח ספא",                                 managerOnly: true, receptionistOk: true },
+  { id: "restaurant_dinner_board", icon: "🍽️", label: "לוח מסעדה", restaurantBoardOnly: true, managerOnly: true, receptionistOk: true },
+  { id: "housekeeping_tablet", icon: "🧹", label: "לוח ניקיון (טאבלט)",              managerOnly: false },
+  { id: "feedback_dashboard", icon: "🌟", label: "משוב אורחים",                     managerOnly: true, receptionistOk: true },
+  { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
+  { id: "agent",      icon: "📦", label: "ניהול מלאי" },
+  { id: "data_sync",  icon: "📥", label: "סנכרון נתונים",                          managerOnly: true, receptionistOk: true },
+  { id: "voucher_reconciliation", icon: "🧾", label: "התאמת שוברים",               managerOnly: true, receptionistOk: true },
+];
 
+// Mirrors the hand-written admin-only <button> block inside Sidebar below (data-only —
+// intentionally does not drive that JSX, just gives the palette the same route list to
+// search). Keep in sync if a route is added/removed from that block.
+const ADMIN_NAV_ITEMS = [
+  { id: "admin", icon: "🔧", label: "ניהול מערכת" },
+  { id: "admin_updates", icon: "📜", label: "עדכוני מערכת" },
+  { id: "portal_settings", icon: "🎨", label: "הגדרות פורטל" },
+  { id: "bot_config", icon: "🤖", label: "הגדרות בוט" },
+  { id: "bot_settings", icon: "🧠", label: "מוח הבוט" },
+  { id: "bot_scripts", icon: "📝", label: "סקריפטי הבוט" },
+  { id: "automation_center", icon: "🎛️", label: "בקרת אוטומציה" },
+  { id: "executive_playbook", icon: "🧬", label: "סוכנים חכמים", superAdminOnly: true },
+  { id: "routing_control_center", icon: "🔀", label: "מרכז ניתוב" },
+  { id: "cms_security", icon: "🔐", label: "אבטחת CMS" },
+  { id: "users_mgmt", icon: "👥", label: "ניהול משתמשים", superAdminOnly: true },
+];
+
+function Sidebar({ user, active, setActive, openOpsCount, spaLeadsCount, onLogout, isAdmin, isSuperAdminUser, mobileOpen, onCloseMobile }) {
+  const navBadges = { spa_leads: spaLeadsCount, ops_board: openOpsCount };
   const navItems = filterNavItemsForUser(
-    allNavItems.filter((item) => canSeeNavItem(item, user)),
+    ALL_NAV_ITEMS.filter((item) => canSeeNavItem(item, user))
+      .map((item) => (item.id in navBadges ? { ...item, badge: navBadges[item.id] } : item)),
     user,
   );
 
@@ -2767,10 +2789,16 @@ export default function App({ initialPage = "dashboard" }) {
         open={cmdPaletteOpen}
         onClose={() => setCmdPaletteOpen(false)}
         onOpenInbox={openDreamBotChat}
-        onOpenGuests={() => openCheckinTab({ timelineScope: "today" })}
-        onOpenGuestManage={() => { setActivePage("vip_guests"); setMobileMenuOpen(false); }}
-        onOpenAutomation={() => {
-          if (canAccessRoute("automation_center", user)) setActivePage("automation_center");
+        navItems={[
+          ...filterNavItemsForUser(ALL_NAV_ITEMS.filter((item) => canSeeNavItem(item, user)), user),
+          ...(isAdmin ? ADMIN_NAV_ITEMS.filter((item) => !item.superAdminOnly || isSuperAdminUser) : []),
+        ]}
+        onNavigate={(routeId) => {
+          if (!canAccessRoute(routeId, user)) return;
+          if (routeId === "wa_inbox") { openDreamBotChat({}); return; }
+          if (routeId === "guests") { openCheckinTab({ timelineScope: "today" }); return; }
+          setActivePage(routeId);
+          setMobileMenuOpen(false);
         }}
       />
 
