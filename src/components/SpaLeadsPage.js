@@ -5,18 +5,25 @@ import { israelTodayYmd, resolveSpaLeadAudience, SPA_LEAD_AUDIENCE_GROUP } from 
 import {
   buildSpaLeadSingleCopy,
   buildSpaUpsellStaffCopy,
-  fetchAllOpenSpaUpsellLeads,
+  fetchOpenSpaUpsellLeadCount,
+  fetchSpaCoordinatorLeads,
   fmtLeadTime,
   resolveSpaUpsellLead,
+  unresolveSpaUpsellLead,
 } from "../utils/spaUpsellHub";
 import { isEffectiveDayPassGuest, isEffectiveSuiteGuest } from "../utils/pipelineSegment";
 import { isManualSpaUpsellLeadMessage } from "../utils/spaUpsellLeadManual";
 import useIsMobile from "../utils/useIsMobile";
+import UndoSnackbar from "./UndoSnackbar";
 
 const FILTER_ALL = "all";
 const FILTER_TODAY = "today";
 const FILTER_TOMORROW = "tomorrow";
 const FILTER_CUSTOM = "custom";
+
+const STATUS_PENDING = "open";
+const STATUS_DONE = "resolved";
+const STATUS_ALL = "all";
 
 function tomorrowYmd() {
   const d = new Date();
@@ -81,26 +88,35 @@ function fmtArrivalDate(ymd) {
 export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
   const isMobile = useIsMobile();
   const [leads, setLeads] = useState([]);
+  const [pendingCount, setPendingCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [resolvingId, setResolvingId] = useState(null);
+  const [reopeningId, setReopeningId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
   const [dateFilter, setDateFilter] = useState(FILTER_TODAY);
   const [customDate, setCustomDate] = useState(israelTodayYmd());
+  const [statusFilter, setStatusFilter] = useState(STATUS_PENDING);
+  const [undoSnack, setUndoSnack] = useState(null);
 
   const loadLeads = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) return;
     setLoading(true);
     setLoadError(null);
-    const { leads: rows, error } = await fetchAllOpenSpaUpsellLeads(supabase);
-    if (error) {
-      setLoadError(error.message);
+    const status = statusFilter === STATUS_ALL ? "all" : statusFilter;
+    const [leadsResult, openCount] = await Promise.all([
+      fetchSpaCoordinatorLeads(supabase, { status }),
+      fetchOpenSpaUpsellLeadCount(supabase),
+    ]);
+    if (leadsResult.error) {
+      setLoadError(leadsResult.error.message);
       setLeads([]);
     } else {
-      setLeads(rows);
+      setLeads(leadsResult.leads);
     }
+    setPendingCount(openCount);
     setLoading(false);
-  }, []);
+  }, [statusFilter]);
 
   useEffect(() => { loadLeads(); }, [loadLeads]);
 
@@ -137,13 +153,59 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [filteredLeads]);
 
-  const handleResolve = async (leadId) => {
+  const handleResolve = async (lead) => {
     if (!supabase) return;
-    setResolvingId(leadId);
-    const { error } = await resolveSpaUpsellLead(supabase, leadId);
+    setResolvingId(lead.id);
+    const prevRow = { ...lead };
+    const { error, patch } = await resolveSpaUpsellLead(supabase, lead.id);
     setResolvingId(null);
-    if (error) setLoadError(error.message);
-    else setLeads((prev) => prev.filter((l) => l.id !== leadId));
+    if (error) {
+      setLoadError(error.message);
+      return;
+    }
+    const resolvedRow = { ...prevRow, ...patch };
+    if (statusFilter === STATUS_PENDING) {
+      setLeads((prev) => prev.filter((l) => l.id !== lead.id));
+    } else {
+      setLeads((prev) => prev.map((l) => (l.id === lead.id ? resolvedRow : l)));
+    }
+    setPendingCount((c) => Math.max(0, c - 1));
+    setUndoSnack({ id: lead.id, prevRow });
+  };
+
+  const handleUndoResolve = async () => {
+    if (!supabase || !undoSnack) return;
+    const { error, patch } = await unresolveSpaUpsellLead(supabase, undoSnack.id);
+    if (error) {
+      setLoadError(error.message);
+      return;
+    }
+    const reopened = { ...undoSnack.prevRow, ...patch };
+    if (statusFilter === STATUS_PENDING) {
+      setLeads((prev) => [reopened, ...prev]);
+    } else {
+      setLeads((prev) => prev.map((l) => (l.id === undoSnack.id ? reopened : l)));
+    }
+    setPendingCount((c) => c + 1);
+    setUndoSnack(null);
+  };
+
+  const handleReopen = async (lead) => {
+    if (!supabase) return;
+    setReopeningId(lead.id);
+    const { error, patch } = await unresolveSpaUpsellLead(supabase, lead.id);
+    setReopeningId(null);
+    if (error) {
+      setLoadError(error.message);
+      return;
+    }
+    const reopened = { ...lead, ...patch };
+    if (statusFilter === STATUS_DONE) {
+      setLeads((prev) => prev.filter((l) => l.id !== lead.id));
+    } else {
+      setLeads((prev) => prev.map((l) => (l.id === lead.id ? reopened : l)));
+    }
+    setPendingCount((c) => c + 1);
   };
 
   const copyList = async () => {
@@ -190,8 +252,37 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
     </button>
   );
 
+  const statusBtn = (id, label) => (
+    <button
+      key={id}
+      type="button"
+      onClick={() => setStatusFilter(id)}
+      style={{
+        padding: isMobile ? "9px 14px" : "8px 14px",
+        borderRadius: 20,
+        fontSize: 13,
+        fontWeight: 700,
+        cursor: "pointer",
+        border: statusFilter === id ? "2px solid #166534" : "1px solid #BBF7D0",
+        background: statusFilter === id ? "#DCFCE7" : "#fff",
+        color: statusFilter === id ? "#166534" : "#6B7280",
+        flex: isMobile ? "1 1 auto" : "0 0 auto",
+        minHeight: isMobile ? 40 : "auto",
+      }}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <div style={{ direction: "rtl", fontFamily: "Heebo, sans-serif", maxWidth: 1080, margin: "0 auto" }}>
+      <UndoSnackbar
+        visible={!!undoSnack}
+        message="✓ סומן כבוצע"
+        onUndo={handleUndoResolve}
+        onDismiss={() => setUndoSnack(null)}
+        durationMs={6000}
+      />
       <div style={{
         background: "linear-gradient(135deg, #5B21B6 0%, #7C3AED 55%, #A78BFA 100%)",
         borderRadius: 16,
@@ -213,9 +304,21 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
           borderRadius: 12,
           padding: "10px 18px",
         }}>
-          <span style={{ fontSize: 32, fontWeight: 800, lineHeight: 1 }}>{filteredLeads.length}</span>
+          <span style={{ fontSize: 32, fontWeight: 800, lineHeight: 1 }}>{pendingCount}</span>
           <span style={{ fontSize: 13, fontWeight: 600 }}>ממתינים לטיפול</span>
         </div>
+      </div>
+
+      <div style={{
+        display: "flex",
+        gap: 8,
+        flexWrap: "wrap",
+        marginBottom: 10,
+        alignItems: "center",
+      }}>
+        {statusBtn(STATUS_PENDING, "⏳ ממתינים")}
+        {statusBtn(STATUS_DONE, "✓ בוצע")}
+        {statusBtn(STATUS_ALL, "הכל")}
       </div>
 
       <div style={{
@@ -335,10 +438,22 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
           color: "#7C3AED",
           background: "#FAF5FF",
         }}>
-          <div style={{ fontSize: 40, marginBottom: 8 }}>🎉</div>
-          <div style={{ fontWeight: 700, fontSize: 15 }}>אין ממתינים כרגע</div>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>
+            {statusFilter === STATUS_DONE ? "📭" : "🎉"}
+          </div>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>
+            {statusFilter === STATUS_DONE
+              ? "אין לידים שסומנו בוצע"
+              : statusFilter === STATUS_ALL
+                ? "אין לידים להצגה"
+                : "אין ממתינים כרגע"}
+          </div>
           <div style={{ fontSize: 13, marginTop: 6, color: "#9CA3AF" }}>
-            תשובות «אשמח לתאם» יופיעו כאן אוטומטית
+            {statusFilter === STATUS_PENDING
+              ? "תשובות «אשמח לתאם» יופיעו כאן אוטומטית"
+              : statusFilter === STATUS_DONE
+                ? "לידים שסומנו ✓ בוצע יופיעו כאן"
+                : "נסי לשנות פילטר תאריך או סטטוס"}
           </div>
         </div>
       ) : (
@@ -361,13 +476,14 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                   const phoneTel = formatPhoneTel(phoneRaw);
                   const phoneDisplay = formatPhoneDisplay(phoneRaw);
                   const quote = String(lead.message ?? "").trim().replace(/^\[ידני מ-Inbox\]\s*/i, "") || "אשמח לתאם";
+                  const isDone = Boolean(lead.resolved);
                   return (
                   <div
                     key={lead.id}
                     style={{
-                      background: "#fff",
-                      border: "1px solid #E9D5FF",
-                      borderRight: "5px solid #7C3AED",
+                      background: isDone ? "#F9FAFB" : "#fff",
+                      border: `1px solid ${isDone ? "#D1D5DB" : "#E9D5FF"}`,
+                      borderRight: `5px solid ${isDone ? "#9CA3AF" : "#7C3AED"}`,
                       borderRadius: 14,
                       padding: isMobile ? "14px 16px" : "18px 20px",
                       display: "flex",
@@ -376,11 +492,21 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                       alignItems: isMobile ? "stretch" : "flex-start",
                       gap: isMobile ? 12 : 16,
                       flexWrap: "wrap",
-                      boxShadow: "0 2px 12px rgba(91,33,182,0.06)",
+                      boxShadow: isDone ? "none" : "0 2px 12px rgba(91,33,182,0.06)",
+                      opacity: isDone ? 0.85 : 1,
                     }}
                   >
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                        {isDone && (
+                          <span style={{
+                            fontSize: 11, fontWeight: 800, color: "#166534",
+                            background: "#DCFCE7", padding: "3px 10px", borderRadius: 8,
+                          }}
+                          >
+                            ✓ בוצע
+                          </span>
+                        )}
                         {isManualSpaUpsellLeadMessage(lead.message) && (
                           <span style={{
                             fontSize: 11, fontWeight: 800, color: "#92400E",
@@ -481,6 +607,11 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                       </div>
                       <div style={{ fontSize: 12, color: "#9CA3AF", marginTop: 10 }}>
                         התקבל {fmtLeadTime(lead.created_at)}
+                        {isDone && lead.resolved_at && (
+                          <span style={{ marginRight: 10, color: "#166534" }}>
+                            · בוצע {fmtLeadTime(lead.resolved_at)}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div style={{
@@ -520,14 +651,25 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                           📅 שבץ
                         </button>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => handleResolve(lead.id)}
-                        disabled={resolvingId === lead.id}
-                        style={actionBtn("#DCFCE7", "#166534", true, isMobile, true)}
-                      >
-                        {resolvingId === lead.id ? "…" : "✓ בוצע"}
-                      </button>
+                      {isDone ? (
+                        <button
+                          type="button"
+                          onClick={() => handleReopen(lead)}
+                          disabled={reopeningId === lead.id}
+                          style={actionBtn("#FEF3C7", "#92400E", true, isMobile, true)}
+                        >
+                          {reopeningId === lead.id ? "…" : "↩ החזר לממתינים"}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleResolve(lead)}
+                          disabled={resolvingId === lead.id}
+                          style={actionBtn("#DCFCE7", "#166534", true, isMobile, true)}
+                        >
+                          {resolvingId === lead.id ? "…" : "✓ בוצע"}
+                        </button>
+                      )}
                     </div>
                   </div>
                   );

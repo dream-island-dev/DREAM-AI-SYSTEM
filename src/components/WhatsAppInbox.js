@@ -4882,7 +4882,28 @@ export default function WhatsAppInbox({
                 touched = true;
                 const nextMessages = contact.messages.slice();
                 nextMessages[idx] = { ...nextMessages[idx], ...updatedMsg };
-                return { ...contact, messages: nextMessages };
+                // contact.humanRequested/humanRequestType are aggregates over
+                // every message in the contact (same reduction groupByPhoneUnified
+                // does) — recompute them here too, or a server-side flip of
+                // human_requested on an already-loaded inbound row (guest-portal
+                // spa/ops requests via _shared/inboxRedAlert.ts, Tier-0 handoffs
+                // via patchClaimedInbound — both UPDATE, not INSERT) would leave
+                // the red-dot/alert badge stale in an already-open Inbox tab.
+                let nextHumanRequested = false;
+                let nextHumanRequestType = null;
+                for (const m of nextMessages) {
+                  const humanReq = messageHumanRequestState(m);
+                  if (humanReq.requested) {
+                    nextHumanRequested = true;
+                    if (humanReq.type && !nextHumanRequestType) nextHumanRequestType = humanReq.type;
+                  }
+                }
+                return {
+                  ...contact,
+                  messages: nextMessages,
+                  humanRequested: nextHumanRequested,
+                  humanRequestType: nextHumanRequestType,
+                };
               });
               return touched ? next : applyGrouping(allMsgsRef.current);
             });

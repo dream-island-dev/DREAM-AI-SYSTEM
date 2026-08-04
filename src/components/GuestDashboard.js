@@ -30,7 +30,6 @@ import {
   sortCheckinRosterGuests,
 } from "../utils/guestCheckinMatrix";
 import { useCheckinTimelineFilter } from "../hooks/useCheckinTimelineFilter";
-import { applyCheckinScopeSupabaseFilter } from "../utils/checkinGuestsFetch";
 import { formatSpaSchedule } from "../utils/israeliTime";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 import GuestOutboundModal from "./GuestOutboundModal";
@@ -151,16 +150,21 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
   }, []);
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
-  // Scoped to the same timelineScope/customArrivalDate as GuestsPage's
-  // check-in matrix (applyCheckinScopeSupabaseFilter, shared via
-  // checkinGuestsFetch.js) instead of the full guests table — this screen
-  // still applies applyCheckinRosterFilter client-side below for the exact
-  // matrix rules; the server-side filter is only the (wider) superset, so
-  // switching to "ארכיון" still surfaces old guests on purpose.
+  // NOTE (2026-08-04): a scoped variant (applyCheckinScopeSupabaseFilter, keyed
+  // off timelineScope) was tried here and reverted — this screen's stat cards
+  // (todayCount/tomorrowCount/roomReadyCount) and scopeCounts (feeding
+  // CheckinTimelineFilterBar's chip badges) need counts spanning EVERY
+  // timeline scope at once, not just whichever one is currently selected, so
+  // scoping the single source fetch silently zeroed out "מחר" etc. whenever
+  // scope=today (the default). Unlike whatsapp-cron/OperationalDashboard/
+  // ResortPulseBar, this screen has no realtime subscription driving frequent
+  // refetches, so the unscoped fetch here is a lower-urgency cost — left as a
+  // future improvement (would need a separate lightweight, scope-independent
+  // count query, not a shared fetch with the main roster).
   const fetchGuests = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
     setLoading(true);
-    let query = supabase
+    const { data, error } = await supabase
       .from("guests")
       .select(
         "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
@@ -171,12 +175,10 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
       )
       .order("arrival_date", { ascending: true })
       .order("name",         { ascending: true });
-    query = applyCheckinScopeSupabaseFilter(query, { scope: timelineScope, customArrivalDate });
-    const { data, error } = await query;
     if (error) showToast("err", "שגיאה בטעינת אורחים: " + error.message);
     else setGuests(data ?? []);
     setLoading(false);
-  }, [showToast, timelineScope, customArrivalDate]);
+  }, [showToast]);
 
   useEffect(() => { fetchGuests(); }, [fetchGuests]);
   // Clear selection when tab or data changes

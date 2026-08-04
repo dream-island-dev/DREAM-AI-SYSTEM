@@ -84,21 +84,38 @@ export async function fetchSpaUpsellLeads(supabase, arrivalDate) {
   return { leads: data ?? [], error: null };
 }
 
-/** All open spa coordinator leads — any arrival date. */
-export async function fetchAllOpenSpaUpsellLeads(supabase) {
+const SPA_LEAD_SELECT = "id, phone, message, created_at, resolved, resolved_at, resolution_notes, alert_type, guests(id, name, phone, room, room_type, arrival_date, departure_date, status, guest_profile)";
+
+/** @typedef {'open' | 'resolved' | 'all'} SpaLeadStatusFilter */
+
+/**
+ * Spa coordinator leads — any arrival date.
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase
+ * @param {{ status?: SpaLeadStatusFilter }} [opts]
+ */
+export async function fetchSpaCoordinatorLeads(supabase, opts = {}) {
   if (!supabase) return { leads: [], error: null };
 
-  const { data, error } = await supabase
+  const status = opts.status ?? "open";
+  let query = supabase
     .from("guest_alerts")
-    .select("id, phone, message, created_at, resolved, alert_type, guests(id, name, phone, room, room_type, arrival_date, departure_date, status, guest_profile)")
-    .in("alert_type", SPA_COORDINATOR_ALERT_TYPES)
-    .eq("resolved", false)
-    .order("created_at", { ascending: false });
+    .select(SPA_LEAD_SELECT)
+    .in("alert_type", SPA_COORDINATOR_ALERT_TYPES);
+
+  if (status === "open") query = query.eq("resolved", false);
+  else if (status === "resolved") query = query.eq("resolved", true);
+
+  const { data, error } = await query.order("created_at", { ascending: false });
 
   if (error) return { leads: [], error };
 
   const leads = (data ?? []).filter((row) => row.guests);
   return { leads, error: null };
+}
+
+/** All open spa coordinator leads — any arrival date. */
+export async function fetchAllOpenSpaUpsellLeads(supabase) {
+  return fetchSpaCoordinatorLeads(supabase, { status: "open" });
 }
 
 export async function fetchOpenSpaUpsellLeadCount(supabase) {
@@ -122,7 +139,20 @@ export async function resolveSpaUpsellLead(supabase, leadId, notes = "סגור �
     resolution_notes: notes,
   };
   const { error } = await supabase.from("guest_alerts").update(patch).eq("id", leadId);
-  return { error: error ?? null };
+  return { error: error ?? null, patch };
+}
+
+/** Reopen a resolved spa lead (undo accidental "בוצע"). */
+export async function unresolveSpaUpsellLead(supabase, leadId) {
+  if (!supabase || !leadId) return { error: new Error("חסר מזהה") };
+  const patch = {
+    resolved: false,
+    resolved_by: null,
+    resolved_at: null,
+    resolution_notes: null,
+  };
+  const { error } = await supabase.from("guest_alerts").update(patch).eq("id", leadId);
+  return { error: error ?? null, patch };
 }
 
 export async function fetchSpaUpsellSentCount(supabase, arrivalDate) {
