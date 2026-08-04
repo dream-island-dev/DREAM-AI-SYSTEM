@@ -1,4 +1,5 @@
 import { GENERIC_DAY_PASS_ROOM, PREMIUM_DAY_ROOMS } from "../data/suiteRegistry";
+import { isEffectiveDayPassGuest } from "./pipelineSegment";
 
 /** Outbound channel pins for spa upsell manual dispatch (whatsapp-send force_channel). */
 export const SPA_UPSELL_CHANNEL_WHAPI = "whapi_session";
@@ -67,23 +68,22 @@ export function spaUpsellChannelLabel(forceChannel) {
   return forceChannel || "—";
 }
 
-export function isDayPassGuestForUpsell(guest) {
-  return (
-    (guest?.room_type === "day_guest" || guest?.room_type === "premium_day_guest")
-    && !!guest?.room
-  );
-}
-
 /** Guest has a spa booking on the visit date (time or spa_date match). */
 export function guestHasSpaOnDate(guest, dateYmd) {
   const arrival = dateYmd || guest?.arrival_date;
   return !!guest?.spa_time || (!!guest?.spa_date && guest.spa_date === arrival);
 }
 
-/** Single guest row — matches Doc1 post-sync rules in ArrivalImportPanel. */
+/**
+ * Single guest row — matches Doc1 post-sync rules in ArrivalImportPanel.
+ * Uses isEffectiveDayPassGuest (not raw room_type) so a guest whose room is a
+ * canonical physical suite is never treated as day-pass audience even when
+ * room_type was mistagged 'day_guest'/'premium_day_guest' — the suite/day-pass
+ * split-brain (see _shared/suiteNames.ts hasSuiteRoomTypeConflict).
+ */
 export function isSpaUpsellEligible(guest, dateYmd) {
   if (!guest || guest.status === "cancelled") return false;
-  if (!isDayPassGuestForUpsell(guest)) return false;
+  if (!isEffectiveDayPassGuest(guest)) return false;
   if (guest.msg_spa_upsell_sent) return false;
   if (guestHasSpaOnDate(guest, dateYmd)) return false;
   return true;

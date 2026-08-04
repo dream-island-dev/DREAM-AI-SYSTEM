@@ -2514,7 +2514,12 @@ serve(async (req: Request) => {
       "night_before_daypass", "morning_daypass", "mid_stay_daypass", "checkout_fb_daypass",
       "spa_warmup_daypass", "survey_invite_daypass", "spa_upsell_daypass",
     ]);
-    if (!force && isEffectiveSuiteGuest(guest) && DAYPASS_ONLY_TRIGGERS.has(trigger)) {
+    // spa_upsell_daypass is a hard block for suite guests — force never bypasses it here
+    // (unlike the other day-pass-only stages). SpaUpsellHub's manual dispatch always sends
+    // force=true, so without this carve-out a suite guest could still receive the
+    // day-pass upsell price/copy via a deliberate staff send.
+    const shouldEnforceSuiteGate = trigger === "spa_upsell_daypass" || !force;
+    if (shouldEnforceSuiteGate && isEffectiveSuiteGuest(guest) && DAYPASS_ONLY_TRIGGERS.has(trigger)) {
       console.warn(
         `[whatsapp-send] suite_daypass_stage_gate: trigger="${trigger}" blocked for ` +
         `guest_id=${guestId} (room="${guest.room ?? ""}" room_type=${guest.room_type}) — ` +
