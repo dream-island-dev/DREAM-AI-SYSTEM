@@ -715,6 +715,9 @@ const MISSED_WINDOW_AFTER_SEND_WINDOW_KEYS = new Set<string>([
   "butler_1h",
 ]);
 
+/** Stage 4 — checked-in guests keep auto-send until this hour (not missed_window). */
+const MID_STAY_CHECKED_IN_AUTO_SEND_CEIL_HOUR = 22;
+
 /** When local_time is set but local_time_end is missing, cap auto-send at
  * floor+4h (max 23) so a late-imported guest cannot trigger all-day cron spam. */
 const DEFAULT_SEND_WINDOW_SPAN_HOURS = 4;
@@ -870,6 +873,16 @@ export function resolveStageSchedule(
         && scheduledFor.getTime() < now.getTime() - SPA_DAYPASS_CATCHUP_GRACE_MS
       ) {
         return { scheduledFor, dueNow: false, skipReason: "missed_window" };
+      }
+      // Stage 4: physical check-in = in-resort — cron may still send until 22:00
+      // (late import / same-day sync must not strand mid_stay as missed_window).
+      if (
+        stage.stage_key === "mid_stay"
+        && guest.status === "checked_in"
+        && hour < MID_STAY_CHECKED_IN_AUTO_SEND_CEIL_HOUR
+        && isLateImportCatchupEligible(stage, guest, todayStr)
+      ) {
+        return { scheduledFor, dueNow: true, skipReason: null };
       }
       return {
         scheduledFor,

@@ -1,6 +1,7 @@
 // Unified check-in/check-out sync — guests.status + room_status (mirrors src/utils/suiteCheckinSync.js).
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { buildPhysicalPresenceArrivalConfirmPatch } from "./lateImportFastLane.ts";
 import { roomCleaningResetRow } from "./roomApprovalGate.ts";
 
 export function resolveGuestRoomId(guest: {
@@ -50,6 +51,8 @@ export async function performSuiteCheckIn(
     room?: string | null;
     suite_name?: string | null;
     status?: string | null;
+    arrival_confirmed?: boolean | null;
+    arrival_confirmed_at?: string | null;
   },
   opts: {
     roomId?: string;
@@ -65,6 +68,9 @@ export async function performSuiteCheckIn(
     status: "checked_in",
     checkin_time: now,
   };
+
+  const confirmPatch = buildPhysicalPresenceArrivalConfirmPatch(guest, new Date(now));
+  if (confirmPatch) Object.assign(guestPatch, confirmPatch);
 
   if (opts.skipRoomReadyMessage) {
     guestPatch.room_ready_notified = true;

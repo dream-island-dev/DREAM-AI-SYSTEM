@@ -141,6 +141,28 @@ export async function markHousekeepingEventSynced(supabase, eventId, guestId) {
  * Apply check-in for guests that have a group signal but are still eligible.
  * @returns {Promise<Array<{ guestId: number, guestPatch: object, roomId: string }>>}
  */
+/** Single-guest HK reconcile — used after manual/Doc2 import (2026-08-05). */
+export async function reconcileHousekeepingCheckInForGuest(supabase, guest, suiteRoomRows = []) {
+  if (!supabase || !guest?.id || guest.status === "checked_in") {
+    return { applied: false };
+  }
+  const hkEvents = await fetchHousekeepingCheckInsForDate(supabase, israelTodayStr());
+  const hkByRoom = indexHousekeepingCheckInsByRoom(hkEvents);
+  const applied = await reconcileHousekeepingCheckIns(
+    supabase,
+    [guest],
+    { [guest.id]: suiteRoomRows },
+    hkByRoom,
+    { auditSource: "צ'ק-אין מקבוצת ניקיון (סנכרון אחרי ייבוא)" },
+  );
+  if (!applied.length) return { applied: false };
+  return {
+    applied: true,
+    guestPatch: applied[0].guestPatch,
+    roomId: applied[0].roomId,
+  };
+}
+
 export async function reconcileHousekeepingCheckIns(
   supabase,
   guests,

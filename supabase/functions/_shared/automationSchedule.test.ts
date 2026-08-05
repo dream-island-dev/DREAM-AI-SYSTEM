@@ -416,6 +416,30 @@ function midStayStage(overrides: Partial<AutomationStage> = {}): AutomationStage
   };
 }
 
+Deno.test("mid_stay: checked in, same target day past default 4h window → still due until 22:00", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-20",
+    departure_date: "2026-07-22",
+    status: "checked_in",
+    msg_mid_stay_sent: false,
+  });
+  const result = resolveStageSchedule(midStayStage(), guest, israelInstant("2026-07-21", 18, 0));
+  assertEquals(result.dueNow, true);
+  assertEquals(result.skipReason, null);
+});
+
+Deno.test("mid_stay: checked in after 22:00 same target day → missed_window", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-20",
+    departure_date: "2026-07-22",
+    status: "checked_in",
+    msg_mid_stay_sent: false,
+  });
+  const result = resolveStageSchedule(midStayStage(), guest, israelInstant("2026-07-21", 23, 0));
+  assertEquals(result.skipReason, "missed_window");
+  assertEquals(result.dueNow, false);
+});
+
 Deno.test("mid_stay: past courtesy day, checked in, still in resort → missed_window", () => {
   const guest = suiteGuest({
     arrival_date: "2026-07-18",

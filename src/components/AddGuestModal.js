@@ -30,6 +30,7 @@ import {
   syncGuestSuiteRoomsFromSelection,
 } from "../utils/suiteRoomReady";
 import { ensureMissingDepartureAlert } from "../utils/departureDateGuard";
+import { runGuestImportPipelineHooks } from "../utils/guestImportPipelineHooks";
 import { normalizeGuestPhoneEdit } from "../utils/ezgoParser";
 import { preflightGuestPhoneChange, updateGuestPhoneCascade } from "../utils/updateGuestPhoneCascade";
 import { assertGuestSegmentConsistent, assertNoDuplicateGuest } from "../utils/guestSegmentGuard";
@@ -280,8 +281,18 @@ export default function AddGuestModal({
       });
       if (!syncResult.ok) {
         showToast?.("err", `אורח נשמר — סנכרון suite_rooms נכשל: ${syncResult.error}`);
-      } else {
-        showToast?.("ok", isEdit ? "✅ פרופיל אורח עודכן בהצלחה" : "✅ אורח נוסף בהצלחה");
+      }
+      const suiteRows = roomLabels.map((label) => ({ room_display: label }));
+      const hooks = await runGuestImportPipelineHooks(supabase, savedGuest, suiteRows);
+      if (syncResult.ok) {
+        const hookBits = [];
+        if (hooks.lateImportApplied) hookBits.push("אישור הגעה אוטומטי");
+        if (hooks.housekeepingCheckInApplied) hookBits.push("צ'ק-אין מקבוצה");
+        const hookSuffix = hookBits.length ? ` (${hookBits.join(" · ")})` : "";
+        showToast?.("ok", isEdit ? `✅ פרופיל אורח עודכן בהצלחה${hookSuffix}` : `✅ אורח נוסף בהצלחה${hookSuffix}`);
+      }
+      if (hooks.guestPatch) {
+        savedGuest = { ...savedGuest, ...hooks.guestPatch };
       }
       if (savedGuest?.id) {
         await ensureMissingDepartureAlert(supabase, savedGuest);

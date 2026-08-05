@@ -16,6 +16,7 @@ import {
   resolveMissingDepartureAlert,
 } from "./guestDepartureGuard.ts";
 import { buildDoc2RemarkGuestNotes } from "./ezgoDoc2RemarkIdentity.ts";
+import { runGuestImportPipelineHooks } from "./guestImportPipelineHooks.ts";
 
 const DOC2_MAIL_LINE_PREFIX = "doc2mail-";
 
@@ -448,6 +449,8 @@ export async function applyDoc2SuiteRoomAdd(
     }, { onConflict: "phone,arrival_date" });
   }
 
+  await runGuestImportPipelineHooks(supabase, guestId);
+
   return {
     id: guestId,
     name: (enrichPatch.name as string) || guest.name,
@@ -541,6 +544,8 @@ export async function createDoc2SuiteArrival(
       room_count: 1,
     }, { onConflict: "phone,arrival_date" });
   }
+
+  await runGuestImportPipelineHooks(supabase, inserted.id as number);
 
   return inserted;
 }

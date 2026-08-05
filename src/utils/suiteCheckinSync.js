@@ -2,6 +2,7 @@
 // Deno mirror: supabase/functions/_shared/suiteCheckinSync.ts (keep in sync).
 
 import { roomCleaningResetRow } from "./roomApprovalGate";
+import { buildPhysicalPresenceArrivalConfirmPatch } from "./lateImportFastLane";
 
 export function resolveGuestRoomId(guest) {
   return String(guest?.room ?? guest?.suite_name ?? "").trim();
@@ -41,6 +42,9 @@ export async function performSuiteCheckIn(supabase, guest, opts = {}) {
     status: "checked_in",
     checkin_time: now,
   };
+
+  const confirmPatch = buildPhysicalPresenceArrivalConfirmPatch(guest, new Date(now));
+  if (confirmPatch) Object.assign(guestPatch, confirmPatch);
 
   if (opts.skipRoomReadyMessage) {
     guestPatch.room_ready_notified = true;

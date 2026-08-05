@@ -14,6 +14,7 @@ import {
   assertNoDuplicateGuest,
 } from "./guestSegmentGuard";
 import { buildDoc2RemarkGuestNotes } from "./ezgoDoc2RemarkIdentity";
+import { runGuestImportPipelineHooks } from "./guestImportPipelineHooks";
 
 const DOC2_MAIL_LINE_PREFIX = "doc2mail-";
 
@@ -380,6 +381,8 @@ export async function applyDoc2SuiteRoomAdd(supabase, { guestId, rec, reportDate
     }, { onConflict: "phone,arrival_date" });
   }
 
+  await runGuestImportPipelineHooks(supabase, guestId);
+
   return {
     id: guestId,
     name: enrichPatch.name || guest.name,
@@ -475,6 +478,8 @@ export async function createDoc2SuiteArrival(supabase, rec, reportDateYmd) {
       room_count: 1,
     }, { onConflict: "phone,arrival_date" });
   }
+
+  await runGuestImportPipelineHooks(supabase, inserted.id);
 
   return inserted;
 }
