@@ -14,15 +14,21 @@
 //
 // Auth: RLS — tactical manager sees own rows; GM/super_admin see all.
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { usePageVisibility } from "../hooks/usePageVisibility";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
 import GuestContextDrawer from "./GuestContextDrawer";
 import QuietHoursGate from "./QuietHoursGate";
 import CheckinTimelineFilterBar from "./CheckinTimelineFilterBar";
 import { STATUS_META } from "../utils/guestStatusMeta";
-import { isSuiteGuestProfile, hasSuiteRoomTypeConflict } from "../utils/guestTiming";
+import {
+  hasSuiteRoomTypeConflict,
+  israelDateOffsetStr,
+  israelTodayStr,
+  isSuiteGuestProfile,
+} from "../utils/guestTiming";
 import {
   applyCheckinRosterFilter,
   countCheckinScopeTotals,
@@ -36,27 +42,47 @@ import GuestOutboundModal from "./GuestOutboundModal";
 import GuestWhapiQuickTestPanel from "./GuestWhapiQuickTestPanel";
 import { sendGuestRoomReadyMessage, classifyRoomReadySendResult } from "../utils/suiteRoomReady";
 
-// ── Date helpers (local time) ─────────────────────────────────────────────────
-function localISO(offsetDays = 0) {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  return (
-    d.getFullYear() +
-    "-" + String(d.getMonth() + 1).padStart(2, "0") +
-    "-" + String(d.getDate()).padStart(2, "0")
-  );
+const GUEST_DASHBOARD_SELECT =
+  "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
+  "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent, " +
+  "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, wa_window_expires_at, spa_time, spa_date, " +
+  "meal_time, meal_location, meal_plan, breakfast_time, lunch_time, dinner_time, treatment_count, order_number, payment_amount, " +
+  "payment_link_url, needs_callback, portal_token, lead_source, automation_muted";
+
+const GUEST_FETCH_PAGE_SIZE = 500;
+
+async function fetchAllActiveGuests(client) {
+  const rows = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await client
+      .from("guests")
+      .select(GUEST_DASHBOARD_SELECT)
+      .neq("status", "cancelled")
+      .order("arrival_date", { ascending: true })
+      .order("name", { ascending: true })
+      .range(from, from + GUEST_FETCH_PAGE_SIZE - 1);
+    if (error) return { data: null, error };
+    if (!data?.length) break;
+    rows.push(...data);
+    if (data.length < GUEST_FETCH_PAGE_SIZE) break;
+    from += GUEST_FETCH_PAGE_SIZE;
+  }
+  return { data: rows, error: null };
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function ArrivalBadge({ date }) {
+  const today = israelTodayStr();
+  const tomorrow = israelDateOffsetStr(1, today);
   const base = {
     display: "inline-flex", alignItems: "center",
     padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
   };
-  if (date === localISO(0))
+  if (date === today)
     return <span style={{ ...base, background: "#FFF3CD", color: "#856404" }}>היום ⚡</span>;
-  if (date === localISO(1))
+  if (date === tomorrow)
     return <span style={{ ...base, background: "#E8F0FE", color: "#1A56DB" }}>מחר</span>;
   return <span style={{ ...base, background: "var(--ivory)", color: "var(--text-muted)" }}>{date}</span>;
 }
@@ -126,6 +152,10 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
 
   const [guests,      setGuests]      = useState([]);
   const [loading,     setLoading]     = useState(true);
+  const [refreshing,  setRefreshing]  = useState(false);
+  const skipRealtimeUntilRef = useRef(0);
+  const realtimeDebounceRef = useRef(null);
+  const pageVisible = usePageVisibility();
   const [toast,       setToast]       = useState(null);
   const [loadingId,   setLoadingId]   = useState(null);  // room_ready pipeline
   const [deletingId,  setDeletingId]  = useState(null);  // delete
@@ -150,38 +180,81 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
     setTimeout(() => setToast(null), 4500);
   }, []);
 
-  // ── Fetch ─────────────────────────────────────────────────────────────────
-  // NOTE (2026-08-04): a scoped variant (applyCheckinScopeSupabaseFilter, keyed
-  // off timelineScope) was tried here and reverted — this screen's stat cards
-  // (todayCount/tomorrowCount/roomReadyCount) and scopeCounts (feeding
-  // CheckinTimelineFilterBar's chip badges) need counts spanning EVERY
-  // timeline scope at once, not just whichever one is currently selected, so
-  // scoping the single source fetch silently zeroed out "מחר" etc. whenever
-  // scope=today (the default). Unlike whatsapp-cron/OperationalDashboard/
-  // ResortPulseBar, this screen has no realtime subscription driving frequent
-  // refetches, so the unscoped fetch here is a lower-urgency cost — left as a
-  // future improvement (would need a separate lightweight, scope-independent
-  // count query, not a shared fetch with the main roster).
-  const fetchGuests = useCallback(async () => {
-    if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
-    setLoading(true);
-    const { data, error } = await supabase
-      .from("guests")
-      .select(
-        "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
-        "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent, " +
-        "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, wa_window_expires_at, spa_time, spa_date, " +
-        "meal_time, meal_location, meal_plan, breakfast_time, lunch_time, dinner_time, treatment_count, order_number, payment_amount, " +
-        "payment_link_url, needs_callback, portal_token, lead_source, automation_muted"
-      )
-      .order("arrival_date", { ascending: true })
-      .order("name",         { ascending: true });
+  const suppressRealtimeRefresh = useCallback((ms = 2500) => {
+    skipRealtimeUntilRef.current = Date.now() + ms;
+  }, []);
+
+  // Unscoped fetch — stat cards + scope chip counts need every timeline at once.
+  const loadGuests = useCallback(async ({ showSpinner = false } = {}) => {
+    if (!isSupabaseConfigured || !supabase) {
+      if (showSpinner) setLoading(false);
+      return;
+    }
+    if (showSpinner) setLoading(true);
+    const { data, error } = await fetchAllActiveGuests(supabase);
     if (error) showToast("err", "שגיאה בטעינת אורחים: " + error.message);
     else setGuests(data ?? []);
-    setLoading(false);
+    if (showSpinner) setLoading(false);
   }, [showToast]);
 
-  useEffect(() => { fetchGuests(); }, [fetchGuests]);
+  const fetchGuestsSilent = useCallback(() => loadGuests(), [loadGuests]);
+
+  const fetchGuestsManual = useCallback(async () => {
+    setRefreshing(true);
+    await loadGuests();
+    setRefreshing(false);
+  }, [loadGuests]);
+
+  useEffect(() => {
+    loadGuests({ showSpinner: true });
+  }, [loadGuests]);
+
+  useEffect(() => {
+    if (!supabase) return undefined;
+
+    const scheduleRealtimeRefresh = () => {
+      if (!pageVisible) return;
+      if (Date.now() < skipRealtimeUntilRef.current) return;
+      clearTimeout(realtimeDebounceRef.current);
+      realtimeDebounceRef.current = setTimeout(() => {
+        if (!pageVisible) return;
+        if (Date.now() < skipRealtimeUntilRef.current) return;
+        fetchGuestsSilent();
+      }, 400);
+    };
+
+    let ch = null;
+    const attachRealtime = () => {
+      if (!pageVisible || ch) return;
+      ch = supabase
+        .channel("guest-dashboard-rt")
+        .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, scheduleRealtimeRefresh)
+        .subscribe();
+    };
+    const detachRealtime = () => {
+      if (!ch) return;
+      supabase.removeChannel(ch);
+      ch = null;
+    };
+
+    if (pageVisible) {
+      attachRealtime();
+    } else {
+      detachRealtime();
+    }
+
+    return () => {
+      clearTimeout(realtimeDebounceRef.current);
+      detachRealtime();
+    };
+  }, [fetchGuestsSilent, pageVisible]);
+
+  useEffect(() => {
+    if (!pageVisible) return undefined;
+    fetchGuestsSilent();
+    const id = setInterval(() => { fetchGuestsSilent(); }, 60_000);
+    return () => clearInterval(id);
+  }, [fetchGuestsSilent, pageVisible]);
   // Clear selection when tab or data changes
   useEffect(() => { setSelected(new Set()); }, [activeTab]);
 
@@ -204,6 +277,7 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
         );
       }
 
+      suppressRealtimeRefresh();
       if (verdict.kind === "timeout") {
         showToast("ok", "ℹ️ לא ודאי אם ההודעה הגיעה — בדקו בוואטסאפ לפני שליחה חוזרת");
       } else if (verdict.kind === "duplicate") {
@@ -218,7 +292,7 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
     } finally {
       setLoadingId(null);
     }
-  }, [loadingId, showToast, ensureCanSend]);
+  }, [loadingId, showToast, ensureCanSend, suppressRealtimeRefresh]);
 
   // ── Delete guest ──────────────────────────────────────────────────────────
   const deleteGuest = useCallback(async (guest) => {
@@ -228,14 +302,16 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
     if (error) showToast("err", "שגיאה במחיקה: " + error.message);
     else if (!data?.ok) showToast("err", "שגיאה במחיקה: " + (data?.error ?? "לא ידוע"));
     else {
+      suppressRealtimeRefresh();
       setGuests((prev) => prev.filter((g) => g.id !== guest.id));
       showToast("ok", `🗑️ ${guest.name} נמחק`);
     }
     setDeletingId(null);
-  }, [showToast]);
+  }, [showToast, suppressRealtimeRefresh]);
 
   // ── Add/edit guest — shared with GuestsPage via AddGuestModal ────────────
   const handleGuestSaved = useCallback((saved) => {
+    suppressRealtimeRefresh();
     setGuests((prev) => {
       const exists = prev.some((g) => g.id === saved.id);
       const next = exists
@@ -247,7 +323,7 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
         return (a.name ?? "").localeCompare(b.name ?? "", "he");
       });
     });
-  }, []);
+  }, [suppressRealtimeRefresh]);
 
   // ── Selection + bulk delete ───────────────────────────────────────────────
   const toggleSelect = useCallback((id) => {
@@ -268,10 +344,15 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
       if (error || !data?.ok) failed++;
     }
     if (failed) { showToast("err", `שגיאה במחיקת ${failed} אורחים`); return; }
+    suppressRealtimeRefresh();
     setGuests((prev) => prev.filter((g) => !ids.includes(g.id)));
     setSelected(new Set());
     showToast("ok", `🗑️ נמחקו ${ids.length} אורחים בהצלחה`);
-  }, [selected, showToast]);
+  }, [selected, showToast, suppressRealtimeRefresh]);
+
+  const tabLabel = activeTab === "day_guest" ? "בילוי יומי"
+    : activeTab === "suite" ? "לינה"
+    : "כולם";
 
   // ── Tab filtering ─────────────────────────────────────────────────────────
   // isDayType: both regular and premium day-pass guests belong in the "יומי" tab.
@@ -303,8 +384,10 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
   }, [customArrivalDate, tabGuests, showToast]);
 
   // ── Stats ─────────────────────────────────────────────────────────────────
-  const todayCount     = guests.filter((g) => g.arrival_date === localISO(0)).length;
-  const tomorrowCount  = guests.filter((g) => g.arrival_date === localISO(1)).length;
+  const israelToday = israelTodayStr();
+  const israelTomorrow = israelDateOffsetStr(1, israelToday);
+  const todayCount     = guests.filter((g) => g.arrival_date === israelToday).length;
+  const tomorrowCount  = guests.filter((g) => g.arrival_date === israelTomorrow).length;
   const roomReadyCount = guests.filter((g) => g.msg_room_ready_sent).length;
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -465,15 +548,15 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
             {addingGuest ? "✕ סגור" : "➕ הוסף אורח"}
           </button>
           <button
-            onClick={fetchGuests}
-            disabled={loading}
+            onClick={fetchGuestsManual}
+            disabled={loading || refreshing}
             style={{
-              padding: "7px 14px", borderRadius: 20, cursor: loading ? "default" : "pointer",
+              padding: "7px 14px", borderRadius: 20, cursor: (loading || refreshing) ? "default" : "pointer",
               border: "1px solid var(--border)", background: "var(--card-bg)",
               fontSize: 13, fontFamily: "Heebo, sans-serif", color: "var(--text-muted)",
             }}
           >
-            {loading ? "⏳" : "🔄"}
+            {(loading || refreshing) ? "⏳" : "🔄"}
           </button>
         </>
       </div>
@@ -535,9 +618,11 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
           color: "var(--text-muted)", fontSize: 14, lineHeight: 2,
         }}>
           <div style={{ fontSize: 40, marginBottom: 8 }}>🛎️</div>
-          אין הגעות בטאב זה להיום ולמחר.
+          אין אורחים בטאב «{tabLabel}» · {filterLabel}.
           <br />
-          <span style={{ fontSize: 12 }}>לחץ "📥 ייבוא קובץ" כדי לייבא הגעות, או הוסף אורח ידנית.</span>
+          <span style={{ fontSize: 12 }}>
+            נסה מסנן אחר למעלה (היום / מחר / 7 ימים), או ייבא/הוסף אורח ידנית.
+          </span>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
