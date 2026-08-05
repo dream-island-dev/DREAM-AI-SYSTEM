@@ -10,6 +10,7 @@ import {
   isPremiumDayRoom,
   resolveSuiteRoomFromEzgoLabel,
 } from "./suiteNames.ts";
+import { addDepartureFromNights } from "./guestDepartureGuard.ts";
 
 const IL_MOBILE_RE = /(0(?:5[0-9])[-. ]?\d{3}[-. ]?\d{4})(?!\d)/g;
 const DUMMY_DATE_RE = /^01[/.-]01[/.-](1900|1970|2001)/;
@@ -342,7 +343,12 @@ function extractSuiteRow(
   const opRemark = val("opRemark");
   const coordPhone = normalizeCoordPhone(val("coordPhone"));
   const directPhone = normalizeCoordPhone(val("guestPhone") || val("coordPhone"));
-  const nightsRaw = parseInt(val("nights") || "0", 10);
+  // A blank nights cell must stay unknown (null), not silently become 0 — "0"
+  // is a real day-pass signal (extractedToDoc2Record below), so masking a
+  // blank suite cell as "0" would misclassify it as day-guest instead of
+  // surfacing the missing-nights warning (P0 2026-08-05).
+  const nightsCell = val("nights");
+  const nightsRaw = nightsCell === "" ? NaN : parseInt(nightsCell, 10);
   const nights = Number.isFinite(nightsRaw) ? nightsRaw : null;
   const groupId = parseInt(val("groupId") || "0", 10) || 0;
   const arrivalDate = parseArrivalDateCell(val("arrivalDate")) ?? fallbackDate;
@@ -404,12 +410,10 @@ function extractedToDoc2Record(extracted: ExtractedRow): Doc2Record {
     || is_premium_day
     || /premium\s*day|בילוי.*יומי/i.test(extracted.suiteType);
 
-  let departure_date: string | null = null;
-  if (extracted.arrivalDate && extracted.nights != null && extracted.nights > 0) {
-    const d = new Date(`${extracted.arrivalDate}T12:00:00`);
-    d.setDate(d.getDate() + extracted.nights);
-    departure_date = d.toISOString().slice(0, 10);
-  }
+  const departure_date = addDepartureFromNights(extracted.arrivalDate, extracted.nights, {
+    isDayGuest: is_day_guest,
+  });
+  const departure_missing_nights = !is_day_guest && !departure_date;
 
   return {
     _report: "doc2",
@@ -428,6 +432,7 @@ function extractedToDoc2Record(extracted: ExtractedRow): Doc2Record {
     notes: null,
     arrival_date: extracted.arrivalDate,
     departure_date,
+    departure_missing_nights,
     is_day_guest,
     is_premium_day,
   };

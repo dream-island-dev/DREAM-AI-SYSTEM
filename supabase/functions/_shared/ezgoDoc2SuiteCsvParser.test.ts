@@ -32,6 +32,42 @@ Deno.test("detectEzgoLooseArrivalsPreset matches LineIndex/ItemID export shape",
   if (preset.suiteType !== "SUBItemName") throw new Error(`suite col ${preset.suiteType}`);
 });
 
+Deno.test("parseSuiteArrivalsCsvText: blank iNights on suite row → departure_date null + departure_missing_nights, NOT day-guest — P0 2026-08-05", () => {
+  const csv = [
+    "iOrderId,sTel1,sRemark,sClientFullName,sSubItemName,sRoomName,iResLineId,iNights",
+    "266940,0525778392,מרדכי,ישראל כהן,סוויטת אמטיסט,10,9821347,",
+  ].join("\n");
+  const records = parseSuiteArrivalsCsvText(csv, "05.08.26.csv");
+  if (records.length !== 1) throw new Error(`expected 1 record got ${records.length}`);
+  if (records[0].nights !== null) throw new Error(`expected null nights got ${records[0].nights}`);
+  if (records[0].is_day_guest) throw new Error("expected suite, not day guest");
+  if (records[0].departure_date !== null) throw new Error(`expected null departure got ${records[0].departure_date}`);
+  if (!records[0].departure_missing_nights) throw new Error("expected departure_missing_nights flag");
+});
+
+Deno.test("parseSuiteArrivalsCsvText: iNights=2 on suite row → departure = arrival+2, flag false", () => {
+  const csv = [
+    "iOrderId,sTel1,sRemark,sClientFullName,sSubItemName,sRoomName,iResLineId,iNights",
+    "266942,0525778394,מרדכי,ישראל דגן,סוויטת אמטיסט,11,9821349,2",
+  ].join("\n");
+  const records = parseSuiteArrivalsCsvText(csv, "05.08.26.csv");
+  if (records[0].departure_date !== "2026-08-07") throw new Error(`departure ${records[0].departure_date}`);
+  if (records[0].departure_missing_nights) throw new Error("expected flag false");
+});
+
+Deno.test("parseSuiteArrivalsCsvText: iNights=0 on day-pass row → departure_date === arrival_date — P0 2026-08-05", () => {
+  const csv = [
+    "iOrderId,sTel1,sRemark,sClientFullName,sSubItemName,sRoomName,iResLineId,iNights",
+    "266941,0525778393,הערה,ישראל לוי,בילוי יומי,,9821348,0",
+  ].join("\n");
+  const records = parseSuiteArrivalsCsvText(csv, "05.08.26.csv");
+  if (records.length !== 1) throw new Error(`expected 1 record got ${records.length}`);
+  if (!records[0].is_day_guest) throw new Error("expected day guest");
+  if (records[0].departure_date !== records[0].arrival_date) {
+    throw new Error(`expected departure===arrival, got ${records[0].departure_date} vs ${records[0].arrival_date}`);
+  }
+});
+
 Deno.test("looksLikeSuiteArrivalsCsv detects Hebrew detailed export", () => {
   const text = [
     '"אתר","מס. לקוח","סטטוס","ResMode","מספר פקיד","סגמנט מכירות","מספר מקור הגעה","1Lina7NoLina","שם מלא","טלפון","ת. התחלה","דואר אלקטרוני","טלפון נוסף","חדרים","לילות","מחיר","מטבע","מחיר","מקור הגעה","בסיס אירוח","בסיס אירוח","מס. הזמנה"',

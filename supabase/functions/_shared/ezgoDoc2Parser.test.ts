@@ -129,6 +129,48 @@ Deno.test("parseHtmlArrivalsReport: solo row ignores remark occupant", () => {
   assertEquals(rows[0].phone, "+972521234567");
 });
 
+const SUITE_MISSING_NIGHTS_HTML = `
+<table><tr><td>כניסה</td><td>05/08/2026</td></tr>
+<tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
+<tr><td></td><td>290001</td><td>סוויטת רובי - 13</td><td>HB</td><td></td><td>..</td><td>2</td><td>דנה כהן , 0501234567</td><td>2,000₪</td><td></td></tr>
+</table>`;
+
+Deno.test("parseHtmlArrivalsReport: suite row with missing nights → departure_date null + departure_missing_nights flag, NOT same-day — P0 2026-08-05", () => {
+  const rows = parseHtmlArrivalsReport(SUITE_MISSING_NIGHTS_HTML);
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].nights, null);
+  assertEquals(rows[0].arrival_date, "2026-08-05");
+  assertEquals(rows[0].departure_date, null);
+  assertEquals(rows[0].departure_missing_nights, true);
+});
+
+const SUITE_TWO_NIGHTS_ROBI_HTML = `
+<table><tr><td>כניסה</td><td>05/08/2026</td></tr>
+<tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
+<tr><td></td><td>290002</td><td>סוויטת רובי - 13</td><td>HB</td><td></td><td>2</td><td>2</td><td>דנה כהן , 0501234567</td><td>2,000₪</td><td></td></tr>
+</table>`;
+
+Deno.test("parseHtmlArrivalsReport: suite row with valid nights → departure_missing_nights false — P0 2026-08-05", () => {
+  const rows = parseHtmlArrivalsReport(SUITE_TWO_NIGHTS_ROBI_HTML);
+  assertEquals(rows[0].departure_date, "2026-08-07");
+  assertEquals(rows[0].departure_missing_nights, false);
+});
+
+const DAYPASS_ROW_HTML = `
+<table><tr><td>כניסה</td><td>05/08/2026</td></tr>
+<tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
+<tr><td></td><td>290555</td><td>בילוי יומי</td><td>BB</td><td></td><td>0</td><td>2</td><td>יעל שרון , 0521112222</td><td>500₪</td><td></td></tr>
+</table>`;
+
+Deno.test("parseHtmlArrivalsReport: day-guest row → departure_date === arrival_date regardless of nights — P0 2026-08-05", () => {
+  const rows = parseHtmlArrivalsReport(DAYPASS_ROW_HTML);
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].is_day_guest, true);
+  assertEquals(rows[0].arrival_date, "2026-08-05");
+  assertEquals(rows[0].departure_date, "2026-08-05");
+  assertEquals(rows[0].departure_missing_nights, false);
+});
+
 Deno.test("fixture EML (דוח כניסות ויציאות 2026-07-25) → doc2_html, >=14 rows, room-less row creates", async () => {
   const { readFileSync } = await import("node:fs");
   const postalMimeMod = await import("https://esm.sh/postal-mime@2.4.3");

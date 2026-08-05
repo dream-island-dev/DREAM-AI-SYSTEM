@@ -5,6 +5,7 @@ import { isCanonicalSuiteRoom, isPremiumDayRoom } from "./pipelineSegment";
 import { israelTodayStr } from "./guestTiming";
 import { shouldTreatAsReturningGuestCreate } from "./guestProfilePick";
 import { createDaypassGuestFromRec, stripWorkflowPatch } from "./ezgoMailLineWorkflow";
+import { isSuiteStayGuest } from "./departureDateGuard";
 import {
   createDoc2SuiteArrival,
   guestRoomLabelsInclude,
@@ -46,6 +47,22 @@ function pickEnrichValue(importVal, existingVal) {
   return undefined;
 }
 
+// Mirrors _shared/ezgoDoc2MailLineWorkflow.ts's isSuspectSuiteStayDates — the
+// only case a Doc2 re-import may correct an already-populated departure_date
+// (0-night bug signature: arrival===departure or departure missing) instead
+// of leaving it fill-empty-only like every other enrichment field.
+function isSuspectSuiteStayDates(guest) {
+  if (!isSuiteStayGuest({ room_type: guest.room_type, room: guest.room })) return false;
+  if (!guest.departure_date) return true;
+  return !!guest.arrival_date && guest.arrival_date === guest.departure_date;
+}
+
+function pickDoc2SnapshotValue(importVal, existingVal, { allowOverwrite }) {
+  if (importVal === undefined || importVal === null || importVal === "") return undefined;
+  if (allowOverwrite) return importVal;
+  return pickEnrichValue(importVal, existingVal);
+}
+
 // Mirrors _shared/importAutomationScope.ts's mergeAutomationScope — never lets
 // an enrichment write loosen an already-muted guest back toward full.
 function mergeAutomationScope(existing, incoming) {
@@ -70,7 +87,9 @@ export function buildDoc2EnrichmentPatch(rec, guest) {
     if (picked !== undefined) patch.arrival_date = picked;
   }
   if (rec.departure_date) {
-    const picked = pickEnrichValue(rec.departure_date, guest.departure_date);
+    const allowOverwrite = isSuspectSuiteStayDates(guest)
+      && (!guest.arrival_date || rec.departure_date > guest.arrival_date);
+    const picked = pickDoc2SnapshotValue(rec.departure_date, guest.departure_date, { allowOverwrite });
     if (picked !== undefined) patch.departure_date = picked;
   }
   if (rec.meal_location) {

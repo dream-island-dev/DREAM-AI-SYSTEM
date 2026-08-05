@@ -18,6 +18,7 @@ import {
   resolveDoc2ImportAutomationScope,
   type ImportAutomationScope,
 } from "./importAutomationScope.ts";
+import { addDepartureFromNights } from "./guestDepartureGuard.ts";
 
 export type Doc2Section = "arrival" | "departure";
 
@@ -47,6 +48,11 @@ export type Doc2Record = {
   automation_scope?: ImportAutomationScope;
   automation_muted?: boolean;
   is_remark_group_occupant?: boolean;
+  // FAIL VISIBLE (P0 2026-08-05 nights→departure fix): true when this is a
+  // suite row (not day guest) whose nights column was missing/unparsable, so
+  // departure_date could not be computed and was left null instead of
+  // silently defaulting to arrival (0-night stay). UI must block create.
+  departure_missing_nights?: boolean;
 };
 
 function htmlCellText(html: string): string {
@@ -69,12 +75,6 @@ function boardBasisToMealLocation(board: string): string | null {
   if (/\bHB\b/.test(b)) return "חצי פנסיון";
   if (/\bBB\b/.test(b)) return "רק ארוחת בוקר";
   return null;
-}
-
-function addDaysYmd(ymd: string, nights: number): string {
-  const d = new Date(`${ymd}T12:00:00`);
-  d.setDate(d.getDate() + Math.max(nights, 0));
-  return d.toISOString().slice(0, 10);
 }
 
 export function parseClientCell(raw: string): {
@@ -217,9 +217,10 @@ export function parseHtmlArrivalsReport(htmlText: string): Doc2Record[] {
     const is_day_guest = room === "בילוי יומי" || is_premium_day;
     const meal_location = boardBasisToMealLocation(row.board_basis || "");
     const meal_time = extractMealTimeFromRemarkText(row.notes || "");
-    const departure_date = arrivalDate && row.nights != null
-      ? addDaysYmd(arrivalDate, row.nights)
-      : arrivalDate;
+    const departure_date = addDepartureFromNights(arrivalDate, row.nights, {
+      isDayGuest: is_day_guest,
+    });
+    const departure_missing_nights = !is_day_guest && !departure_date;
     const automation_scope = resolveDoc2ImportAutomationScope({
       coordNameRaw: row.coordName,
       isRemarkGroupOccupant: coordNameDuplicated,
@@ -242,6 +243,7 @@ export function parseHtmlArrivalsReport(htmlText: string): Doc2Record[] {
       notes: row.notes,
       arrival_date: arrivalDate,
       departure_date,
+      departure_missing_nights,
       is_day_guest,
       is_premium_day,
       meal_time,

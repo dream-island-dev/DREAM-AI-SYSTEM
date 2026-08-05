@@ -13,6 +13,7 @@ import {
   roomsCanonicallyMatch,
 } from "./suiteNames.ts";
 import { mergeAutomationScope } from "./importAutomationScope.ts";
+import { isSuiteStayGuest } from "./guestDepartureGuard.ts";
 
 export type Doc2MailWorkflow =
   | "suite_arrival_create"
@@ -55,6 +56,28 @@ function pickEnrichValue(importVal: unknown, existingVal: unknown): unknown {
   return undefined;
 }
 
+/**
+ * True when a suite-stay guest's dates carry the 0-night bug signature (P0
+ * 2026-08-05: arrival===departure, or departure missing entirely) — the only
+ * case where a Doc2 re-import is allowed to correct an already-populated
+ * departure_date instead of leaving it alone (fill-empty-only everywhere else).
+ */
+function isSuspectSuiteStayDates(guest: Doc2GuestRow): boolean {
+  if (!isSuiteStayGuest({ room_type: guest.room_type, room: guest.room })) return false;
+  if (!guest.departure_date) return true;
+  return !!guest.arrival_date && guest.arrival_date === guest.departure_date;
+}
+
+function pickDoc2SnapshotValue(
+  importVal: unknown,
+  existingVal: unknown,
+  { allowOverwrite }: { allowOverwrite: boolean },
+): unknown {
+  if (importVal === undefined || importVal === null || importVal === "") return undefined;
+  if (allowOverwrite) return importVal;
+  return pickEnrichValue(importVal, existingVal);
+}
+
 export function buildDoc2EnrichmentPatch(
   rec: Doc2Record,
   guest: Doc2GuestRow | null,
@@ -76,7 +99,9 @@ export function buildDoc2EnrichmentPatch(
     if (picked !== undefined) patch.arrival_date = picked;
   }
   if (rec.departure_date) {
-    const picked = pickEnrichValue(rec.departure_date, guest.departure_date);
+    const allowOverwrite = isSuspectSuiteStayDates(guest)
+      && (!guest.arrival_date || rec.departure_date > guest.arrival_date);
+    const picked = pickDoc2SnapshotValue(rec.departure_date, guest.departure_date, { allowOverwrite });
     if (picked !== undefined) patch.departure_date = picked;
   }
   if (rec.meal_location) {

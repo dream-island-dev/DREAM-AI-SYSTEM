@@ -2,10 +2,19 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { Doc2Record } from "./ezgoDoc2Parser.ts";
-import { roomsCanonicallyMatch, resolveSuiteRoomFromEzgoLabel } from "./suiteNames.ts";
+import {
+  isCanonicalSuiteRoom,
+  roomsCanonicallyMatch,
+  resolveSuiteRoomFromEzgoLabel,
+} from "./suiteNames.ts";
 import type { Doc2GuestRow } from "./ezgoDoc2MailLineWorkflow.ts";
 import { doc2RecordMatchesGuest } from "./ezgoDoc2RecordMatch.ts";
 import { mergeAutomationScope } from "./importAutomationScope.ts";
+import {
+  addDepartureFromNights,
+  isSuiteStayGuest,
+  resolveMissingDepartureAlert,
+} from "./guestDepartureGuard.ts";
 
 const DOC2_MAIL_LINE_PREFIX = "doc2mail-";
 
@@ -80,6 +89,23 @@ function pickEnrichValue(importVal: unknown, existingVal: unknown): unknown {
   return undefined;
 }
 
+/** Mirrors ezgoDoc2MailLineWorkflow.ts's isSuspectSuiteStayDates — 0-night bug signature. */
+function isSuspectSuiteStayDates(guest: Doc2GuestRow): boolean {
+  if (!isSuiteStayGuest({ room_type: guest.room_type, room: guest.room })) return false;
+  if (!guest.departure_date) return true;
+  return !!guest.arrival_date && guest.arrival_date === guest.departure_date;
+}
+
+function pickDoc2SnapshotValue(
+  importVal: unknown,
+  existingVal: unknown,
+  { allowOverwrite }: { allowOverwrite: boolean },
+): unknown {
+  if (importVal === undefined || importVal === null || importVal === "") return undefined;
+  if (allowOverwrite) return importVal;
+  return pickEnrichValue(importVal, existingVal);
+}
+
 export function buildDoc2GuestEnrichPatch(
   rec: Doc2Record,
   guest: Doc2GuestRow,
@@ -94,7 +120,9 @@ export function buildDoc2GuestEnrichPatch(
     if (picked !== undefined) patch.arrival_date = picked;
   }
   if (rec.departure_date) {
-    const picked = pickEnrichValue(rec.departure_date, guest.departure_date);
+    const allowOverwrite = isSuspectSuiteStayDates(guest)
+      && (!guest.arrival_date || rec.departure_date > guest.arrival_date);
+    const picked = pickDoc2SnapshotValue(rec.departure_date, guest.departure_date, { allowOverwrite });
     if (picked !== undefined) patch.departure_date = picked;
   }
   if (rec.meal_location) {
@@ -173,8 +201,13 @@ async function fetchSuiteRoomLabels(
     .order("res_line_id", { ascending: true });
   const labels: string[] = [];
   for (const row of data ?? []) {
-    const label = String(row.room_display || row.room_name || "").trim();
-    if (label) labels.push(label);
+    const raw = String(row.room_display || row.room_name || "").trim();
+    if (!raw) continue;
+    // Defensive re-canonicalization (P0 2026-08-05): rows written before the
+    // suite-first label fix may still hold a raw "X - בילוי יומי" string —
+    // re-resolving recovers the real suite number where possible instead of
+    // permanently baking the stale label into guests.room.
+    labels.push(resolveSuiteRoomFromEzgoLabel(raw) || raw);
   }
   return labels;
 }
@@ -219,21 +252,55 @@ export async function upsertDoc2SuiteRoomForGuest(
     rec: Doc2Record;
     reportDateYmd: string | null;
   },
-): Promise<{ added: boolean; roomLabel: string | null }> {
+): Promise<{ added: boolean; roomLabel: string | null; skippedReason?: string }> {
   const room = rec.room ? String(rec.room).trim() : "";
   if (!room) return { added: false, roomLabel: null };
+
+  // Hermetic guard (P0 2026-08-05): this file only ever writes suite_rooms for
+  // suite bookings — resolveSuiteRoomFromEzgoLabel returns a canonical suite
+  // name, "Premium Day 1/2", "בילוי יומי", or "" (never anything else), so a
+  // day-pass label reaching here is always a stale/mis-parsed rec, not a
+  // legitimate call. Skip instead of creating a phantom "בילוי יומי" chip on
+  // a suite guest's room list.
+  if (!isCanonicalSuiteRoom(room)) {
+    console.warn(
+      `[ezgoDoc2SuiteRoomSync] skipped non-canonical room "${room}" for guest ${guestId}`,
+    );
+    return { added: false, roomLabel: null, skippedReason: "non_canonical_room" };
+  }
 
   const arrival = rec.arrival_date || reportDateYmd;
   const orderNumber = String(rec.order_number ?? "").trim()
     || `${DOC2_MAIL_LINE_PREFIX}${guestId}`;
   const resLineId = doc2MailResLineId(rec.order_number, room);
 
-  const { data: existing } = await supabase
+  // Dedupe by (guest_id, canonical room) FIRST — two insert paths for the same
+  // guest+room (e.g. a doc2mail-<id> fallback order_number from seeding vs a
+  // real order_number from a later reparse) must update the same row, not
+  // create a second chip. (order_number, res_line_id) alone missed this
+  // because the fallback order_number differs between calls.
+  // .limit(1) not .maybeSingle(): pre-existing duplicate rows for this exact
+  // guest_id+room (the very data shape this dedupe is meant to clean up) would
+  // make .maybeSingle() throw "multiple rows returned" instead of just picking
+  // one to consolidate onto (P1 QA fix, 2026-08-05).
+  const { data: existingByRoomRows } = await supabase
     .from("suite_rooms")
-    .select("id, room_display, room_name")
-    .eq("order_number", orderNumber)
-    .eq("res_line_id", resLineId)
-    .maybeSingle();
+    .select("id")
+    .eq("guest_id", guestId)
+    .eq("room_display", room)
+    .limit(1);
+  const existingByRoom = existingByRoomRows?.[0] ?? null;
+
+  const { data: existingByLine } = existingByRoom
+    ? { data: null as { id: number } | null }
+    : await supabase
+      .from("suite_rooms")
+      .select("id, room_display, room_name")
+      .eq("order_number", orderNumber)
+      .eq("res_line_id", resLineId)
+      .maybeSingle();
+
+  const existing = existingByRoom || existingByLine;
 
   const rowPatch = {
     guest_id: guestId,
@@ -259,11 +326,13 @@ export async function upsertDoc2SuiteRoomForGuest(
   });
 
   if (insErr?.code === "23505") {
+    // Unique-constraint race — another concurrent call already created the
+    // row for this guest+room; update it in place rather than failing.
     await supabase
       .from("suite_rooms")
       .update(rowPatch)
-      .eq("order_number", orderNumber)
-      .eq("res_line_id", resLineId);
+      .eq("guest_id", guestId)
+      .eq("room_display", room);
     return { added: false, roomLabel: room };
   }
   if (insErr) throw insErr;
@@ -325,6 +394,9 @@ export async function applyDoc2SuiteRoomAdd(
   const enrichPatch = buildDoc2GuestEnrichPatch(rec, guest as Doc2GuestRow);
   if (Object.keys(enrichPatch).length) {
     await supabase.from("guests").update(enrichPatch).eq("id", guestId);
+    if (enrichPatch.departure_date) {
+      await resolveMissingDepartureAlert(supabase, guestId);
+    }
   }
 
   if (guest.phone) {
@@ -364,11 +436,30 @@ export async function createDoc2SuiteArrival(
 
   const arrival = rec.arrival_date || reportDateYmd;
   const automationScope = rec.automation_scope ?? "full";
+  const isDayGuest = !!rec.is_day_guest || !!rec.is_premium_day;
+
+  // FAIL VISIBLE (P0 2026-08-05): a suite create must never fall back to a
+  // same-day departure just because nights failed to parse — that's exactly
+  // the incident signature (arrival === departure, "0 nights" in the UI).
+  // Prefer the nights-derived date; accept an explicitly parsed departure_date
+  // only if it's genuinely after arrival; otherwise refuse the create.
+  let departureDate: string | null = isDayGuest
+    ? arrival
+    : addDepartureFromNights(arrival, rec.nights, { isDayGuest: false });
+  if (!departureDate && !isDayGuest && rec.departure_date && arrival && rec.departure_date > arrival) {
+    departureDate = rec.departure_date;
+  }
+  if (!departureDate) {
+    throw new Error(
+      `חסר מספר לילות — לא ניתן ליצור סוויטה (${rec.guest_name || rec.phone || "ללא שם"})`,
+    );
+  }
+
   const insert = {
     phone: rec.phone,
     name: rec.guest_name || null,
     arrival_date: arrival,
-    departure_date: rec.departure_date || arrival,
+    departure_date: departureDate,
     room: rec.room,
     room_type: rec.is_premium_day ? "premium_day_guest" : (rec.is_day_guest ? "day_guest" : "suite"),
     status: "expected",

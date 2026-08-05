@@ -74,3 +74,19 @@ export async function ensureMissingDepartureAlert(
     console.warn("[guestDepartureGuard] guest_alerts insert failed:", error.message);
   }
 }
+
+/** Resolve an open missing_departure_date alert once departure_date is fixed (e.g. Doc2 snapshot re-import). */
+export async function resolveMissingDepartureAlert(
+  supabase: SupabaseClient,
+  guestId: number,
+): Promise<void> {
+  const { error } = await supabase
+    .from("guest_alerts")
+    .update({ resolved: true })
+    .eq("guest_id", guestId)
+    .eq("alert_type", "missing_departure_date")
+    .eq("resolved", false);
+  if (error) {
+    console.warn("[guestDepartureGuard] guest_alerts resolve failed:", error.message);
+  }
+}

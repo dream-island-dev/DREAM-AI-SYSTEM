@@ -245,6 +245,61 @@ Deno.test("buildDoc2EnrichmentPatch: never un-mutes an already-muted guest", () 
   assertEquals("automation_scope" in patch, false);
 });
 
+Deno.test("buildDoc2EnrichmentPatch: suite guest with 0-night bug (arrival===departure) is corrected by fresh nights-derived departure — P0-C 2026-08-05", () => {
+  const guest = { ...shacharGuest, departure_date: shacharGuest.arrival_date };
+  const rec = { ...shacharSecondRoom, room: shacharGuest.room, departure_date: "2026-07-23" };
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  assertEquals(patch.departure_date, "2026-07-23");
+});
+
+Deno.test("buildDoc2EnrichmentPatch: suite guest with missing departure_date is corrected — P0-C 2026-08-05", () => {
+  const guest = { ...shacharGuest, departure_date: null };
+  const rec = { ...shacharSecondRoom, room: shacharGuest.room, departure_date: "2026-07-23" };
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  assertEquals(patch.departure_date, "2026-07-23");
+});
+
+Deno.test("buildDoc2EnrichmentPatch: suite guest with valid distinct dates is NOT overwritten (fill-empty-only stays default) — P0-C 2026-08-05", () => {
+  const guest = { ...shacharGuest, arrival_date: "2026-07-21", departure_date: "2026-07-23" };
+  const rec = { ...shacharSecondRoom, room: shacharGuest.room, departure_date: "2026-07-25" };
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  assertEquals("departure_date" in patch, false);
+});
+
+Deno.test("buildDoc2EnrichmentPatch: incoming departure_date not after arrival is refused even when suspect — P0-C 2026-08-05", () => {
+  const guest = { ...shacharGuest, arrival_date: "2026-07-21", departure_date: "2026-07-21" };
+  const rec = { ...shacharSecondRoom, room: shacharGuest.room, departure_date: "2026-07-21" };
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  assertEquals("departure_date" in patch, false);
+});
+
+Deno.test("buildDoc2EnrichmentPatch: day-pass guest (arrival===departure by design) is never treated as suspect — P0-C 2026-08-05", () => {
+  const guest = {
+    ...shacharGuest,
+    room: "בילוי יומי",
+    room_type: "day_guest",
+    arrival_date: "2026-07-21",
+    departure_date: "2026-07-21",
+  };
+  const rec = { ...shacharSecondRoom, room: "בילוי יומי", is_day_guest: true, departure_date: "2026-07-25" };
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  assertEquals("departure_date" in patch, false);
+});
+
+Deno.test("buildDoc2EnrichmentPatch: name/meal stay fill-empty-only even when dates are suspect — P0-C 2026-08-05", () => {
+  const guest = { ...shacharGuest, departure_date: shacharGuest.arrival_date, name: "רחל אופיר", meal_location: "חצי פנסיון" };
+  const rec = {
+    ...shacharSecondRoom,
+    room: shacharGuest.room,
+    departure_date: "2026-07-23",
+    guest_name: "שם אחר",
+    meal_location: "פנסיון מלא",
+  };
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  assertEquals("name" in patch, false);
+  assertEquals("meal_location" in patch, false);
+});
+
 Deno.test("returning guest with new arrival → suite_arrival_create not enrich", () => {
   const archivedGuest = {
     id: 99,

@@ -82,6 +82,41 @@ Deno.test("no guest with spa → daypass_create_spa", () => {
   }
 });
 
+Deno.test("suite guest with spa → patch never touches arrival_date/departure_date/room/nights — P0-E lock-in 2026-08-05", () => {
+  const rec = {
+    order_number: "276099",
+    guest_name: "צחי",
+    phone: "+972501234567",
+    arrival_date: "2026-07-20", // Doc1 report date — must never leak into guest stay dates
+    spa_time: "11:00",
+    treatment_count: 1,
+    meal_time: "19:30",
+    meal_location: "מסעדה",
+  };
+  const guest = {
+    id: 5,
+    name: "צחי",
+    phone: "+972501234567",
+    order_number: "276099",
+    arrival_date: "2026-07-18",
+    departure_date: "2026-07-21",
+    room: "אמרלד 17",
+    room_type: "suite",
+    spa_time: null,
+    spa_date: null,
+    meal_location: null,
+    meal_time: null,
+    treatment_count: 0,
+    msg_spa_upsell_sent: false,
+  };
+  const r = classifyEzgoMailWorkflow(rec, guest, "2026-07-20");
+  if (r.workflow !== "suite_spa_sync") throw new Error(`expected suite_spa_sync got ${r.workflow}`);
+  if ("arrival_date" in r.patch) throw new Error("patch must never contain arrival_date");
+  if ("departure_date" in r.patch) throw new Error("patch must never contain departure_date");
+  if ("room" in r.patch) throw new Error("patch must never contain room");
+  if ("nights" in r.patch) throw new Error("patch must never contain nights");
+});
+
 Deno.test("guestHasSpaOnDate respects spa_date", () => {
   const ok = guestHasSpaOnDate(
     { id: 1, name: null, phone: null, order_number: null, arrival_date: null, departure_date: null, room: null, spa_time: null, spa_date: "2026-07-20", meal_location: null, meal_time: null, treatment_count: null },

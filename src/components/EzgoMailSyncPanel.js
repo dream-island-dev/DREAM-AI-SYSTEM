@@ -20,6 +20,7 @@ import {
   resolveDoc2LineWorkflow,
 } from "../utils/ezgoDoc2MailLineWorkflow";
 import { applyDoc2SuiteRoomAdd, findGuestForDoc2SuiteCreate } from "../utils/ezgoDoc2SuiteRoomSync";
+import { resolveMissingDepartureAlert } from "../utils/departureDateGuard";
 import {
   fetchSpaUpsellDispatchMeta,
   scheduleSpaUpsellTasks,
@@ -178,6 +179,10 @@ function LineCard({
   const canCreateProfile = (isCreate || (isUpsell && rec.phone))
     && line.action !== "no_match"
     && workflow !== "conflict";
+  // FAIL VISIBLE (P0 2026-08-05): a suite row whose nights column couldn't be
+  // parsed must never create a same-day (0-night) profile — block the button
+  // instead of hiding it, with a title explaining why (Disable, Don't Hide).
+  const blockedByMissingNights = workflow === "suite_arrival_create" && !!rec.departure_missing_nights;
   const canApprove = !isCreate && !isUpsell
     && line.action !== "no_match"
     && workflow !== "noop"
@@ -208,6 +213,17 @@ function LineCard({
           <span style={{ fontSize: 11, color: "#c4b5fd" }}>
             {rec.room || rec.room_raw}
             {rec.nights ? ` · ${rec.nights} לילות` : ""}
+          </span>
+        )}
+        {blockedByMissingNights && (
+          <span
+            title="לא ניתן ליצור סוויטה בלי מספר לילות תקין — בדוק את עמודת הלילות בדוח ופרסר מחדש"
+            style={{
+              fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
+              background: "#FEE2E2", color: "#B91C1C",
+            }}
+          >
+            ⚠ חסר לילות
           </span>
         )}
         {rec.spa_time && (
@@ -250,12 +266,18 @@ function LineCard({
             {canCreateProfile && (
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || blockedByMissingNights}
                 onClick={() => onCreate(line)}
-                title={isUpsell && line.match_guest_id
-                  ? "פרופיל קיים — סמן כטופל בלי לשלוח הצעת ספא"
-                  : "צור פרופיל בילוי יומי מהדוח — בלי שליחת הצעת ספא"}
-                style={{ ...BTN.create, cursor: busy ? "wait" : "pointer" }}
+                title={blockedByMissingNights
+                  ? "לא ניתן ליצור סוויטה בלי מספר לילות תקין — בדוק את עמודת הלילות בדוח ופרסר מחדש"
+                  : (isUpsell && line.match_guest_id
+                    ? "פרופיל קיים — סמן כטופל בלי לשלוח הצעת ספא"
+                    : "צור פרופיל בילוי יומי מהדוח — בלי שליחת הצעת ספא")}
+                style={{
+                  ...BTN.create,
+                  cursor: (busy || blockedByMissingNights) ? "not-allowed" : "pointer",
+                  opacity: blockedByMissingNights ? 0.5 : 1,
+                }}
               >
                 {isUpsell && line.match_guest_id ? "✓ ללא שליחה" : "☀️ צור פרופיל"}
               </button>
@@ -642,6 +664,9 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
 
       const { error: upErr } = await supabase.from("guests").update(safePatch).eq("id", guest.id);
       if (upErr) throw upErr;
+      if (isDoc2Ingest && safePatch.departure_date) {
+        await resolveMissingDepartureAlert(supabase, guest.id);
+      }
 
       await supabase.from("ezgo_mail_import_lines").update({
         status: "applied",
