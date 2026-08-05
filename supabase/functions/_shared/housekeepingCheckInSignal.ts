@@ -49,6 +49,31 @@ export const HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS: ReadonlySet<HousekeepingCheck
   "error",
 ]);
 
+async function persistHousekeepingCheckInOutcome(
+  supabase: ReturnType<typeof createClient>,
+  waMessageId: string,
+  roomNumber: number,
+  result: HousekeepingCheckInResult,
+): Promise<void> {
+  const { error } = await supabase
+    .from("housekeeping_wa_events")
+    .update({
+      sync_action: result.action,
+      sync_error: result.error ?? null,
+      guest_id: result.guestId,
+    })
+    .eq("wa_message_id", waMessageId)
+    .eq("room_number", roomNumber)
+    .eq("event_type", "check_in");
+
+  if (error) {
+    console.warn(
+      `[housekeepingCheckIn] sync outcome persist failed msg=${waMessageId} room=${roomNumber}:`,
+      error.message,
+    );
+  }
+}
+
 export function buildHousekeepingCheckInAckLine(result: HousekeepingCheckInResult): string | null {
   const { roomNumber, roomId, guestName, action, previousGuestName } = result;
   if (action === "skipped_no_suite") {
@@ -98,6 +123,11 @@ export async function applyHousekeepingCheckInSignal(
     return { ok: false, roomNumber, roomId: null, guestId: null, guestName: null, action: "skipped_no_suite" };
   }
 
+  const finalize = async (result: HousekeepingCheckInResult): Promise<HousekeepingCheckInResult> => {
+    await persistHousekeepingCheckInOutcome(supabase, waMessageId, roomNumber, result);
+    return result;
+  };
+
   const { error: dedupErr } = await supabase.from("housekeeping_wa_events").insert({
     wa_message_id: waMessageId,
     room_number: roomNumber,
@@ -126,14 +156,14 @@ export async function applyHousekeepingCheckInSignal(
   ]);
 
   if (incomingPick.ambiguous.length) {
-    return {
+    return finalize({
       ok: false,
       roomNumber,
       roomId,
       guestId: null,
       guestName: formatAmbiguousGuestHint(incomingPick.ambiguous),
       action: "ambiguous_guest",
-    };
+    });
   }
 
   const incoming = incomingPick.guest;
@@ -157,7 +187,7 @@ export async function applyHousekeepingCheckInSignal(
       !coResult.ok &&
       coResult.action !== "already_checked_out"
     ) {
-      return {
+      return finalize({
         ok: false,
         roomNumber,
         roomId,
@@ -167,7 +197,7 @@ export async function applyHousekeepingCheckInSignal(
         previousGuestName: outgoing!.name,
         action: "error",
         error: coResult.error ?? `checkout_failed:${coResult.action}`,
-      };
+      });
     }
 
     const ciSync = await performSuiteCheckIn(supabase, incoming!, {
@@ -175,7 +205,7 @@ export async function applyHousekeepingCheckInSignal(
       auditSource: "צ'ק-אין מקבוצת ניקיון (WhatsApp)",
     });
     if (!ciSync.ok) {
-      return {
+      return finalize({
         ok: false,
         roomNumber,
         roomId,
@@ -185,7 +215,7 @@ export async function applyHousekeepingCheckInSignal(
         previousGuestName: outgoing!.name,
         action: "error",
         error: ciSync.error,
-      };
+      });
     }
 
     console.log(
@@ -193,7 +223,7 @@ export async function applyHousekeepingCheckInSignal(
       `(${outgoing!.name}) in=${incoming!.id} (${incoming!.name}) co_action=${coResult.action}`,
     );
 
-    return {
+    return finalize({
       ok: true,
       roomNumber,
       roomId,
@@ -202,7 +232,7 @@ export async function applyHousekeepingCheckInSignal(
       previousGuestId: outgoing!.id,
       previousGuestName: outgoing!.name,
       action: "updated",
-    };
+    });
   }
 
   const activePick = incoming
@@ -210,19 +240,21 @@ export async function applyHousekeepingCheckInSignal(
     : await findActiveGuestForSuite(supabase, roomId);
 
   if (activePick.ambiguous.length) {
-    return {
+    return finalize({
       ok: false,
       roomNumber,
       roomId,
       guestId: null,
       guestName: formatAmbiguousGuestHint(activePick.ambiguous),
       action: "ambiguous_guest",
-    };
+    });
   }
 
   const guest = activePick.guest;
   if (!guest) {
-    return { ok: false, roomNumber, roomId, guestId: null, guestName: null, action: "no_guest" };
+    return finalize({
+      ok: false, roomNumber, roomId, guestId: null, guestName: null, action: "no_guest",
+    });
   }
 
   if (guest.status === "checked_in") {
@@ -241,20 +273,20 @@ export async function applyHousekeepingCheckInSignal(
         `[housekeepingCheckIn] ${roomId} (#${roomNumber}) guest=${guest.id} — already_checked_in, room_status→תפוס`,
       );
     }
-    return {
+    return finalize({
       ok: true, roomNumber, roomId, guestId: guest.id, guestName: guest.name, action: "already_checked_in",
-    };
+    });
   }
 
   if (!CHECKIN_ELIGIBLE_STATUSES.has(guest.status)) {
-    return {
+    return finalize({
       ok: false,
       roomNumber,
       roomId,
       guestId: guest.id,
       guestName: guest.name,
       action: "guest_not_eligible",
-    };
+    });
   }
 
   const sync = await performSuiteCheckIn(supabase, guest, {
@@ -263,15 +295,15 @@ export async function applyHousekeepingCheckInSignal(
   });
 
   if (!sync.ok) {
-    return {
+    return finalize({
       ok: false, roomNumber, roomId, guestId: guest.id, guestName: guest.name,
       action: "error", error: sync.error,
-    };
+    });
   }
 
   console.log(`[housekeepingCheckIn] ${roomId} (#${roomNumber}) guest=${guest.id} → checked_in`);
 
-  return {
+  return finalize({
     ok: true, roomNumber, roomId, guestId: guest.id, guestName: guest.name, action: "updated",
-  };
+  });
 }

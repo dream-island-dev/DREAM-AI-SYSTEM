@@ -7,7 +7,7 @@ import { usePageVisibility } from "../hooks/usePageVisibility";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { Toast, useToast } from "./Toast";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
-import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict } from "../utils/guestTiming";
+import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict, israelTodayStr } from "../utils/guestTiming";
 import { loadCheckinFilter } from "../utils/checkinFilterStorage";
 import {
   fetchCheckinGuestsForScope,
@@ -53,6 +53,18 @@ import {
   classifyRoomReadySendResult,
 } from "../utils/suiteRoomReady";
 import { formatSuiteRoomLine } from "../utils/guestStaySummary";
+import {
+  buildHousekeepingSyncMap,
+  fetchHousekeepingCheckInsForDate,
+  indexHousekeepingCheckInsByRoom,
+  markHousekeepingEventSynced,
+  reconcileHousekeepingCheckIns,
+} from "../utils/housekeepingCheckInReconcile";
+
+function isTodayCheckinScope(scope, customDate) {
+  if (customDate) return customDate === israelTodayStr();
+  return scope === CHECKIN_TIMELINE_TODAY;
+}
 
 export default function GuestsPage({
   initialTimelineScope = null,
@@ -95,6 +107,7 @@ export default function GuestsPage({
   const [editGuest,     setEditGuest]    = useState(null);  // {} = new guest, {id,...} = existing
   const [roomByPhone,    setRoomByPhone]    = useState(() => bootCache?.roomByPhone ?? guestsPageMemoryCache.roomByPhone ?? {});
   const [suiteRoomsByGuestId, setSuiteRoomsByGuestId] = useState(() => bootCache?.suiteRoomsByGuestId ?? {});
+  const [hkSyncByGuestId, setHkSyncByGuestId] = useState({});
 
   const {
     timelineScope,
@@ -120,6 +133,29 @@ export default function GuestsPage({
     skipRealtimeUntilRef.current = Date.now() + ms;
   }, []);
 
+  const applyHousekeepingGroupSync = useCallback(async (rows, suiteMap, { silent = false } = {}) => {
+    if (!supabase || !isTodayCheckinScope(timelineScope, customArrivalDate) || !rows?.length) {
+      setHkSyncByGuestId({});
+      return rows;
+    }
+
+    const hkEvents = await fetchHousekeepingCheckInsForDate(supabase, israelTodayStr());
+    const hkByRoom = indexHousekeepingCheckInsByRoom(hkEvents);
+    setHkSyncByGuestId(buildHousekeepingSyncMap(rows, suiteMap, hkByRoom));
+
+    const reconciled = await reconcileHousekeepingCheckIns(supabase, rows, suiteMap, hkByRoom);
+    if (!reconciled.length) return rows;
+
+    const patchById = new Map(reconciled.map((r) => [r.guestId, r.guestPatch]));
+    const nextRows = rows.map((g) => (patchById.has(g.id) ? { ...g, ...patchById.get(g.id) } : g));
+    setHkSyncByGuestId(buildHousekeepingSyncMap(nextRows, suiteMap, hkByRoom));
+    suppressRealtimeRefresh();
+    if (!silent) {
+      showToast("ok", `סונכרנו ${reconciled.length} צ'ק-אינים מקבוצת הניקיון`);
+    }
+    return nextRows;
+  }, [timelineScope, customArrivalDate, suppressRealtimeRefresh, showToast]);
+
   const loadGuests = useCallback(async ({ showSpinner = false, forceScopeCounts = false } = {}) => {
     const cacheKey = getCheckinScopeCacheKey(timelineScope, customArrivalDate);
     const hasCachedScope = Object.prototype.hasOwnProperty.call(
@@ -143,13 +179,14 @@ export default function GuestsPage({
       showToast("err", "שגיאה: " + guestsRes.error.message);
     } else {
       const rows = guestsRes.data ?? [];
-      setGuests(rows);
       const suiteMap = await fetchSuiteRoomsForGuestIds(supabase, rows);
+      const syncedRows = await applyHousekeepingGroupSync(rows, suiteMap, { silent: !showSpinner });
+      setGuests(syncedRows);
       setSuiteRoomsByGuestId(suiteMap);
-      persistScopeCache(rows, suiteMap);
+      persistScopeCache(syncedRows, suiteMap);
     }
     if (showSpinner && !hasCachedScope) setLoading(false);
-  }, [timelineScope, customArrivalDate, persistScopeCache, showToast]);
+  }, [timelineScope, customArrivalDate, persistScopeCache, showToast, applyHousekeepingGroupSync]);
 
   const fetchGuestsSilent = useCallback(() => loadGuests(), [loadGuests]);
 
@@ -395,6 +432,96 @@ export default function GuestsPage({
       showToast("ok", labels[status] ?? "עודכן ✓");
     }
     setBusy(null);
+  };
+
+  const syncFromHousekeepingGroup = async (guest) => {
+    if (!supabase || !guest?.id) return;
+    const sync = hkSyncByGuestId[guest.id];
+    if (!sync?.roomId || sync.state !== "pending") return;
+    if (roomMissing(guest)) {
+      showToast("err", "יש לשבץ חדר לפני סנכרון מקבוצה — לחץ ✏️ לעריכה");
+      return;
+    }
+    setBusy(guest.id);
+    const result = await performSuiteCheckIn(supabase, guest, {
+      roomId: sync.roomId,
+      auditSource: "צ'ק-אין מקבוצת ניקיון (סנכרון ידני)",
+    });
+    if (!result.ok) {
+      showToast("err", "סנכרון מקבוצה נכשל: " + result.error);
+      setBusy(null);
+      return;
+    }
+    if (sync.eventId) {
+      await markHousekeepingEventSynced(supabase, sync.eventId, guest.id);
+    }
+    suppressRealtimeRefresh();
+    setGuests((prev) => prev.map((g) => (g.id === guest.id ? { ...g, ...result.guestPatch } : g)));
+    setHkSyncByGuestId((prev) => ({
+      ...prev,
+      [guest.id]: { ...sync, state: "synced", action: "updated" },
+    }));
+    showToast("ok", "צ'ק-אין ✓ — סונכרן מקבוצת הניקיון");
+    setBusy(null);
+  };
+
+  const renderHousekeepingSyncChip = (guest, rowStatus) => {
+    const sync = hkSyncByGuestId[guest?.id];
+    if (!sync || sync.state === "none") return null;
+
+    if (sync.state === "synced" || rowStatus === "checked_in") {
+      const at = sync.eventAt
+        ? new Date(sync.eventAt).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Jerusalem" })
+        : null;
+      return (
+        <span
+          title={at ? `נקלט מקבוצת צ'ק-אין בשעה ${at}` : "נקלט מקבוצת צ'ק-אין"}
+          style={{
+            fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10,
+            background: "#E8F5EF", color: "#1A7A4A", whiteSpace: "nowrap",
+          }}
+        >
+          ✅ מקבוצה{at ? ` ${at}` : ""}
+        </span>
+      );
+    }
+
+    if (sync.state === "pending") {
+      return (
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={busy === guest.id || roomMissing(guest)}
+          onClick={() => syncFromHousekeepingGroup(guest)}
+          title={
+            roomMissing(guest)
+              ? "יש לשבץ חדר לפני סנכרון"
+              : "נשלח צ'ק-אין בקבוצה — לחץ לסנכרן ל-XOS"
+          }
+          style={{
+            fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 10,
+            background: roomMissing(guest) ? "#F5F5F5" : "#FFF5E8",
+            color: roomMissing(guest) ? "#AAAAAA" : "#B5600A",
+            cursor: roomMissing(guest) ? "not-allowed" : "pointer",
+            border: "1px solid #F5A623",
+          }}
+        >
+          {busy === guest.id ? "⏳" : "⚠️ סנכרן מקבוצה"}
+        </button>
+      );
+    }
+
+    return (
+      <span
+        title={sync.error || sync.action || "צ'ק-אין מקבוצה לא הוחל"}
+        style={{
+          fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10,
+          background: "#FFF0EE", color: "#C0392B", whiteSpace: "nowrap",
+        }}
+      >
+        ⚠️ קבוצה — לא הוחל
+      </span>
+    );
   };
 
   const isSuite = (g) =>
@@ -1112,7 +1239,10 @@ export default function GuestsPage({
                         {formatSpaSchedule(g.spa_date, g.spa_time) || "—"}
                       </td>
                       <td>
-                        {renderGuestStatusBadge(g, sm, rowStatus)}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
+                          {renderGuestStatusBadge(g, sm, rowStatus)}
+                          {renderHousekeepingSyncChip(g, rowStatus)}
+                        </div>
                       </td>
                       <td>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1169,6 +1299,7 @@ export default function GuestsPage({
                           <span style={{ fontSize: 10, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700 }}>✓ אישר</span>
                         )}
                         {renderGuestStatusBadge(g, sm, rowStatus)}
+                        {renderHousekeepingSyncChip(g, rowStatus)}
                       </div>
                       <GuestAttentionBadge
                         guest={g}

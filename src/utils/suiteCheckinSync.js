@@ -46,18 +46,15 @@ export async function performSuiteCheckIn(supabase, guest, opts = {}) {
     guestPatch.room_ready_notified = true;
   }
 
+  const auditSource = opts.auditSource
+    ?? (opts.skipRoomReadyMessage ? "צ'ק-אין ידני ללא שליחת הודעת חדר מוכן" : "צ'ק-אין מסונכרן");
+  const prevNotes = String(guest.guest_notes ?? "").trim();
+  guestPatch.guest_notes = prevNotes
+    ? `${prevNotes}\n${auditLine(auditSource)}`
+    : auditLine(auditSource);
+
   const { error: guestErr } = await supabase.from("guests").update(guestPatch).eq("id", guest.id);
   if (guestErr) return { ok: false, error: guestErr.message };
-
-  if (opts.skipRoomReadyMessage) {
-    const noteErr = await appendGuestNotesAudit(
-      supabase,
-      guest.id,
-      guest.guest_notes,
-      "צ'ק-אין ידני ללא שליחת הודעת חדר מוכן",
-    );
-    if (noteErr) return { ok: false, error: noteErr.message };
-  }
 
   if (!roomId) {
     return { ok: true, guestPatch, roomId: null, roomStatus: null, noRoomLinked: true };
