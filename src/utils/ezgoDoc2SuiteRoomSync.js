@@ -13,6 +13,7 @@ import {
   assertNoConflictingSuiteProfile,
   assertNoDuplicateGuest,
 } from "./guestSegmentGuard";
+import { buildDoc2RemarkGuestNotes } from "./ezgoDoc2RemarkIdentity";
 
 const DOC2_MAIL_LINE_PREFIX = "doc2mail-";
 
@@ -49,6 +50,15 @@ function mergeAutomationScope(existing, incoming) {
 }
 
 export function isSameDoc2Booking(rec, guest) {
+  // Group/municipal rows share an order_number but each remark row is a
+  // distinct occupant — never merge rooms onto one profile unless phone AND
+  // resolved guest name both match (prevents 12-room איליה-style blobs).
+  if (rec.is_remark_group_occupant) {
+    if (!rec.phone || !guest.phone || rec.phone !== guest.phone) return false;
+    if (!rec.guest_name || !guest.name) return false;
+    return rec.guest_name.trim() === String(guest.name).trim();
+  }
+
   // An explicit order-number mismatch is authoritative — never fall through to
   // the softer phone/date heuristic below (would silently merge two different
   // bookings). Same order_number is NOT sufficient on its own either — group/
@@ -68,6 +78,15 @@ export function isSameDoc2Booking(rec, guest) {
     return rec.guest_name.trim() === String(guest.name).trim();
   }
   return false;
+}
+
+/** Whether an incoming Doc2 row should add a room to an existing guest (not group pile-on). */
+export function shouldMergeDoc2RowOntoGuest(rec, guest) {
+  if (!isSameDoc2Booking(rec, guest)) return false;
+  if (rec.is_remark_group_occupant) {
+    return !!rec.room && guestRoomLabelsInclude(guest.room, rec.room);
+  }
+  return true;
 }
 
 function pickEnrichValue(importVal, existingVal) {
@@ -142,10 +161,22 @@ export async function findGuestForDoc2SuiteCreate(supabase, rec, reportDateYmd) 
       .eq("arrival_date", arrival)
       .neq("status", "cancelled")
       .limit(3);
-    if (data?.length === 1) return data[0];
-    if (data?.length > 1 && rec.phone) {
-      const hit = data.find((g) => g.phone === rec.phone);
-      if (hit) return hit;
+    if (data?.length === 1) {
+      const only = data[0];
+      if (rec.is_remark_group_occupant) {
+        return shouldMergeDoc2RowOntoGuest(rec, only) ? only : null;
+      }
+      return only;
+    }
+    if (data?.length > 1) {
+      if (rec.is_remark_group_occupant) {
+        const hit = data.find((g) => shouldMergeDoc2RowOntoGuest(rec, g));
+        return hit ?? null;
+      }
+      if (rec.phone) {
+        const hit = data.find((g) => g.phone === rec.phone);
+        if (hit) return hit;
+      }
     }
   }
 
@@ -157,7 +188,13 @@ export async function findGuestForDoc2SuiteCreate(supabase, rec, reportDateYmd) 
       .eq("arrival_date", arrival)
       .neq("status", "cancelled")
       .limit(2);
-    if (data?.length === 1) return data[0];
+    if (data?.length === 1) {
+      const only = data[0];
+      if (rec.is_remark_group_occupant) {
+        return shouldMergeDoc2RowOntoGuest(rec, only) ? only : null;
+      }
+      return only;
+    }
   }
 
   return null;
@@ -353,7 +390,7 @@ export async function applyDoc2SuiteRoomAdd(supabase, { guestId, rec, reportDate
 
 export async function createDoc2SuiteArrival(supabase, rec, reportDateYmd) {
   const existing = await findGuestForDoc2SuiteCreate(supabase, rec, reportDateYmd);
-  if (existing) {
+  if (existing && shouldMergeDoc2RowOntoGuest(rec, existing)) {
     const result = await applyDoc2SuiteRoomAdd(supabase, {
       guestId: existing.id,
       rec,
@@ -389,6 +426,14 @@ export async function createDoc2SuiteArrival(supabase, rec, reportDateYmd) {
     );
   }
 
+  const guestNotes = buildDoc2RemarkGuestNotes(
+    rec.notes,
+    rec.coord_name ?? null,
+    rec.coord_phone ?? null,
+    rec.guest_name,
+    rec.phone,
+  );
+
   const insert = {
     phone: rec.phone,
     name: rec.guest_name || null,
@@ -403,6 +448,7 @@ export async function createDoc2SuiteArrival(supabase, rec, reportDateYmd) {
     automation_scope: automationScope,
     automation_muted: automationScope === "muted",
     guest_index: 1,
+    ...(guestNotes ? { guest_notes: guestNotes } : {}),
   };
 
   const { data: inserted, error } = await supabase

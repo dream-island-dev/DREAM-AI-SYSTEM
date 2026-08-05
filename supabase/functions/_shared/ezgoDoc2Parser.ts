@@ -48,6 +48,9 @@ export type Doc2Record = {
   automation_scope?: ImportAutomationScope;
   automation_muted?: boolean;
   is_remark_group_occupant?: boolean;
+  /** Original לקוח column before remark occupant resolution (group bookings). */
+  coord_name?: string | null;
+  coord_phone?: string | null;
   // FAIL VISIBLE (P0 2026-08-05 nights→departure fix): true when this is a
   // suite row (not day guest) whose nights column was missing/unparsable, so
   // departure_date could not be computed and was left null instead of
@@ -250,6 +253,8 @@ export function parseHtmlArrivalsReport(htmlText: string): Doc2Record[] {
       automation_scope,
       automation_muted: automation_scope === "muted",
       is_remark_group_occupant: coordNameDuplicated,
+      coord_name: row.coordName || null,
+      coord_phone: row.coordPhone || null,
     });
   }
 

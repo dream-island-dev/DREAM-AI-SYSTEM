@@ -338,3 +338,63 @@ Deno.test("returning guest with new arrival → suite_arrival_create not enrich"
   }
   if (r.action !== "create") throw new Error("expected create action");
 });
+
+Deno.test("group occupant second room → suite_arrival_create not suite_room_add — P0 2026-08-05", () => {
+  const coordinatorProfile = {
+    id: 99,
+    name: "איליה קורנייקו",
+    phone: "+972542302310",
+    order_number: "301222",
+    arrival_date: "2026-08-07",
+    departure_date: "2026-08-08",
+    room: "אוניקס 12",
+    room_type: "suite",
+    meal_location: null,
+  };
+  const secondOccupant = {
+    _report: "doc2" as const,
+    section: "arrival" as const,
+    order_number: "301222",
+    room_raw: "סוויטת אוניקס - 7",
+    room: "אוניקס 7",
+    board_basis: null,
+    meal_location: null,
+    arrival_time: null,
+    nights: 1,
+    guest_count: "2",
+    guest_name: "משה לוי",
+    phone: "+972522222222",
+    amount: null,
+    notes: "משה לוי 052-2222222",
+    arrival_date: "2026-08-07",
+    departure_date: "2026-08-08",
+    is_day_guest: false,
+    is_premium_day: false,
+    is_remark_group_occupant: true,
+    coord_name: "איליה קורנייקו",
+    coord_phone: "+972542302310",
+  };
+  const r = classifyDoc2MailWorkflow(secondOccupant, coordinatorProfile);
+  if (r.workflow !== "suite_arrival_create") {
+    throw new Error(`expected suite_arrival_create got ${r.workflow}`);
+  }
+});
+
+Deno.test("isSameDoc2Booking: group rows with different occupant names → false", () => {
+  const rec = {
+    guest_name: "משה לוי",
+    phone: "+972522222222",
+    order_number: "301222",
+    is_remark_group_occupant: true,
+    arrival_date: "2026-08-07",
+  };
+  const guest = {
+    name: "איליה קורנייקו",
+    phone: "+972542302310",
+    order_number: "301222",
+    arrival_date: "2026-08-07",
+  };
+  if (isSameDoc2Booking(rec as never, guest as never)) {
+    throw new Error("expected false for different group occupants");
+  }
+});

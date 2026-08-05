@@ -151,6 +151,9 @@ export function classifyDoc2MailWorkflow(
   if (matchedGuest && shouldTreatAsReturningGuestCreate(matchedGuest, rec, reportDate, today)) {
     matchedGuest = null;
   }
+  if (matchedGuest && rec.is_remark_group_occupant && !isSameDoc2Booking(rec, matchedGuest)) {
+    matchedGuest = null;
+  }
 
   if (rec.section === "departure") {
     return {
@@ -253,7 +256,12 @@ export function classifyDoc2MailWorkflow(
     };
   }
 
-  if (roomConflict(rec, matchedGuest) && isSameDoc2Booking(rec, matchedGuest) && rec.room) {
+  if (
+    roomConflict(rec, matchedGuest)
+    && isSameDoc2Booking(rec, matchedGuest)
+    && rec.room
+    && !rec.is_remark_group_occupant
+  ) {
     return {
       workflow: "suite_room_add",
       action: "enrich",
@@ -269,6 +277,17 @@ export function classifyDoc2MailWorkflow(
       label: `שיבוץ חדר · ${matchedGuest.name || rec.guest_name} → ${rec.room}`,
       patch: withWorkflowMeta({ room: rec.room }, "suite_room_assign"),
     };
+  }
+
+  if (roomConflict(rec, matchedGuest) && rec.room && rec.is_remark_group_occupant) {
+    if (!guestRoomLabelsInclude(matchedGuest.room, rec.room)) {
+      return {
+        workflow: "suite_arrival_create",
+        action: "create",
+        label: `צור סוויטה · ${rec.guest_name || "—"} · ${rec.room} · קבוצה`,
+        patch: withWorkflowMeta({}, "suite_arrival_create"),
+      };
+    }
   }
 
   if (roomConflict(rec, matchedGuest)) {

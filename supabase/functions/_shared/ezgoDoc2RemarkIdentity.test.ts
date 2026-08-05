@@ -1,8 +1,10 @@
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import {
+  buildDoc2RemarkGuestNotes,
   duplicateCoordNameKeys,
   extractMealTimeFromRemarkText,
   extractNameFromRemarkText,
+  extractNameFromRemarkWithoutPhone,
   extractPhonesFromRemarkText,
   resolveDoc2GuestIdentity,
 } from "./ezgoDoc2RemarkIdentity.ts";
@@ -51,4 +53,21 @@ Deno.test("duplicateCoordNameKeys: flags names appearing 2+ times", () => {
   const dupes = duplicateCoordNameKeys(["בנק לאומי", "בנק לאומי", "יחיד"]);
   assertEquals(dupes.has("בנק לאומי"), true);
   assertEquals(dupes.has("יחיד"), false);
+});
+
+Deno.test("extractNameFromRemarkWithoutPhone: name-only remark", () => {
+  assertEquals(extractNameFromRemarkWithoutPhone("נילי הללי"), "נילי הללי");
+  assertEquals(extractNameFromRemarkWithoutPhone("דוד כהן 052-1111111"), null);
+});
+
+Deno.test("buildDoc2RemarkGuestNotes: extra phone + coordinator line", () => {
+  const notes = buildDoc2RemarkGuestNotes(
+    "דוד כהן 052-1111111 / 054-9998888",
+    "איליה קורנייקו",
+    "+972542302310",
+    "דוד כהן",
+    "+972521111111",
+  );
+  assertEquals(notes?.includes("טלפון נוסף"), true);
+  assertEquals(notes?.includes("רכז/ה הזמנה: איליה קורנייקו"), true);
 });

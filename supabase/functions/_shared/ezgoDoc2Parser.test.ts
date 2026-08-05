@@ -89,6 +89,26 @@ Deno.test("parseHtmlArrivalsReport: municipal 3-row group → 3 profiles, all au
   assertEquals(rows.map((r) => r.room), ["ג׳ספר 1", "ג׳ספר 2", "ג׳ספר 3"]);
 });
 
+const COORD_ILYA_GROUP_HTML = `
+<table><tr><td>כניסה</td><td>07/08/2026</td></tr>
+<tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
+<tr><td></td><td>301222</td><td>סוויטת אוניקס - 12</td><td>HB</td><td></td><td>1</td><td>2</td><td>איליה קורנייקו , 0542302310</td><td>2,000₪</td><td>דוד כהן 052-1111111</td></tr>
+<tr><td></td><td>301222</td><td>סוויטת אוניקס - 7</td><td>HB</td><td></td><td>1</td><td>2</td><td>איליה קורנייקו , 0542302310</td><td>2,000₪</td><td>משה לוי 052-2222222</td></tr>
+</table>`;
+
+Deno.test("parseHtmlArrivalsReport: coordinator איליה → separate occupants from הערות — P0 2026-08-05", () => {
+  const rows = parseHtmlArrivalsReport(COORD_ILYA_GROUP_HTML);
+  assertEquals(rows.length, 2);
+  assertEquals(rows[0].guest_name, "דוד כהן");
+  assertEquals(rows[0].phone, "+972521111111");
+  assertEquals(rows[0].room, "אוניקס 12");
+  assertEquals(rows[1].guest_name, "משה לוי");
+  assertEquals(rows[1].phone, "+972522222222");
+  assertEquals(rows[1].room, "אוניקס 7");
+  assertEquals(rows.every((r) => r.is_remark_group_occupant === true), true);
+  assertEquals(rows[0].coord_name, "איליה קורנייקו");
+});
+
 const SUITE_WITH_DAYPASS_SUFFIX_HTML = `
 <table><tr><td>כניסה</td><td>04/08/2026</td></tr>
 <tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
