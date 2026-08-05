@@ -349,6 +349,39 @@ export default function WaiterPulseDispatchPanel({ pulseUrl, canEdit, onToast })
                 {pastePreview.invalid.length > 0 && (
                   <span style={{ color: "#C0392B" }}> · ⚠ {pastePreview.invalid.length} לא תקינים</span>
                 )}
+                {pastePreview.duplicates?.length > 0 && (
+                  <span style={{ color: "#B5600A" }}> · {pastePreview.duplicates.length} כפולים (דולגו)</span>
+                )}
+              </div>
+            )}
+            {pastePreview?.invalid?.length > 0 && (
+              <div style={{
+                marginTop: 8, padding: "8px 10px", borderRadius: 8,
+                background: "#FFF0EE", border: "1px solid #F1A9A0", fontSize: 11.5,
+              }}>
+                <div style={{ fontWeight: 700, color: "#C0392B", marginBottom: 4 }}>
+                  שורות לא תקינות — לא יובאו
+                </div>
+                {pastePreview.invalid.map((line, i) => (
+                  <div key={`inv-${i}`} style={{ padding: "2px 0", color: "#8A2C2C", fontFamily: "monospace", direction: "ltr", textAlign: "left" }}>
+                    {line}
+                  </div>
+                ))}
+              </div>
+            )}
+            {pastePreview?.duplicates?.length > 0 && (
+              <div style={{
+                marginTop: 8, padding: "8px 10px", borderRadius: 8,
+                background: "#FFF7ED", border: "1px solid #FDBA74", fontSize: 11.5,
+              }}>
+                <div style={{ fontWeight: 700, color: "#9A3412", marginBottom: 4 }}>
+                  שורות כפולות (אותו טלפון כבר הופיע למעלה)
+                </div>
+                {pastePreview.duplicates.map((line, i) => (
+                  <div key={`dup-${i}`} style={{ padding: "2px 0", color: "#7C2D12", fontFamily: "monospace", direction: "ltr", textAlign: "left" }}>
+                    {line}
+                  </div>
+                ))}
               </div>
             )}
           </div>

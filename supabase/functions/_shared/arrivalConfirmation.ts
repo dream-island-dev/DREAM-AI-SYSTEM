@@ -332,6 +332,7 @@ export async function reconcileMissedArrivalConfirmations(
       .update({
         arrival_confirmed: true,
         arrival_confirmed_at: confirmedAt,
+        arrival_confirmed_source: "guest_reply",
         wa_window_expires_at: windowExpires,
         ...(guest.status === "pending" ? { status: "expected" } : {}),
       })

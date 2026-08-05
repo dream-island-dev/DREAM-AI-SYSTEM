@@ -10,10 +10,20 @@ export interface GuestImportPipelineResult {
   guestPatch?: Record<string, unknown>;
 }
 
+export interface GuestImportPipelineOptions {
+  /** Pass false for a routine edit of an already-existing guest so a staff
+   * correction never fakes arrival_confirmed for a guest who hasn't actually
+   * replied. Genuine import paths (Doc2 create/enrich) keep the default
+   * true — that's the guest's real point of entry into the system. */
+  allowLateImportFastLane?: boolean;
+}
+
 export async function runGuestImportPipelineHooks(
   supabase: ReturnType<typeof createClient>,
   guestId: number,
+  options: GuestImportPipelineOptions = {},
 ): Promise<GuestImportPipelineResult> {
+  const { allowLateImportFastLane = true } = options;
   const result: GuestImportPipelineResult = {
     lateImportApplied: false,
     housekeepingCheckInApplied: false,
@@ -28,7 +38,7 @@ export async function runGuestImportPipelineHooks(
     .maybeSingle();
   if (error || !guest) return result;
 
-  const fastLanePatch = buildLateImportFastLanePatch(guest);
+  const fastLanePatch = allowLateImportFastLane ? buildLateImportFastLanePatch(guest) : null;
   if (fastLanePatch) {
     const { error: updErr } = await supabase.from("guests").update(fastLanePatch).eq("id", guestId);
     if (!updErr) {

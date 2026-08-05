@@ -13,7 +13,7 @@ import { isSuiteGuestProfile, israelDateOffsetStr, israelTodayStr } from "./gues
 export const CHECKIN_GUESTS_SELECT =
   "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
   "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent, room_ready_notified, " +
-  "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, " +
+  "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, arrival_confirmed_source, " +
   "spa_time, spa_date, meal_time, meal_location, meal_plan, breakfast_time, lunch_time, dinner_time, " +
   "treatment_count, order_number, payment_amount, payment_link_url, direct_payment_url, " +
   "needs_callback, portal_token, lead_source, automation_muted";

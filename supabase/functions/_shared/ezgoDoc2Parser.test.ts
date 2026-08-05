@@ -92,8 +92,8 @@ Deno.test("parseHtmlArrivalsReport: municipal 3-row group → 3 profiles, all au
 const COORD_ILYA_GROUP_HTML = `
 <table><tr><td>כניסה</td><td>07/08/2026</td></tr>
 <tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
-<tr><td></td><td>301222</td><td>סוויטת אוניקס - 12</td><td>HB</td><td></td><td>1</td><td>2</td><td>איליה קורנייקו , 0542302310</td><td>2,000₪</td><td>דוד כהן 052-1111111</td></tr>
-<tr><td></td><td>301222</td><td>סוויטת אוניקס - 7</td><td>HB</td><td></td><td>1</td><td>2</td><td>איליה קורנייקו , 0542302310</td><td>2,000₪</td><td>משה לוי 052-2222222</td></tr>
+<tr><td></td><td>301222</td><td>סוויטת אוניקס - 12</td><td>HB</td><td></td><td>1</td><td>2</td><td>ישראל ישראלי , 0500000000</td><td>2,000₪</td><td>דוד כהן 052-1111111</td></tr>
+<tr><td></td><td>301222</td><td>סוויטת אוניקס - 7</td><td>HB</td><td></td><td>1</td><td>2</td><td>ישראל ישראלי , 0500000000</td><td>2,000₪</td><td>משה לוי 052-2222222</td></tr>
 </table>`;
 
 Deno.test("parseHtmlArrivalsReport: coordinator איליה → separate occupants from הערות — P0 2026-08-05", () => {
@@ -106,7 +106,7 @@ Deno.test("parseHtmlArrivalsReport: coordinator איליה → separate occupant
   assertEquals(rows[1].phone, "+972522222222");
   assertEquals(rows[1].room, "אוניקס 7");
   assertEquals(rows.every((r) => r.is_remark_group_occupant === true), true);
-  assertEquals(rows[0].coord_name, "איליה קורנייקו");
+  assertEquals(rows[0].coord_name, "ישראל ישראלי");
 });
 
 const SUITE_WITH_DAYPASS_SUFFIX_HTML = `

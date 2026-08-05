@@ -1,4 +1,49 @@
-import { classifyRoomReadySendResult } from "./suiteRoomReady";
+import { classifyRoomReadySendResult, fetchSuiteRoomsForGuestIds } from "./suiteRoomReady";
+
+/** Generic thenable query-builder mock — every filter method returns itself,
+ * and awaiting the builder resolves to the canned response, so it works
+ * regardless of which chain (.in()/.eq()/.order()) the caller uses. */
+function makeMockSupabase(suiteRoomsResponse) {
+  const builder = {
+    select() { return builder; },
+    in() { return builder; },
+    eq() { return builder; },
+    order() { return builder; },
+    then(resolve, reject) {
+      return Promise.resolve(suiteRoomsResponse).then(resolve, reject);
+    },
+  };
+  return {
+    from(table) {
+      if (table !== "suite_rooms") throw new Error(`unexpected table: ${table}`);
+      return builder;
+    },
+  };
+}
+
+describe("fetchSuiteRoomsForGuestIds — fail-visible errors (P0 2026-08-05)", () => {
+  test("returns the grouped map with error:null on success", async () => {
+    const supabase = makeMockSupabase({
+      data: [{ id: 1, guest_id: 5, room_display: "אמטיסט 8" }],
+      error: null,
+    });
+    const { map, error } = await fetchSuiteRoomsForGuestIds(supabase, [{ id: 5 }]);
+    expect(error).toBeNull();
+    expect(map[5]).toHaveLength(1);
+  });
+
+  test("surfaces the error instead of silently returning an empty map", async () => {
+    const supabase = makeMockSupabase({ data: null, error: { message: "permission denied" } });
+    const { map, error } = await fetchSuiteRoomsForGuestIds(supabase, [{ id: 5 }]);
+    expect(error).toBe("permission denied");
+    expect(map).toEqual({});
+  });
+
+  test("empty input → empty map, no error", async () => {
+    const result = await fetchSuiteRoomsForGuestIds(makeMockSupabase({ data: [], error: null }), []);
+    expect(result).toEqual({ map: {}, error: null });
+  });
+});
 
 describe("classifyRoomReadySendResult", () => {
   test("hard error → error, never a success toast", () => {

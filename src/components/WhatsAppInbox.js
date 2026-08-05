@@ -59,6 +59,7 @@ import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 import { usePageVisibility } from "../hooks/usePageVisibility";
 import { buildStaffDeepLink, qrCodeImageUrl } from "../utils/staffDeepLink";
 import { buildSpaWhenPhrase, formatSpaSchedule } from "../utils/israeliTime";
+import { classifyRoomReadySendResult } from "../utils/suiteRoomReady";
 import {
   applyAllReadCursors,
   buildGroupedRosterSections,
@@ -3811,7 +3812,7 @@ export default function WhatsAppInbox({
     const channels = resolveContactInboxChannels(contact);
     const channelSet = new Set(channels);
     try {
-      const [{ error: convErr }, { error: guestErr }] = await Promise.all([
+      const [{ error: convErr }, { error: guestErr }, { error: attentionErr }] = await Promise.all([
         supabase.from("whatsapp_conversations")
           .update({ human_requested: false })
           .in("phone", variants)
@@ -3820,9 +3821,21 @@ export default function WhatsAppInbox({
         supabase.from("guests")
           .update({ needs_callback: false })
           .in("phone", variants),
+        // P1 2026-08-05: needs_callback and requires_attention are two
+        // separate flags read by two separate screens (Inbox vs GuestsPage/
+        // GuestDashboard rosters) — clearing only needs_callback here left a
+        // 🚩-flagged guest permanently red on the rosters. Only clear the
+        // roster badge when it was this exact mechanism that set it
+        // (attention_reason='human_callback', see flagHumanRequest below) —
+        // never clobber an unrelated attention reason (e.g. severe_complaint).
+        supabase.from("guests")
+          .update({ requires_attention: false, attention_reason: null })
+          .in("phone", variants)
+          .eq("attention_reason", "human_callback"),
       ]);
       if (convErr) throw convErr;
       if (guestErr) throw guestErr;
+      if (attentionErr) throw attentionErr;
 
       // Optimistic local clear — don't wait on the realtime round-trip
       // (fetchSince() only re-fetches rows newer than the last poll, so an
@@ -3860,8 +3873,13 @@ export default function WhatsAppInbox({
         supabase.from("whatsapp_conversations")
           .update({ human_requested: true, human_request_type: "manual" })
           .eq("id", lastInbound.id),
+        // requires_attention/attention_reason drive the roster badge on
+        // GuestsPage/GuestDashboard (GuestAttentionBadge keys only on
+        // requires_attention) — needs_callback alone was invisible there
+        // (P1 2026-08-05). 'human_callback' is an existing, previously-unused
+        // reason category that matches this exact case.
         supabase.from("guests")
-          .update({ needs_callback: true })
+          .update({ needs_callback: true, requires_attention: true, attention_reason: "human_callback" })
           .in("phone", variants),
       ]);
       if (convErr) throw convErr;
@@ -3888,7 +3906,7 @@ export default function WhatsAppInbox({
 
     setDismissAllBusy(true);
     try {
-      const [{ error: convErr }, { error: guestErr }] = await Promise.all([
+      const [{ error: convErr }, { error: guestErr }, { error: attentionErr }] = await Promise.all([
         supabase.from("whatsapp_conversations")
           .update({ human_requested: false })
           .in("phone", allVariants)
@@ -3896,9 +3914,16 @@ export default function WhatsAppInbox({
         supabase.from("guests")
           .update({ needs_callback: false })
           .in("phone", allVariants),
+        // Same guarded roster-badge clear as dismissHumanRequest (P1 2026-08-05)
+        // — only for guests this exact manual-flag mechanism marked.
+        supabase.from("guests")
+          .update({ requires_attention: false, attention_reason: null })
+          .in("phone", allVariants)
+          .eq("attention_reason", "human_callback"),
       ]);
       if (convErr) throw convErr;
       if (guestErr) throw guestErr;
+      if (attentionErr) throw attentionErr;
 
       allMsgsRef.current = allMsgsRef.current.map((m) =>
         alertPhones.has(m.phone) ? { ...m, human_requested: false } : m
@@ -5264,6 +5289,20 @@ export default function WhatsAppInbox({
           opLabel: "שגיאת שליחה (חדר מוכן)",
         }));
       }
+      // FAIL VISIBLE (P0 2026-08-05): this handler used to close the panel and
+      // refetch with zero feedback on success — a Whapi timeout or a
+      // duplicate-blocked send looked identical to nothing happening at all.
+      const verdict = classifyRoomReadySendResult({ data, error: fnErr });
+      if (verdict.kind === "timeout") {
+        setRouteToast("ℹ️ לא ודאי אם ההודעה הגיעה — בדקו בוואטסאפ לפני שליחה חוזרת");
+      } else if (verdict.kind === "duplicate") {
+        setRouteToast("ℹ️ הודעת חדר מוכן כבר נשלחה בעבר");
+      } else if (verdict.kind === "skipped") {
+        setRouteToast(`ℹ️ השליחה דולגה (${verdict.reason ?? "ללא סיבה"})`);
+      } else {
+        setRouteToast("✅ הודעת חדר מוכן נשלחה");
+      }
+      setTimeout(() => setRouteToast(null), 3500);
       setQuickOpen(false);
       await fetchSince();
     } catch (err) {
@@ -6907,7 +6946,13 @@ export default function WhatsAppInbox({
           </>
         )}
 
-        {routeToast && (
+        {/* P2 2026-08-05: the list-header banner below (routeToast site 2)
+            is hidden on mobile while a thread is open — this composer-area
+            pill is its mobile-in-thread equivalent. On desktop both panes
+            are visible at once, so this pill would double up with the header
+            banner; isMobile keeps them mutually exclusive instead of both
+            rendering the same message simultaneously. */}
+        {routeToast && isMobile && (
           <div style={{
             position: "absolute", bottom: "100%", insetInlineStart: 14, insetInlineEnd: 14,
             marginBottom: 6, background: "#1F2937", color: "white",

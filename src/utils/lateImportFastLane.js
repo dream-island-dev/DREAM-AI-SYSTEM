@@ -15,12 +15,13 @@ export function isLateImportFastLaneEligible(arrivalDate, now = new Date()) {
 }
 
 /** Physical presence or late import — sets arrival_confirmed without faking sent flags. */
-export function buildPhysicalPresenceArrivalConfirmPatch(guest, now = new Date()) {
+export function buildPhysicalPresenceArrivalConfirmPatch(guest, now = new Date(), source = "physical_checkin") {
   if (guest?.arrival_confirmed === true && guest?.arrival_confirmed_at) return null;
   const ts = now.toISOString();
   return {
     arrival_confirmed: true,
     arrival_confirmed_at: guest?.arrival_confirmed_at ?? ts,
+    arrival_confirmed_source: source,
   };
 }
 
@@ -28,5 +29,5 @@ export function buildLateImportFastLanePatch(guest, now = new Date()) {
   if (guest?.automation_scope === "muted" || guest?.automation_muted === true) return null;
   if (guest?.room_type === "day_guest" || guest?.room_type === "premium_day_guest") return null;
   if (!isLateImportFastLaneEligible(guest?.arrival_date, now)) return null;
-  return buildPhysicalPresenceArrivalConfirmPatch(guest, now);
+  return buildPhysicalPresenceArrivalConfirmPatch(guest, now, "late_import");
 }

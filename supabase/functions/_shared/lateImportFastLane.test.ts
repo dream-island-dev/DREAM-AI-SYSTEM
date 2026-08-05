@@ -24,6 +24,31 @@ Deno.test("buildLateImportFastLanePatch: suite guest today → arrival_confirmed
   assertEquals(typeof patch?.arrival_confirmed_at, "string");
 });
 
+Deno.test("buildLateImportFastLanePatch: tags arrival_confirmed_source='late_import' — P1 2026-08-05", () => {
+  const patch = buildLateImportFastLanePatch(
+    { arrival_date: "2026-08-05", room_type: "suite" },
+    new Date("2026-08-05T10:00:00+03:00"),
+  );
+  assertEquals(patch?.arrival_confirmed_source, "late_import");
+});
+
+Deno.test("buildPhysicalPresenceArrivalConfirmPatch: defaults to source='physical_checkin'", () => {
+  const patch = buildPhysicalPresenceArrivalConfirmPatch(
+    {},
+    new Date("2026-08-05T10:00:00+03:00"),
+  );
+  assertEquals(patch?.arrival_confirmed_source, "physical_checkin");
+});
+
+Deno.test("buildPhysicalPresenceArrivalConfirmPatch: honors an explicit source", () => {
+  const patch = buildPhysicalPresenceArrivalConfirmPatch(
+    {},
+    new Date("2026-08-05T10:00:00+03:00"),
+    "guest_reply",
+  );
+  assertEquals(patch?.arrival_confirmed_source, "guest_reply");
+});
+
 Deno.test("buildLateImportFastLanePatch: muted scope → no patch", () => {
   const patch = buildLateImportFastLanePatch(
     { arrival_date: "2026-08-05", automation_scope: "muted" },

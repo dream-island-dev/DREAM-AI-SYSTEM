@@ -10,6 +10,27 @@ import { isEffectiveSuiteGuest } from "./pipelineSegment";
 
 const STAFF_APP_ORIGIN = "https://dream-ai-system.vercel.app";
 
+/**
+ * Match whapi_outbound_jobs rows to the guests that were targeted, by phone —
+ * never by array index. Rows come back from Supabase in arbitrary DB order,
+ * not the UI's selection order, so index-matching could silently mark the
+ * wrong guest as "sent" and remove them from the list on a partial failure
+ * (P0 2026-08-05).
+ * @param {Array<{phone: string, status: string}>} rows
+ * @param {Array<{id: number, phone: string}>} targets
+ * @returns {Set<number>} guest ids whose job resolved to "sent"
+ */
+export function resolveSentGuestIds(rows, targets) {
+  const statusByPhone = new Map((rows ?? []).map((j) => [j.phone, j.status]));
+  const sentIds = new Set(
+    (targets ?? []).filter((g) => statusByPhone.get(g.phone) === "sent").map((g) => g.id),
+  );
+  if (rows?.length > 0 && rows.every((j) => j.status === "sent")) {
+    (targets ?? []).forEach((g) => sentIds.add(g.id));
+  }
+  return sentIds;
+}
+
 /** Open spa coordinator leads — upsell acceptance + portal/WA spa requests. */
 export const SPA_COORDINATOR_ALERT_TYPES = ["spa_upsell_accept", "spa_request"];
 
@@ -114,7 +135,13 @@ export async function fetchSpaCoordinatorLeads(supabase, opts = {}) {
 
   if (error) return { leads: [], error };
 
-  const leads = (data ?? []).filter((row) => row.guests);
+  // Zero Data Loss (P0 2026-08-05): a lead whose guest profile was since
+  // deleted/unlinked used to be filtered out here — invisible on this page
+  // AND excluded from RequestsBoard by design (spa leads live here only), so
+  // it was unreachable anywhere while still counting toward the pending
+  // badge. guest_alerts.phone/message survive independently of the join, so
+  // the row is still actionable — just flag it instead of dropping it.
+  const leads = (data ?? []).map((row) => (row.guests ? row : { ...row, guestMissing: true }));
   return { leads, error: null };
 }
 
@@ -278,12 +305,12 @@ export function resolvePastedRowAgainstGuests(row, matches, arrivalDate) {
 /**
  * Merge pasted phone/name rows with guest profiles for the hub's arrival date.
  * Phone lookup uses +972 / 972 variants (guestSegmentGuard parity).
- * @returns {{ merged: Array, notFound: Array, ineligible: Array, invalid: string[] }}
+ * @returns {{ merged: Array, notFound: Array, ineligible: Array, invalid: string[], duplicates: string[] }}
  */
 export async function mergePastedSpaUpsellContacts(supabase, pasteText, arrivalDate) {
-  const { rows, invalid } = parseWaiterPulsePaste(pasteText);
+  const { rows, invalid, duplicates } = parseWaiterPulsePaste(pasteText);
   if (!rows.length) {
-    return { merged: [], notFound: [], ineligible: [], invalid };
+    return { merged: [], notFound: [], ineligible: [], invalid, duplicates };
   }
 
   const queryPhones = new Set();
@@ -315,7 +342,7 @@ export async function mergePastedSpaUpsellContacts(supabase, pasteText, arrivalD
     else ineligible.push({ ...resolved.item, reason: resolved.reason });
   }
 
-  return { merged, notFound, ineligible, invalid };
+  return { merged, notFound, ineligible, invalid, duplicates };
 }
 
 const SPA_UPSELL_STAGE_KEY = "spa_upsell_daypass";

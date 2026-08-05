@@ -24,6 +24,15 @@ describe("parseWaiterPulsePaste", () => {
     expect(rows).toHaveLength(0);
     expect(invalid).toHaveLength(2);
   });
+
+  test("surfaces dropped duplicate lines instead of silently discarding them — P0 2026-08-05", () => {
+    const { rows, duplicates } = parseWaiterPulsePaste(
+      "דנה: +972501234567\nדנה שוב: +972-50-123-4567",
+    );
+    expect(rows).toHaveLength(1);
+    expect(duplicates).toHaveLength(1);
+    expect(duplicates[0]).toContain("דנה שוב");
+  });
 });
 
 describe("personalizeWaiterPulseInvite", () => {

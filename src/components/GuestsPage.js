@@ -3,11 +3,11 @@
 // Manager can flip a guest to "Room Ready" → fires WhatsApp Trigger 3
 // (suites) immediately via the whatsapp-send edge function.
 import { useState, useEffect, useCallback, useRef } from "react";
-import { usePageVisibility } from "../hooks/usePageVisibility";
+import { useIntervalWhenVisible } from "../hooks/usePageVisibility";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { Toast, useToast } from "./Toast";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
-import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict, israelTodayStr } from "../utils/guestTiming";
+import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict, describeArrivalConfirmedSource, israelTodayStr } from "../utils/guestTiming";
 import { loadCheckinFilter } from "../utils/checkinFilterStorage";
 import {
   fetchCheckinGuestsForScope,
@@ -139,7 +139,12 @@ export default function GuestsPage({
       return rows;
     }
 
-    const hkEvents = await fetchHousekeepingCheckInsForDate(supabase, israelTodayStr());
+    const { rows: hkEvents, error: hkFetchError } = await fetchHousekeepingCheckInsForDate(supabase, israelTodayStr());
+    if (hkFetchError) {
+      // FAIL VISIBLE (P0 2026-08-05): a fetch failure must never look like "no
+      // signals today" — the ✅/⚠️ chips below would otherwise silently go stale.
+      showToast("err", "⚠ סנכרון קבוצת ניקיון נכשל — צ'יפים עשויים להיות לא מעודכנים");
+    }
     const hkByRoom = indexHousekeepingCheckInsByRoom(hkEvents);
     setHkSyncByGuestId(buildHousekeepingSyncMap(rows, suiteMap, hkByRoom));
 
@@ -179,7 +184,12 @@ export default function GuestsPage({
       showToast("err", "שגיאה: " + guestsRes.error.message);
     } else {
       const rows = guestsRes.data ?? [];
-      const suiteMap = await fetchSuiteRoomsForGuestIds(supabase, rows);
+      const { map: suiteMap, error: suiteRoomsError } = await fetchSuiteRoomsForGuestIds(supabase, rows);
+      if (suiteRoomsError) {
+        // FAIL VISIBLE (P0 2026-08-05): don't let a failed suite_rooms fetch
+        // silently render as "this suite has no extra rooms".
+        showToast("err", "⚠ טעינת נתוני חדרים נכשלה — ייתכן שחלק מהחדרים חסרים בתצוגה");
+      }
       const syncedRows = await applyHousekeepingGroupSync(rows, suiteMap, { silent: !showSpinner });
       setGuests(syncedRows);
       setSuiteRoomsByGuestId(suiteMap);
@@ -267,13 +277,12 @@ export default function GuestsPage({
     };
   }, [fetchGuestsSilent]);
 
-  const pageVisible = usePageVisibility();
-  useEffect(() => {
-    if (!pageVisible) return undefined;
-    fetchGuestsSilent();
-    const id = setInterval(() => { fetchGuestsSilent(); }, 60_000);
-    return () => clearInterval(id);
-  }, [fetchGuestsSilent, pageVisible]);
+  // P2 2026-08-05: was a hand-rolled duplicate of useIntervalWhenVisible's
+  // exact logic (pageVisible() + immediate call + setInterval) sitting right
+  // next to the realtime effect's own separate hand-rolled visibility
+  // tracking — two visibility systems in one file. This is now the one
+  // ready-made hook instead of a third copy.
+  useIntervalWhenVisible(fetchGuestsSilent, 60_000, [fetchGuestsSilent]);
 
   const getGuestSuiteRooms = (guest) => suiteRoomsByGuestId[guest?.id] ?? [];
 
@@ -657,6 +666,10 @@ export default function GuestsPage({
   };
 
   const handleGuestSaved = (saved) => {
+    // P2 2026-08-05: without this, a realtime echo of the save could race the
+    // optimistic local patch below and overwrite it with a stale read
+    // (GuestDashboard.js added the same guard for the same reason).
+    suppressRealtimeRefresh();
     setGuests((prev) => {
       const exists = prev.some((g) => g.id === saved.id);
       return exists
@@ -807,21 +820,24 @@ export default function GuestsPage({
           🛎️ צ'ק-אין
         </button>
       )}
-      {g.arrival_confirmed && (
-        <button
-          className="btn btn-sm"
-          disabled={paymentBusy === g.id || busy === g.id}
-          onClick={() => handleSendPaymentTemplate(g)}
-          title={(g.direct_payment_url || g.payment_link_url) ? "שלח תבנית תשלום + סדנאות" : "הגדר קישור תשלום לפני שליחה"}
-          style={{
-            background: (g.direct_payment_url || g.payment_link_url) ? "#1B3A32" : "#FFF5E8",
-            color:      (g.direct_payment_url || g.payment_link_url) ? "#fff"    : "#B5600A",
-            fontWeight: 700,
-          }}
-        >
-          {paymentBusy === g.id ? "⏳" : "💳 תשלום"}
-        </button>
-      )}
+      <button
+        className="btn btn-sm"
+        disabled={!g.arrival_confirmed || paymentBusy === g.id || busy === g.id}
+        onClick={() => handleSendPaymentTemplate(g)}
+        title={
+          !g.arrival_confirmed
+            ? "האורח עדיין לא אישר הגעה — לא ניתן לשלוח תבנית תשלום"
+            : (g.direct_payment_url || g.payment_link_url) ? "שלח תבנית תשלום + סדנאות" : "הגדר קישור תשלום לפני שליחה"
+        }
+        style={{
+          background: !g.arrival_confirmed ? "#F5F5F5" : (g.direct_payment_url || g.payment_link_url) ? "#1B3A32" : "#FFF5E8",
+          color:      !g.arrival_confirmed ? "#AAAAAA" : (g.direct_payment_url || g.payment_link_url) ? "#fff"    : "#B5600A",
+          cursor:     !g.arrival_confirmed ? "not-allowed" : "pointer",
+          fontWeight: 700,
+        }}
+      >
+        {paymentBusy === g.id ? "⏳" : "💳 תשלום"}
+      </button>
       {busy === g.id && (
         <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>⏳</span>
       )}
@@ -1112,7 +1128,7 @@ export default function GuestsPage({
             ? "אין הגעות מתוכננות למחר — בדוק ב«7 ימים קרובים» או ייבא הגעות."
             : timelineScope === CHECKIN_TIMELINE_WEEK7
             ? "אין הגעות מתוכננות ב-7 הימים הקרובים."
-            : "אין אורחים פעילים להיום — ייבא הגעות דרך \"תפעול ואחזקה\" או הוסף אורח ידנית."}
+            : "אין אורחים פעילים להיום — ייבא הגעות דרך \"סנכרון נתונים\" או הוסף אורח ידנית."}
         </div>
       ) : (
         <div className="card" style={{ overflow: "hidden", padding: 0 }}>
@@ -1178,7 +1194,10 @@ export default function GuestsPage({
                           {g.name}
                         </span>
                         {g.arrival_confirmed && (
-                          <span style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר</span>
+                          <span title={describeArrivalConfirmedSource(g.arrival_confirmed_source)} style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר</span>
+                        )}
+                        {g.automation_muted && (
+                          <span title="אוטומציה מושתקת — הבוט לא ישלח הודעות אוטומטיות לאורח זה. לחץ ✏️ לביטול." style={{ fontSize: 10, marginRight: 6, background: "#F3F4F6", color: "#6B7280", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>🔇 מושתק</span>
                         )}
                         <GuestAttentionBadge
                           guest={g}
@@ -1296,7 +1315,10 @@ export default function GuestsPage({
                           {g.name}
                         </span>
                         {g.arrival_confirmed && (
-                          <span style={{ fontSize: 10, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700 }}>✓ אישר</span>
+                          <span title={describeArrivalConfirmedSource(g.arrival_confirmed_source)} style={{ fontSize: 10, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700 }}>✓ אישר</span>
+                        )}
+                        {g.automation_muted && (
+                          <span title="אוטומציה מושתקת — הבוט לא ישלח הודעות אוטומטיות לאורח זה." style={{ fontSize: 10, background: "#F3F4F6", color: "#6B7280", padding: "2px 6px", borderRadius: 8, fontWeight: 700 }}>🔇 מושתק</span>
                         )}
                         {renderGuestStatusBadge(g, sm, rowStatus)}
                         {renderHousekeepingSyncChip(g, rowStatus)}
@@ -1323,7 +1345,27 @@ export default function GuestsPage({
                     </div>
                     <div>
                       <dt>סוג</dt>
-                      <dd>{isSuite(g) ? "👑 סוויטה" : "סטנדרט"}</dd>
+                      <dd>
+                        {isSuite(g) ? "👑 סוויטה" : "סטנדרט"}
+                        {hasSuiteRoomTypeConflict(g) && (
+                          <span
+                            className="badge badge-orange"
+                            title="סתירת סיווג: החדר הוא סוויטה אך סוג האורח מסומן יום-כיף — האוטומציה מנתבת כסוויטה. לחץ ✏️ ותקן את סוג החדר."
+                            style={{ marginRight: 6, whiteSpace: "nowrap", display: "inline-block" }}
+                          >
+                            ⚠ סתירת סיווג
+                          </span>
+                        )}
+                        {hasPremiumDayRoomTypeConflict(g) && (
+                          <span
+                            className="badge badge-orange"
+                            title="סתירת סיווג: חבילת Premium Day אך סוג האורח מסומן סוויטה — האוטומציה מנתבת כיום-כיף. לחץ ✏️ ותקן את סוג החדר."
+                            style={{ marginRight: 6, whiteSpace: "nowrap", display: "inline-block" }}
+                          >
+                            ⚠ פרימיום דיי
+                          </span>
+                        )}
+                      </dd>
                     </div>
                     <div>
                       <dt>הגעה</dt>

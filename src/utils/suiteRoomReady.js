@@ -62,24 +62,35 @@ export function groupSuiteRoomsByGuestId(rows) {
   return map;
 }
 
+/**
+ * FAIL VISIBLE (P0 2026-08-05): returns { map, error } instead of a bare map —
+ * a bare map on query failure is indistinguishable from "no rooms found", so
+ * a multi-room suite could silently collapse to a single-room / no-room card
+ * with no signal to staff that the fetch itself failed.
+ * @returns {Promise<{ map: object, error: string|null }>}
+ */
 export async function fetchSuiteRoomsForGuestIds(supabase, guestsOrIds) {
-  if (!supabase || !guestsOrIds?.length) return {};
+  if (!supabase || !guestsOrIds?.length) return { map: {}, error: null };
 
   const guests = guestsOrIds.map((item) => (
     typeof item === "object" && item !== null ? item : { id: item }
   ));
   const ids = [...new Set(guests.map((g) => Number(g.id)).filter(Boolean))];
   const map = {};
+  let error = null;
 
   if (ids.length) {
-    const { data, error } = await supabase
+    const { data, error: fetchError } = await supabase
       .from("suite_rooms")
       .select(
         "id, guest_id, res_line_id, order_number, room_name, suite_type, room_display, adults, nights, arrival_date, room_ready_notified, msg_room_ready_sent, is_day_guest",
       )
       .in("guest_id", ids)
       .order("res_line_id", { ascending: true });
-    if (error) console.warn("[fetchSuiteRoomsForGuestIds]", error.message);
+    if (fetchError) {
+      console.warn("[fetchSuiteRoomsForGuestIds]", fetchError.message);
+      error = fetchError.message;
+    }
     Object.assign(map, groupSuiteRoomsByGuestId(data ?? []));
   }
 
@@ -89,7 +100,7 @@ export async function fetchSuiteRoomsForGuestIds(supabase, guestsOrIds) {
     if (rows.length) map[guest.id] = rows;
   }));
 
-  return map;
+  return { map, error };
 }
 
 export async function sendGuestRoomReadyMessage(supabase, { guestId, roomLabel }) {

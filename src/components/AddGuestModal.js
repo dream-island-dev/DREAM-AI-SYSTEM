@@ -283,7 +283,12 @@ export default function AddGuestModal({
         showToast?.("err", `אורח נשמר — סנכרון suite_rooms נכשל: ${syncResult.error}`);
       }
       const suiteRows = roomLabels.map((label) => ({ room_display: label }));
-      const hooks = await runGuestImportPipelineHooks(supabase, savedGuest, suiteRows);
+      // allowLateImportFastLane: only a brand-new profile counts as a genuine
+      // "late import" — a routine edit of an existing guest must never fake
+      // arrival_confirmed for someone who hasn't actually replied (P0 2026-08-05 fix).
+      const hooks = await runGuestImportPipelineHooks(supabase, savedGuest, suiteRows, {
+        allowLateImportFastLane: !isEdit,
+      });
       if (syncResult.ok) {
         const hookBits = [];
         if (hooks.lateImportApplied) hookBits.push("אישור הגעה אוטומטי");

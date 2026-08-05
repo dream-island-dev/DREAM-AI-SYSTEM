@@ -2035,6 +2035,12 @@ export default function App({ initialPage = "dashboard" }) {
   const isAdmin      = isAdminUser(user);
   const isSuperAdminUser = isSuperAdmin(user);
 
+  // P1 2026-08-05: guardPage used to bounce silently — a user landing on a
+  // page they can't access (stale deep link, mobile nav bypassing role
+  // filtering) got kicked back to dashboard with zero explanation, which
+  // read as "the app just did something for no reason."
+  const [accessDeniedNotice, setAccessDeniedNotice] = useState(null);
+
   /** Redirect users without the required role back to dashboard.
    *  Checks the DB role first, then falls back to email-based detection so
    *  that admin emails (isAdmin / isSuperAdminUser) are never locked out even
@@ -2042,6 +2048,8 @@ export default function App({ initialPage = "dashboard" }) {
   const guardPage = useCallback((routeId, component) => {
     if (!user) return null;
     if (canAccessRoute(routeId, user)) return component;
+    setAccessDeniedNotice("אין לך הרשאה לעמוד הזה — הועברת לדאשבורד");
+    setTimeout(() => setAccessDeniedNotice(null), 3500);
     setTimeout(() => setActivePage("dashboard"), 0);
     return null;
   }, [user]);
@@ -2614,18 +2622,36 @@ export default function App({ initialPage = "dashboard" }) {
     }
   };
 
-  const mobileNav = [
-    { id: "dashboard",  icon: "📊", label: "ראשי" },
-    { id: "shifts",     icon: "🕐", label: "משמרות" },
-    { id: "ops_board",  icon: "🛠️", label: "תפעול" },
-    { id: "vip_guests", icon: "🏨", label: "סוויטות" },
-    { id: "agent",      icon: "📦", label: "מלאי" },
-  ];
+  // P1 2026-08-05: this used to be a hardcoded array bypassing role filtering
+  // entirely (a restricted-role user tapping vip_guests hit guardPage's silent
+  // bounce), had its own label for vip_guests ("סוויטות") that didn't match
+  // the sidebar/palette's "ניהול אורחים" for the same route, and left the two
+  // heaviest reception screens (wa_inbox, guests) off the bar. Now derived
+  // from the same ALL_NAV_ITEMS + canSeeNavItem/filterNavItemsForUser the
+  // Sidebar and command palette already use — one source of truth, one label.
+  const MOBILE_NAV_IDS = ["dashboard", "wa_inbox", "guests", "vip_guests", "ops_board"];
+  const mobileNav = filterNavItemsForUser(
+    MOBILE_NAV_IDS
+      .map((id) => ALL_NAV_ITEMS.find((item) => item.id === id))
+      .filter((item) => item && canSeeNavItem(item, user)),
+    user,
+  );
 
   return (
     <>
       <style>{css}</style>
       <div className="app">
+        {accessDeniedNotice && (
+          <div style={{
+            position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)",
+            zIndex: 20000, background: "#FFF0EE", border: "1px solid #C0392B",
+            color: "#C0392B", borderRadius: 10, padding: "10px 18px",
+            fontSize: 13, fontWeight: 700, boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
+            direction: "rtl",
+          }}>
+            ⚠ {accessDeniedNotice}
+          </div>
+        )}
         <div className="layout">
           <Sidebar
             user={user}

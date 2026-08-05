@@ -26,7 +26,14 @@ function SpaActivitiesSyncSection() {
   const [selectedDate, setSelectedDate] = useState(todayYmd());
   const [toast, setToast] = useState(null);
 
-  const showToast = (msg, type = "ok") => { setToast({ msg, type }); setTimeout(() => setToast(null), 4000); };
+  // P1 2026-08-05: error toasts (often a per-line batch-failure list) used to
+  // render inline at the top of the page and auto-dismiss in 4s — invisible
+  // once staff scrolled down to the import panel below. Errors now stay fixed
+  // on screen and don't auto-dismiss until acknowledged.
+  const showToast = (msg, type = "ok") => {
+    setToast({ msg, type });
+    if (type !== "err") setTimeout(() => setToast(null), 4000);
+  };
 
   function handleImportDone(summary) {
     const parts = [];
@@ -56,14 +63,35 @@ function SpaActivitiesSyncSection() {
         <label style={{ fontSize: 13, fontWeight: 700, color: "var(--gold-light)" }}>תאריך:</label>
         <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
       </div>
-      {toast && (
+      {toast && toast.type !== "err" && (
         <div style={{
           borderRadius: 10, padding: "10px 16px", marginBottom: 12, fontWeight: 700, fontSize: 13,
-          background: toast.type === "err" ? "#FCEBEB" : "#EAF3DE",
-          color: toast.type === "err" ? "#A32D2D" : "#3B6D11",
-          border: `1px solid ${toast.type === "err" ? "#E24B4A" : "#639922"}`,
+          background: "#EAF3DE", color: "#3B6D11", border: "1px solid #639922",
         }}>
           {toast.msg}
+        </div>
+      )}
+      {toast && toast.type === "err" && (
+        <div style={{
+          position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
+          zIndex: 12000, maxWidth: "min(680px, 92vw)", maxHeight: "40vh", overflowY: "auto",
+          borderRadius: 12, padding: "14px 18px", fontWeight: 700, fontSize: 13,
+          background: "#FCEBEB", color: "#A32D2D", border: "1px solid #E24B4A",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.3)", direction: "rtl",
+          display: "flex", alignItems: "flex-start", gap: 10,
+        }}>
+          <div style={{ flex: 1, whiteSpace: "pre-wrap" }}>{toast.msg}</div>
+          <button
+            type="button"
+            onClick={() => setToast(null)}
+            style={{
+              flexShrink: 0, background: "none", border: "none", color: "#A32D2D",
+              fontWeight: 800, fontSize: 16, cursor: "pointer", padding: 0, lineHeight: 1,
+            }}
+            aria-label="סגור"
+          >
+            ✕
+          </button>
         </div>
       )}
       <ActivitiesImportZone
@@ -81,9 +109,21 @@ export default function DataSyncPage() {
   const [spaUpsellRefreshKey, setSpaUpsellRefreshKey] = useState(0);
   const [toast, setToast] = useState(null);
 
+  // P1 2026-08-05: error toasts (often a per-line batch-failure list from
+  // EzgoMailSyncPanel) used to render inline at the top of the page and
+  // auto-dismiss in 4.5s — invisible once staff scrolled down. Errors now
+  // stay fixed on screen and don't auto-dismiss until acknowledged.
+  //
+  // P2 2026-08-05: argument order here is (msg, type) — the OPPOSITE of the
+  // shared useToast hook's (type, msg). This is intentional/established
+  // throughout this page's whole subtree (ArrivalImportPanel, SmartPastePanel,
+  // EzgoMailSyncPanel, SuiteRoomTypeBulkFixPanel all call it this way) — only
+  // SpaUpsellHub uses the shared hook internally and bridges with an explicit
+  // flip. Don't "fix" one call site to match useToast's order without
+  // updating this whole subtree — that would silently swap msg/type instead.
   const showToast = (msg, type = "ok") => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 4500);
+    if (type !== "err") setTimeout(() => setToast(null), 4500);
   };
 
   const goToSpaUpsell = (dateYmd) => {
@@ -146,14 +186,35 @@ export default function DataSyncPage() {
         ))}
       </div>
 
-      {toast && (
+      {toast && toast.type !== "err" && (
         <div style={{
           borderRadius: 10, padding: "10px 16px", marginBottom: 14, fontWeight: 700, fontSize: 13,
-          background: toast.type === "err" ? "#FCEBEB" : "#EAF3DE",
-          color: toast.type === "err" ? "#A32D2D" : "#3B6D11",
-          border: `1px solid ${toast.type === "err" ? "#E24B4A" : "#639922"}`,
+          background: "#EAF3DE", color: "#3B6D11", border: "1px solid #639922",
         }}>
           {toast.msg}
+        </div>
+      )}
+      {toast && toast.type === "err" && (
+        <div style={{
+          position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
+          zIndex: 12000, maxWidth: "min(680px, 92vw)", maxHeight: "40vh", overflowY: "auto",
+          borderRadius: 12, padding: "14px 18px", fontWeight: 700, fontSize: 13,
+          background: "#FCEBEB", color: "#A32D2D", border: "1px solid #E24B4A",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.3)", direction: "rtl",
+          display: "flex", alignItems: "flex-start", gap: 10,
+        }}>
+          <div style={{ flex: 1, whiteSpace: "pre-wrap" }}>{toast.msg}</div>
+          <button
+            type="button"
+            onClick={() => setToast(null)}
+            style={{
+              flexShrink: 0, background: "none", border: "none", color: "#A32D2D",
+              fontWeight: 800, fontSize: 16, cursor: "pointer", padding: 0, lineHeight: 1,
+            }}
+            aria-label="סגור"
+          >
+            ✕
+          </button>
         </div>
       )}
 

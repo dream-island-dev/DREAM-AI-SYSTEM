@@ -320,6 +320,14 @@ type ExtractedRow = {
   nights: number | null;
   arrivalDate: string | null;
   groupId: number;
+  /** Same coordinator name duplicated 2+ times in this import — occupant identity
+   * was resolved from the remark, not the לקוח column (parity with the HTML mail
+   * path's is_remark_group_occupant, P0 2026-08-05: without this flag,
+   * shouldMergeDoc2RowOntoGuest/isSameDoc2Booking fall through to the looser
+   * order-number-only match and can still pile every room onto one profile). */
+  isGroupOccupant: boolean;
+  coordName: string | null;
+  coordPhone: string | null;
 };
 
 function extractSuiteRow(
@@ -390,6 +398,9 @@ function extractSuiteRow(
     nights,
     arrivalDate,
     groupId,
+    isGroupOccupant: coordNameDuplicated,
+    coordName,
+    coordPhone,
   };
 }
 
@@ -435,6 +446,9 @@ function extractedToDoc2Record(extracted: ExtractedRow): Doc2Record {
     departure_missing_nights,
     is_day_guest,
     is_premium_day,
+    is_remark_group_occupant: extracted.isGroupOccupant,
+    coord_name: extracted.coordName,
+    coord_phone: extracted.coordPhone,
   };
 }
 

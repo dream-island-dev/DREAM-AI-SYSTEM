@@ -14,11 +14,14 @@ const PHONE_IN_LINE_RE = /(\+?\d[\d\s\-().]{7,}\d)/;
 
 /**
  * Parse pasted lines: "Name: +972…", "Name +972…", or bare phone per line.
- * @returns {{ rows: Array<{name: string, phone: string}>, invalid: string[] }}
+ * @returns {{ rows: Array<{name: string, phone: string}>, invalid: string[], duplicates: string[] }}
  */
 export function parseWaiterPulsePaste(text) {
   const rows = [];
   const invalid = [];
+  // Zero Data Loss: a repeated phone must still be visible somewhere, never
+  // just vanish from the paste with no trace (P0 2026-08-05).
+  const duplicates = [];
   const seen = new Set();
 
   for (const rawLine of String(text ?? "").split(/\r?\n/)) {
@@ -36,7 +39,10 @@ export function parseWaiterPulsePaste(text) {
       invalid.push(line);
       continue;
     }
-    if (seen.has(phone)) continue;
+    if (seen.has(phone)) {
+      duplicates.push(line);
+      continue;
+    }
     seen.add(phone);
 
     let name = line.slice(0, phoneMatch.index).trim();
@@ -44,7 +50,7 @@ export function parseWaiterPulsePaste(text) {
     rows.push({ name, phone });
   }
 
-  return { rows, invalid };
+  return { rows, invalid, duplicates };
 }
 
 /** Replace {{שם}} / {{קישור}} — unnamed contacts get greeting without a name token. */

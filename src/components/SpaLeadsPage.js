@@ -143,6 +143,16 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
     return leads.filter((l) => l.guests?.arrival_date === activeArrivalYmd);
   }, [leads, activeArrivalYmd]);
 
+  // FAIL VISIBLE (P0 2026-08-05): the header banner used to show an all-dates
+  // count while the list below defaulted to today-only — "5 ממתינים" next to
+  // "אין ממתינים כרגע" was a live contradiction. The banner now always counts
+  // exactly what's visible below it; the separate all-dates count (pendingCount,
+  // still fetched for context) only appears as a secondary note when it differs.
+  const visiblePendingCount = useMemo(
+    () => filteredLeads.filter((l) => !l.resolved).length,
+    [filteredLeads],
+  );
+
   const groupedByArrival = useMemo(() => {
     const map = new Map();
     for (const lead of filteredLeads) {
@@ -304,9 +314,21 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
           borderRadius: 12,
           padding: "10px 18px",
         }}>
-          <span style={{ fontSize: 32, fontWeight: 800, lineHeight: 1 }}>{pendingCount}</span>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>ממתינים לטיפול</span>
+          <span style={{ fontSize: 32, fontWeight: 800, lineHeight: 1 }}>{visiblePendingCount}</span>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>ממתינים לטיפול{activeArrivalYmd ? ` (${fmtArrivalDate(activeArrivalYmd)})` : ""}</span>
         </div>
+        {statusFilter !== STATUS_DONE && pendingCount > visiblePendingCount && (
+          <div style={{ fontSize: 12, opacity: 0.85, marginTop: 8 }}>
+            {pendingCount} ממתינים בסך הכל בכל התאריכים —{" "}
+            <button
+              type="button"
+              onClick={() => { setDateFilter(FILTER_ALL); setStatusFilter(STATUS_PENDING); }}
+              style={{ background: "none", border: "none", color: "#fff", textDecoration: "underline", cursor: "pointer", padding: 0, fontSize: 12, fontWeight: 700 }}
+            >
+              הצג הכל
+            </button>
+          </div>
+        )}
       </div>
 
       <div style={{
@@ -523,6 +545,17 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                         >
                           {leadTypeLabel(lead.alert_type)}
                         </span>
+                        {lead.guestMissing && (
+                          <span
+                            title="פרופיל האורח נמחק/לא מקושר — הליד עדיין תקף, נותרו רק טלפון והודעה מקוריים"
+                            style={{
+                              fontSize: 11, fontWeight: 800, color: "#C0392B",
+                              background: "#FFF0EE", padding: "3px 10px", borderRadius: 8,
+                            }}
+                          >
+                            ⚠ פרופיל לא נמצא
+                          </span>
+                        )}
                         {leadCohortLabel(lead.guests) ? (
                           <span style={{
                             fontSize: 11, fontWeight: 800, color: "#1E40AF",

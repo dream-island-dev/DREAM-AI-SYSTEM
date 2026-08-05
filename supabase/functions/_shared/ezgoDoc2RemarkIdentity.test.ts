@@ -49,6 +49,33 @@ Deno.test("resolveDoc2GuestIdentity: dual-occupant remark still resolves to occu
   assertEquals(identity.phone, "+972503302020");
 });
 
+Deno.test("resolveDoc2GuestIdentity: remark has a phone but no parseable name → prefers remarkPhones[0] over a valid coordPhone — QA regression lock-in 2026-08-05", () => {
+  // Branch-order regression guard: remarkPhones.length>0 is checked before the
+  // coordPhone-valid branch. A remark that's just a bare phone (no name text
+  // in front of it) has remarkPhones non-empty but remarkName null — this
+  // must resolve to the remark's phone, with the name falling back to
+  // coordName, NOT fall through to coordPhone.
+  const identity = resolveDoc2GuestIdentity(
+    "בנק לאומי ועד תיכון",
+    "0502005820",
+    "050-3302020",
+    true,
+  );
+  assertEquals(identity.guest_name, "בנק לאומי ועד תיכון");
+  assertEquals(identity.phone, "+972503302020");
+});
+
+Deno.test("resolveDoc2GuestIdentity: no remark phone at all → falls back to coordPhone (passed through as given, no normalization inside this function)", () => {
+  const identity = resolveDoc2GuestIdentity(
+    "בנק לאומי ועד תיכון",
+    "0502005820",
+    "נילי הללי",
+    true,
+  );
+  assertEquals(identity.guest_name, "נילי הללי");
+  assertEquals(identity.phone, "0502005820");
+});
+
 Deno.test("duplicateCoordNameKeys: flags names appearing 2+ times", () => {
   const dupes = duplicateCoordNameKeys(["בנק לאומי", "בנק לאומי", "יחיד"]);
   assertEquals(dupes.has("בנק לאומי"), true);
@@ -63,11 +90,11 @@ Deno.test("extractNameFromRemarkWithoutPhone: name-only remark", () => {
 Deno.test("buildDoc2RemarkGuestNotes: extra phone + coordinator line", () => {
   const notes = buildDoc2RemarkGuestNotes(
     "דוד כהן 052-1111111 / 054-9998888",
-    "איליה קורנייקו",
-    "+972542302310",
+    "ישראל ישראלי",
+    "+972500000000",
     "דוד כהן",
     "+972521111111",
   );
   assertEquals(notes?.includes("טלפון נוסף"), true);
-  assertEquals(notes?.includes("רכז/ה הזמנה: איליה קורנייקו"), true);
+  assertEquals(notes?.includes("רכז/ה הזמנה: ישראל ישראלי"), true);
 });

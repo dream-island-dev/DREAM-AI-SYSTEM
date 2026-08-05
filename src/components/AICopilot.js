@@ -15,6 +15,7 @@ import {
 } from "../utils/suiteCheckinSync";
 import { guestRoomMatchesSuiteId } from "../data/suiteRegistry";
 import { isApprovalGateStale, formatWaReadySource } from "../utils/roomApprovalGate";
+import { classifyRoomReadySendResult } from "../utils/suiteRoomReady";
 
 const FAB = 56;                  // bell diameter (px) — used for drag clamping
 const MARGIN = 8;                // min inset from viewport edges while dragging
@@ -314,21 +315,25 @@ export default function AICopilot({ user }) {
         if (!ensureCanSend()) {
           throw new Error("שליחה חסומה בשעות שקט — סמן את האישור למטה");
         }
-        const { data, error: waError } = await supabase.functions.invoke("whatsapp-send", {
+        const result = await supabase.functions.invoke("whatsapp-send", {
           body: { trigger: "room_ready", guestId: guest.id, roomId: alert.room_id },
         });
-        if (waError) {
-          throw new Error(`שליחת WhatsApp נכשלה (${waError.message}) — הסטטוס לא עודכן, אפשר לנסות שוב`);
+        // Shared classifier (P0 2026-08-05): the raw branch set here had no
+        // status==="timeout" case, so a Whapi timeout fell through every `if`
+        // and the final toast below read as a plain "✓ הודעה נשלחה" — a false
+        // positive when it's genuinely uncertain whether the guest got it.
+        const verdict = classifyRoomReadySendResult(result);
+        if (!verdict.ok) {
+          throw new Error(`שליחת WhatsApp נכשלה (${verdict.reason}) — הסטטוס לא עודכן, אפשר לנסות שוב`);
         }
-        if (data?.ok === false) {
-          throw new Error(`שליחת WhatsApp נכשלה (${data.error ?? "שגיאה לא ידועה"}) — הסטטוס לא עודכן, אפשר לנסות שוב`);
-        }
-        if (data?.skipped && data?.reason === "room_ready_notified") {
-          waSkipNote = "ההודעה כבר נשלחה קודם";
-        } else if (data?.skipped && data?.status === "duplicate_blocked") {
+        if (verdict.kind === "timeout") {
+          waSkipNote = "לא ודאי אם ההודעה הגיעה — בדקו בוואטסאפ לפני שליחה חוזרת";
+        } else if (verdict.kind === "duplicate") {
           waSkipNote = "נחסם כפול — ההודעה כבר נשלחה לאורח בעבר";
-        } else if (data?.skipped) {
-          waSkipNote = `השליחה דולגה (${data.reason ?? "ללא סיבה"})`;
+        } else if (verdict.kind === "skipped" && verdict.reason === "room_ready_notified") {
+          waSkipNote = "ההודעה כבר נשלחה קודם";
+        } else if (verdict.kind === "skipped") {
+          waSkipNote = `השליחה דולגה (${verdict.reason ?? "ללא סיבה"})`;
         }
       }
 

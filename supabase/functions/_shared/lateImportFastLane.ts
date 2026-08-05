@@ -31,18 +31,22 @@ export function isLateImportFastLaneEligible(
  * Physical presence (HK group / manual check-in) or late import = arrival confirmed.
  * Never fakes msg_pre_arrival_* sent flags — only unblocks Stage 2+ eligibility.
  */
+export type ArrivalConfirmedSource = "guest_reply" | "physical_checkin" | "late_import";
+
 export function buildPhysicalPresenceArrivalConfirmPatch(
   guest: {
     arrival_confirmed?: boolean | null;
     arrival_confirmed_at?: string | null;
   },
   now: Date = new Date(),
+  source: ArrivalConfirmedSource = "physical_checkin",
 ): Record<string, unknown> | null {
   if (guest.arrival_confirmed === true && guest.arrival_confirmed_at) return null;
   const ts = now.toISOString();
   return {
     arrival_confirmed: true,
     arrival_confirmed_at: guest.arrival_confirmed_at ?? ts,
+    arrival_confirmed_source: source,
   };
 }
 
@@ -60,5 +64,5 @@ export function buildLateImportFastLanePatch(
   if (guest.automation_scope === "muted" || guest.automation_muted === true) return null;
   if (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest") return null;
   if (!isLateImportFastLaneEligible(guest.arrival_date, now)) return null;
-  return buildPhysicalPresenceArrivalConfirmPatch(guest, now);
+  return buildPhysicalPresenceArrivalConfirmPatch(guest, now, "late_import");
 }

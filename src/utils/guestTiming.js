@@ -100,6 +100,19 @@ export function hasPremiumDayRoomTypeConflict({ room_type, room } = {}) {
   return room_type !== "day_guest" && room_type !== "premium_day_guest";
 }
 
+const ARRIVAL_CONFIRMED_SOURCE_LABELS = {
+  guest_reply: "✓ אישר הגעה — האורח ענה בוואטסאפ",
+  physical_checkin: "✓ אישר הגעה — סומן אוטומטית בצ'ק-אין פיזי (לא אישור מפורש מהאורח)",
+  late_import: "✓ אישר הגעה — סומן אוטומטית בייבוא הגעה קרובה (לא אישור מפורש מהאורח)",
+};
+
+/** P1 2026-08-05: arrival_confirmed means 3 different things — this gives the
+ * ✓ אישר badge a title so staff can tell whether the guest actually replied. */
+export function describeArrivalConfirmedSource(source) {
+  return ARRIVAL_CONFIRMED_SOURCE_LABELS[source]
+    ?? "✓ אישר הגעה — מקור לא ידוע (נתון מלפני מעקב המקור)";
+}
+
 /**
  * Inbound message alert class for WhatsAppInbox sounds.
  * @returns {"suite"|"off_resort"|null}

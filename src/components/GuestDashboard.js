@@ -24,6 +24,7 @@ import QuietHoursGate from "./QuietHoursGate";
 import CheckinTimelineFilterBar from "./CheckinTimelineFilterBar";
 import { STATUS_META } from "../utils/guestStatusMeta";
 import {
+  describeArrivalConfirmedSource,
   hasSuiteRoomTypeConflict,
   israelDateOffsetStr,
   israelTodayStr,
@@ -41,11 +42,12 @@ import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 import GuestOutboundModal from "./GuestOutboundModal";
 import GuestWhapiQuickTestPanel from "./GuestWhapiQuickTestPanel";
 import { sendGuestRoomReadyMessage, classifyRoomReadySendResult } from "../utils/suiteRoomReady";
+import { isEffectiveSuiteGuest } from "../utils/pipelineSegment";
 
 const GUEST_DASHBOARD_SELECT =
   "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
   "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent, " +
-  "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, wa_window_expires_at, spa_time, spa_date, " +
+  "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, arrival_confirmed_source, wa_window_expires_at, spa_time, spa_date, " +
   "meal_time, meal_location, meal_plan, breakfast_time, lunch_time, dinner_time, treatment_count, order_number, payment_amount, " +
   "payment_link_url, needs_callback, portal_token, lead_source, automation_muted";
 
@@ -627,7 +629,13 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {tabGuests.map((guest) => {
-            const isDayGuest = guest.room_type === "day_guest" || guest.room_type === "premium_day_guest";
+            // P1 2026-08-05: raw room_type alone used to hide the entire pipeline
+            // strip + room-ready button on a split-brain guest (canonical suite
+            // room tagged day_guest) — the ⚠ סתירת סיווג badge said "automation
+            // routes this as a suite" right next to a card with no suite actions
+            // at all. isEffectiveSuiteGuest matches what automation actually does.
+            const isDayGuest = !isEffectiveSuiteGuest(guest)
+              && (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest");
             const isDeleting = deletingId === guest.id;
             const isLoadingPipeline = loadingId === guest.id;
             const isDone = guest.msg_room_ready_sent;
@@ -689,7 +697,10 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
                         👤
                       </button>
                       {guest.arrival_confirmed && (
-                        <span style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר הגעה</span>
+                        <span title={describeArrivalConfirmedSource(guest.arrival_confirmed_source)} style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר הגעה</span>
+                      )}
+                      {guest.automation_muted && (
+                        <span title="אוטומציה מושתקת — הבוט לא ישלח הודעות אוטומטיות לאורח זה." style={{ fontSize: 10, marginRight: 6, background: "#F3F4F6", color: "#6B7280", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>🔇 מושתק</span>
                       )}
                       <GuestAttentionBadge
                         guest={guest}

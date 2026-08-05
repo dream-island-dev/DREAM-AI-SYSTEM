@@ -1,6 +1,7 @@
 import {
   classifyInboxContactSegment,
   classifyInboxRosterSegment,
+  describeArrivalConfirmedSource,
   getGuestArrivalRosterLabel,
   getGuestTimingBadge,
   hasSuiteRoomTypeConflict,
@@ -12,6 +13,22 @@ import {
   rosterGuestFields,
   syncInboxContactWithGuestMap,
 } from "./guestTiming";
+
+describe("describeArrivalConfirmedSource — P1 2026-08-05", () => {
+  test("guest_reply", () => {
+    expect(describeArrivalConfirmedSource("guest_reply")).toMatch(/האורח ענה/);
+  });
+  test("physical_checkin", () => {
+    expect(describeArrivalConfirmedSource("physical_checkin")).toMatch(/צ'ק-אין פיזי/);
+  });
+  test("late_import", () => {
+    expect(describeArrivalConfirmedSource("late_import")).toMatch(/ייבוא/);
+  });
+  test("unknown/legacy (null) never crashes and says so", () => {
+    expect(describeArrivalConfirmedSource(null)).toMatch(/לא ידוע/);
+    expect(describeArrivalConfirmedSource(undefined)).toMatch(/לא ידוע/);
+  });
+});
 
 // ── Suite vs day-pass split-brain (session 125 P0) ─────────────────────────
 // A guest synced with a real suite room but room_type='day_guest' received

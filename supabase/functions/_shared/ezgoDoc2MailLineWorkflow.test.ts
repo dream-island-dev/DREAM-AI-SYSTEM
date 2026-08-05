@@ -342,8 +342,8 @@ Deno.test("returning guest with new arrival → suite_arrival_create not enrich"
 Deno.test("group occupant second room → suite_arrival_create not suite_room_add — P0 2026-08-05", () => {
   const coordinatorProfile = {
     id: 99,
-    name: "איליה קורנייקו",
-    phone: "+972542302310",
+    name: "ישראל ישראלי",
+    phone: "+972500000000",
     order_number: "301222",
     arrival_date: "2026-08-07",
     departure_date: "2026-08-08",
@@ -371,8 +371,8 @@ Deno.test("group occupant second room → suite_arrival_create not suite_room_ad
     is_day_guest: false,
     is_premium_day: false,
     is_remark_group_occupant: true,
-    coord_name: "איליה קורנייקו",
-    coord_phone: "+972542302310",
+    coord_name: "ישראל ישראלי",
+    coord_phone: "+972500000000",
   };
   const r = classifyDoc2MailWorkflow(secondOccupant, coordinatorProfile);
   if (r.workflow !== "suite_arrival_create") {
@@ -389,8 +389,8 @@ Deno.test("isSameDoc2Booking: group rows with different occupant names → false
     arrival_date: "2026-08-07",
   };
   const guest = {
-    name: "איליה קורנייקו",
-    phone: "+972542302310",
+    name: "ישראל ישראלי",
+    phone: "+972500000000",
     order_number: "301222",
     arrival_date: "2026-08-07",
   };

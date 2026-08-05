@@ -414,7 +414,7 @@ export async function createDoc2SuiteArrival(supabase, rec, reportDateYmd) {
   await assertNoDuplicateGuest(supabase, rec.phone, arrival);
 
   // FAIL VISIBLE (P0 2026-08-05): never fall back to same-day departure for a
-  // suite just because nights failed to parse (the נטלי קוקנוב/אמרלד 19
+  // suite just because nights failed to parse (the 0-night suite
   // incident — arrival===departure, "0 nights" in the UI). Mirrors
   // supabase/functions/_shared/ezgoDoc2SuiteRoomSync.ts.
   let departureDate = isDayGuest

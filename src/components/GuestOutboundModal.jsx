@@ -18,6 +18,7 @@ import {
 } from "../utils/waTemplateUi";
 import { formatInboxOutboundError } from "../utils/inboxSendErrors";
 import { formatDeliveredChannelLabel } from "../utils/guestQuickWhapiTest";
+import { phoneLookupVariants } from "../utils/guestSegmentGuard";
 
 export default function GuestOutboundModal({ guest, onClose, onSent }) {
   const {
@@ -43,6 +44,12 @@ export default function GuestOutboundModal({ guest, onClose, onSent }) {
     whapiDisabled: false,
   });
 
+  // P1 2026-08-05: window/SOS detection errors used to be discarded — a query
+  // failure silently rendered as "Meta window closed" / "SOS inactive" (a
+  // wrong business fact presented as certain), steering staff to the wrong
+  // channel with no indication anything went wrong.
+  const [statusFetchError, setStatusFetchError] = useState(null);
+
   const [waTemplates, setWaTemplates] = useState([]);
   const [dbTemplates, setDbTemplates] = useState([]);
   const [loadingTmpls, setLoadingTmpls] = useState(false);
@@ -67,14 +74,21 @@ export default function GuestOutboundModal({ guest, onClose, onSent }) {
     if (!isSupabaseConfigured || !supabase || !guest?.phone) return;
     let cancelled = false;
     (async () => {
-      const { data } = await supabase
+      // guests.phone (+972…) and whatsapp_conversations.phone (972…, no +)
+      // aren't guaranteed to share one format (CLAUDE.md §3) — WhatsAppInbox
+      // and RequestsBoard already query both variants; this modal used to
+      // query the exact stored format only, silently missing the guest's
+      // actual inbound history on a format mismatch.
+      const variants = phoneLookupVariants(guest.phone);
+      const { data, error } = await supabase
         .from("whatsapp_conversations")
         .select("inbox_channel, created_at")
-        .eq("phone", guest.phone)
+        .in("phone", variants.length ? variants : [guest.phone])
         .eq("direction", "inbound")
         .order("created_at", { ascending: false })
         .limit(20);
       if (!cancelled) {
+        if (error) setStatusFetchError(error.message);
         setInboundRows(data ?? []);
         setInboundFetched(true);
       }
@@ -89,7 +103,10 @@ export default function GuestOutboundModal({ guest, onClose, onSent }) {
       .select("config_value")
       .eq("config_key", "whapi_guest_sos_active")
       .maybeSingle()
-      .then(({ data }) => setWhapiSosActive(data?.config_value === "true"));
+      .then(({ data, error }) => {
+        if (error) { setStatusFetchError(error.message); return; }
+        setWhapiSosActive(data?.config_value === "true");
+      });
   }, []);
 
   useEffect(() => {
@@ -342,6 +359,11 @@ export default function GuestOutboundModal({ guest, onClose, onSent }) {
               </button>
             </div>
             <div style={{ marginTop: 8, fontSize: 11.5, color: "#555", display: "flex", flexDirection: "column", gap: 4 }}>
+              {statusFetchError && (
+                <span style={{ color: "#C0392B", fontWeight: 700 }}>
+                  ⚠ בדיקת מצב חלון/SOS נכשלה — הסטטוס למטה עלול לא להיות מדויק ({statusFetchError})
+                </span>
+              )}
               <span>{windowStatus.metaOpen ? "🟢" : "🔴"} Dream Bot — חלון 24ש׳ {windowStatus.metaOpen ? "פתוח" : "סגור"}</span>
               <span>
                 {windowStatus.whapiDisabled ? "⚫" : windowStatus.whapiOpen ? "🟢" : "🟡"}

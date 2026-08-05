@@ -7,6 +7,7 @@ import { resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";
 import { performSuiteCheckIn } from "./suiteCheckinSync.ts";
 
 const HK_ELIGIBLE_STATUSES = new Set(["pending", "expected", "room_ready"]);
+const HK_CHECKIN_SUCCESS_ACTIONS = new Set(["updated", "already_checked_in"]);
 
 type SuiteRoomRow = {
   room_display?: string | null;
@@ -105,6 +106,22 @@ export async function reconcileGuestHousekeepingCheckInAfterImport(
     }
   }
   if (!matchedRoomId || !matchedEvent) return { applied: false };
+
+  // QA P2 2026-08-05 (parity with src/utils/housekeepingCheckInReconcile.js's
+  // "logged_success_guest_stale" guard): this room's HK check-in signal may
+  // have already resolved successfully to a DIFFERENT guest_id — applying it
+  // again here on a freshly-imported guest would silently check in the wrong
+  // person. This whole function runs unattended (post-import hook, no staff
+  // click at all), so skip rather than guess; the GuestsPage sync chip still
+  // offers the guest a manual "⚠️ סנכרן מקבוצה" confirmation separately.
+  if (
+    matchedEvent.guest_id != null
+    && matchedEvent.guest_id !== guestId
+    && matchedEvent.sync_action
+    && HK_CHECKIN_SUCCESS_ACTIONS.has(matchedEvent.sync_action)
+  ) {
+    return { applied: false };
+  }
 
   const sync = await performSuiteCheckIn(supabase, guest, {
     roomId: matchedRoomId,

@@ -107,8 +107,16 @@ export function buildHousekeepingSyncMap(guests, suiteRoomsByGuestId, hkByRoom) 
   return map;
 }
 
+/**
+ * FAIL VISIBLE (P0 2026-08-05): returns { rows, error } instead of swallowing
+ * a query failure as an empty array — an empty array reads identically to
+ * "the housekeeping group sent nothing today", which is a false all-clear
+ * when the real story is "we don't know". Callers must check `error` before
+ * trusting the sync chips they build from `rows`.
+ * @returns {Promise<{ rows: Array, error: string|null }>}
+ */
 export async function fetchHousekeepingCheckInsForDate(supabase, dateYmd = israelTodayStr()) {
-  if (!supabase || !dateYmd) return [];
+  if (!supabase || !dateYmd) return { rows: [], error: null };
   const dayStart = new Date(`${dateYmd}T00:00:00+03:00`).toISOString();
   const dayEnd = new Date(`${dateYmd}T23:59:59.999+03:00`).toISOString();
   const { data, error } = await supabase
@@ -120,14 +128,14 @@ export async function fetchHousekeepingCheckInsForDate(supabase, dateYmd = israe
     .order("created_at", { ascending: false });
   if (error) {
     console.warn("[housekeepingCheckInReconcile] fetch failed:", error.message);
-    return [];
+    return { rows: [], error: error.message };
   }
-  return data ?? [];
+  return { rows: data ?? [], error: null };
 }
 
 export async function markHousekeepingEventSynced(supabase, eventId, guestId) {
-  if (!supabase || !eventId) return;
-  await supabase
+  if (!supabase || !eventId) return { ok: false };
+  const { error } = await supabase
     .from("housekeeping_wa_events")
     .update({
       sync_action: "updated",
@@ -135,6 +143,14 @@ export async function markHousekeepingEventSynced(supabase, eventId, guestId) {
       guest_id: guestId ?? null,
     })
     .eq("id", eventId);
+  if (error) {
+    // FAIL VISIBLE: the guest check-in itself already succeeded (guests table
+    // write happens before this call) — this only means the sync audit trail
+    // (migration 286/287) didn't persist. Log loudly rather than pretend it worked.
+    console.warn("[housekeepingCheckInReconcile] sync audit write failed:", error.message);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
 }
 
 /**
@@ -146,7 +162,7 @@ export async function reconcileHousekeepingCheckInForGuest(supabase, guest, suit
   if (!supabase || !guest?.id || guest.status === "checked_in") {
     return { applied: false };
   }
-  const hkEvents = await fetchHousekeepingCheckInsForDate(supabase, israelTodayStr());
+  const { rows: hkEvents } = await fetchHousekeepingCheckInsForDate(supabase, israelTodayStr());
   const hkByRoom = indexHousekeepingCheckInsByRoom(hkEvents);
   const applied = await reconcileHousekeepingCheckIns(
     supabase,
@@ -185,6 +201,15 @@ export async function reconcileHousekeepingCheckIns(
     );
     if (sync.state !== "pending" || !sync.roomId) continue;
 
+    // QA P2 2026-08-05: "logged_success_guest_stale" means this room's HK
+    // check-in signal already resolved successfully to a DIFFERENT guest —
+    // genuinely ambiguous (two guests, same room, one already claimed by the
+    // signal). Auto-applying here on an unattended page load/poll risked
+    // silently checking in the wrong guest; require the explicit manual
+    // "⚠️ סנכרן מקבוצה" click instead (same sync.state="pending" chip, just
+    // not auto-applied).
+    if (sync.reason === "logged_success_guest_stale") continue;
+
   // Require room assignment on guest before auto-sync (Fail Visible).
     const roomIds = collectGuestSuiteRoomIds(guest, suiteRoomsByGuestId[guest.id] ?? []);
     if (!roomIds.length) continue;
@@ -193,10 +218,20 @@ export async function reconcileHousekeepingCheckIns(
       roomId: sync.roomId,
       auditSource: source,
     });
-    if (!result.ok) continue;
+    if (!result.ok) {
+      // P2 2026-08-05: this ran silently on every 60s background poll — a
+      // persistently-failing auto-sync (e.g. a room the guest no longer
+      // matches) never surfaced anywhere, and the guest just stayed stuck
+      // pending with no visible reason.
+      console.warn(`[housekeepingCheckInReconcile] auto check-in failed for guest ${guest.id}:`, result.error);
+      continue;
+    }
 
     if (sync.eventId) {
-      await markHousekeepingEventSynced(supabase, sync.eventId, guest.id);
+      const synced = await markHousekeepingEventSynced(supabase, sync.eventId, guest.id);
+      if (!synced.ok) {
+        console.warn(`[housekeepingCheckInReconcile] check-in applied but sync audit write failed for guest ${guest.id}:`, synced.error);
+      }
     }
 
     applied.push({

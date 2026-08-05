@@ -21,6 +21,7 @@ import {
   fetchSpaUpsellSentCount,
   fmtLeadTime,
   mergePastedSpaUpsellContacts,
+  resolveSentGuestIds,
   spaUpsellScriptToWhapiTemplate,
   updateSpaUpsellGuestName,
   resolveSpaUpsellLead,
@@ -200,12 +201,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
         return;
       }
 
-      const sentIds = new Set(
-        targets.filter((_, i) => rows[i]?.status === "sent").map((g) => g.id),
-      );
-      if (rows.length > 0 && rows.every((j) => j.status === "sent")) {
-        targets.forEach((g) => sentIds.add(g.id));
-      }
+      const sentIds = resolveSentGuestIds(rows, targets);
 
       setCandidates((prev) => prev.filter((g) => !sentIds.has(g.id)));
       setSelected(new Set());
@@ -561,32 +557,45 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
                 }}
               />
               <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                <button type="button" onClick={handleParsePaste} disabled={pasteMerging || pasteCreating} style={btnSecondary}>
+                <button
+                  type="button"
+                  onClick={handleParsePaste}
+                  disabled={pasteMerging || pasteCreating}
+                  title={pasteMerging || pasteCreating ? "פעולה אחרת בתהליך" : undefined}
+                  style={btnSecondaryStyle(pasteMerging || pasteCreating)}
+                >
                   {pasteMerging ? "בודק…" : "בדוק שורות"}
                 </button>
                 <button
                   type="button"
                   onClick={handleImportPaste}
                   disabled={!pastePreview?.merged?.length || pasteCreating}
-                  style={btnPrimary}
+                  title={!pastePreview?.merged?.length ? "אין שורות מתאימות להוספה — לחצו \"בדוק שורות\" קודם" : undefined}
+                  style={btnPrimaryStyle(!pastePreview?.merged?.length || pasteCreating)}
                 >
                   הוסף {pastePreview?.merged?.length ?? 0} לרשימה
                 </button>
-                {pastePreview?.notFound?.length > 0 && (
+                {/* Disable-Don't-Hide (CLAUDE.md §0.2, P2 2026-08-05): used to be
+                    conditionally hidden entirely when notFound was empty, while
+                    the "הוסף לרשימה" button above stayed visible-disabled for
+                    the equivalent empty case — inconsistent pattern for two
+                    sibling actions. */}
+                {pastePreview && (
                   <button
                     type="button"
                     onClick={handleCreateProfilesFromPaste}
-                    disabled={pasteCreating}
+                    disabled={pasteCreating || !pastePreview.notFound?.length}
+                    title={!pastePreview.notFound?.length ? "אין שורות ללא פרופיל — אין מה ליצור" : undefined}
                     style={{
-                      ...btnSecondary,
-                      borderColor: "#0e7490",
-                      color: "#0e7490",
+                      ...btnSecondaryStyle(pasteCreating || !pastePreview.notFound?.length),
+                      borderColor: !pastePreview.notFound?.length ? undefined : "#0e7490",
+                      color: !pastePreview.notFound?.length ? undefined : "#0e7490",
                       fontWeight: 800,
                     }}
                   >
                     {pasteCreating
                       ? "⏳ יוצר פרופילים…"
-                      : `☀️ צור ${pastePreview.notFound.length} פרופילי בילוי יומי`}
+                      : `☀️ צור ${pastePreview.notFound?.length ?? 0} פרופילי בילוי יומי`}
                   </button>
                 )}
               </div>
@@ -606,6 +615,39 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
                   {pastePreview.invalid?.length > 0 && (
                     <span style={{ color: "#C0392B" }}> · {pastePreview.invalid.length} לא תקינים</span>
                   )}
+                  {pastePreview.duplicates?.length > 0 && (
+                    <span style={{ color: "#B5600A" }}> · {pastePreview.duplicates.length} כפולים (דולגו)</span>
+                  )}
+                </div>
+              )}
+              {pastePreview?.invalid?.length > 0 && (
+                <div style={{
+                  marginTop: 10, padding: "10px 12px", borderRadius: 8,
+                  background: "#FFF0EE", border: "1px solid #F1A9A0", fontSize: 12.5,
+                }}>
+                  <div style={{ fontWeight: 700, color: "#C0392B", marginBottom: 6 }}>
+                    שורות לא תקינות (לא זוהה מספר טלפון) — לא יובאו
+                  </div>
+                  {pastePreview.invalid.map((line, i) => (
+                    <div key={`inv-${i}`} style={{ padding: "3px 0", color: "#8A2C2C", fontFamily: "monospace", direction: "ltr", textAlign: "left" }}>
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {pastePreview?.duplicates?.length > 0 && (
+                <div style={{
+                  marginTop: 10, padding: "10px 12px", borderRadius: 8,
+                  background: "#FFF7ED", border: "1px solid #FDBA74", fontSize: 12.5,
+                }}>
+                  <div style={{ fontWeight: 700, color: "#9A3412", marginBottom: 6 }}>
+                    שורות כפולות (אותו טלפון כבר הופיע למעלה) — נספרו פעם אחת בלבד
+                  </div>
+                  {pastePreview.duplicates.map((line, i) => (
+                    <div key={`dup-${i}`} style={{ padding: "3px 0", color: "#7C2D12", fontFamily: "monospace", direction: "ltr", textAlign: "left" }}>
+                      {line}
+                    </div>
+                  ))}
                 </div>
               )}
               {pastePreview?.notFound?.length > 0 && (
@@ -796,7 +838,13 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
               אורחים שאישרו הצעת ספא — הגעה {arrivalDate}
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button type="button" onClick={copyStaffList} disabled={!leads.length} style={btnSecondary}>
+              <button
+                type="button"
+                onClick={copyStaffList}
+                disabled={!leads.length}
+                title={!leads.length ? "אין לידים להעתקה" : undefined}
+                style={btnSecondaryStyle(!leads.length)}
+              >
                 📋 העתק לצוות
               </button>
               <a href={buildSpaBoardDeepLink()} target="_blank" rel="noopener noreferrer" style={btnLink}>
@@ -898,6 +946,26 @@ const btnPrimary = {
   border: "none",
   fontWeight: 700,
 };
+
+// P2 2026-08-05 (Disable-Don't-Hide, CLAUDE.md §0.2): btnPrimary/btnSecondary
+// had no disabled variant — a disabled button kept full color and
+// cursor:pointer, looking fully live while inert, with no title explaining
+// why it's inert.
+const disabledBtnStyle = (base) => ({
+  ...base,
+  opacity: 0.5,
+  cursor: "not-allowed",
+  background: base === btnPrimary ? "#D8B4E2" : base.background,
+  color: base === btnPrimary ? "#fff" : "#999",
+});
+
+function btnPrimaryStyle(disabled) {
+  return disabled ? disabledBtnStyle(btnPrimary) : btnPrimary;
+}
+
+function btnSecondaryStyle(disabled) {
+  return disabled ? disabledBtnStyle(btnSecondary) : btnSecondary;
+}
 
 const btnLink = {
   ...btnSecondary,

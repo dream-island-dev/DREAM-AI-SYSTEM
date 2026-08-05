@@ -444,6 +444,7 @@ export async function runGuestArrivalConfirmation(
     const { error: confirmErr } = await supabaseClient.from("guests").update({
       arrival_confirmed: true,
       arrival_confirmed_at: confirmedAt,
+      arrival_confirmed_source: "guest_reply",
       wa_window_expires_at: windowExpires,
       ...(guest?.status === "pending" ? { status: "expected" } : {}),
     }).eq("id", guestId);

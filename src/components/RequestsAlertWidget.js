@@ -22,6 +22,21 @@ const MARGIN = 8;                     // min inset from viewport edges while dra
 const POS_KEY = "requestsWidgetPos";  // localStorage key for the dragged position
 const Z_INDEX = 10400;                // above sidebar/mobile chrome; below modal overlays (~9999+)
 
+// P1 2026-08-05: this badge is supposed to mirror what the Requests Board
+// itself treats as its reception queue — it used to count every open
+// guest_alerts row, including types the board deliberately excludes:
+// arrival_eta (Record-Only per CLAUDE.md — "בלי... נקודה אדומה", no ops
+// action) and spa_upsell_accept (lives on Spa Leads page only, see
+// RequestsBoard.js's isSpaCoordinatorOnlyRow). Day-pass spa_request is also
+// coordinator-only there, but that needs a guest-cohort join this widget
+// doesn't have per realtime event — suite spa_request stays counted, which
+// is the safe direction (a rare over-count, never an under-count/miss).
+const WIDGET_EXCLUDED_ALERT_TYPES = ["arrival_eta", "spa_upsell_accept"];
+
+function isWidgetCountableAlert(alertType) {
+  return !WIDGET_EXCLUDED_ALERT_TYPES.includes(alertType);
+}
+
 function clampPos(p) {
   const maxRight = window.innerWidth - FAB - MARGIN;
   const maxBottom = window.innerHeight - FAB - MARGIN;
@@ -111,7 +126,8 @@ export default function RequestsAlertWidget({ onNavigate }) {
     const { count } = await supabase
       .from("guest_alerts")
       .select("id", { count: "exact", head: true })
-      .eq("resolved", false);
+      .eq("resolved", false)
+      .not("alert_type", "in", `(${WIDGET_EXCLUDED_ALERT_TYPES.join(",")})`);
     setPendingCount(count ?? 0);
   }, []);
 
@@ -126,6 +142,7 @@ export default function RequestsAlertWidget({ onNavigate }) {
         { event: "INSERT", schema: "public", table: "guest_alerts" },
         (payload) => {
           const row = payload.new;
+          if (!isWidgetCountableAlert(row.alert_type)) return;
           setPendingCount((prev) => prev + 1);
           const typeLabel =
             row.alert_type === "complaint" ? "🔴 תקלה"
@@ -143,7 +160,11 @@ export default function RequestsAlertWidget({ onNavigate }) {
         (payload) => {
           // Only decrement on the false→true transition — avoids drifting the
           // count if a row is updated for an unrelated reason while still open.
-          if (payload.new.resolved === true && payload.old.resolved === false) {
+          if (
+            payload.new.resolved === true
+            && payload.old.resolved === false
+            && isWidgetCountableAlert(payload.new.alert_type)
+          ) {
             setPendingCount((prev) => Math.max(0, prev - 1));
           }
         }

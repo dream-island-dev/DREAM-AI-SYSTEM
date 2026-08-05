@@ -55,6 +55,23 @@ Deno.test("parseSuiteArrivalsCsvText: iNights=2 on suite row → departure = arr
   if (records[0].departure_missing_nights) throw new Error("expected flag false");
 });
 
+Deno.test("parseSuiteArrivalsCsvText: duplicated coordinator name → is_remark_group_occupant + coord_name/coord_phone set (CSV parity with HTML mail path) — P1 2026-08-05", () => {
+  const csv = [
+    "iOrderId,sTel1,sRemark,sClientFullName,sSubItemName,sRoomName,iResLineId,iNights",
+    "301222,0500000000,ישראל ישראלי 0521111111,ישראל ישראלי,סוויטת אוניקס,12,9821350,1",
+    "301222,0500000000,משה לוי 0522222222,ישראל ישראלי,סוויטת אוניקס,7,9821351,1",
+  ].join("\n");
+  const records = parseSuiteArrivalsCsvText(csv, "07.08.26.csv");
+  if (records.length !== 2) throw new Error(`expected 2 records got ${records.length}`);
+  for (const r of records) {
+    if (!r.is_remark_group_occupant) throw new Error("expected is_remark_group_occupant true");
+    if (r.coord_name !== "ישראל ישראלי") throw new Error(`coord_name ${r.coord_name}`);
+    if (!r.coord_phone) throw new Error("expected coord_phone set");
+  }
+  if (records[0].guest_name !== "ישראל ישראלי") throw new Error(`row0 guest_name ${records[0].guest_name}`);
+  if (records[1].guest_name !== "משה לוי") throw new Error(`row1 guest_name ${records[1].guest_name}`);
+});
+
 Deno.test("parseSuiteArrivalsCsvText: iNights=0 on day-pass row → departure_date === arrival_date — P0 2026-08-05", () => {
   const csv = [
     "iOrderId,sTel1,sRemark,sClientFullName,sSubItemName,sRoomName,iResLineId,iNights",
