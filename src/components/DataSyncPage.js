@@ -8,6 +8,7 @@ import ActivitiesImportZone from "./spa/ActivitiesImportZone";
 import SmartPastePanel from "./SmartPastePanel";
 import SpaUpsellHub from "./SpaUpsellHub";
 import DayPassRoomBulkFixPanel from "./DayPassRoomBulkFixPanel";
+import SuiteRoomTypeBulkFixPanel from "./SuiteRoomTypeBulkFixPanel";
 import EzgoMailSyncPanel from "./EzgoMailSyncPanel";
 import { israelTodayYmd } from "../utils/spaUpsellAudience";
 
@@ -158,6 +159,7 @@ export default function DataSyncPage() {
 
       {activeTab === "import" && (
         <>
+          <SuiteRoomTypeBulkFixPanel onToast={showToast} />
           <ArrivalImportPanel defaultOpen onSpaUpsellNavigate={goToSpaUpsell} />
           <SmartPastePanel showToast={showToast} />
           <SpaActivitiesSyncSection />

@@ -2,6 +2,11 @@
 
 import { roomsCanonicallyMatch, resolveSuiteFromEzgoFields } from "../data/suiteRegistry";
 import { buildCombinedRoomLabel, splitCombinedRoomLabel } from "./guestImportIntelligence";
+import {
+  assertGuestSegmentConsistent,
+  assertNoConflictingSuiteProfile,
+  assertNoDuplicateGuest,
+} from "./guestSegmentGuard";
 
 const DOC2_MAIL_LINE_PREFIX = "doc2mail-";
 
@@ -298,13 +303,21 @@ export async function createDoc2SuiteArrival(supabase, rec, reportDateYmd) {
 
   const arrival = rec.arrival_date || reportDateYmd;
   const automationScope = rec.automation_scope || "full";
+  const roomType = rec.is_premium_day ? "premium_day_guest" : (rec.is_day_guest ? "day_guest" : "suite");
+
+  assertGuestSegmentConsistent({ room: rec.room, room_type: roomType });
+  if (roomType !== "suite") {
+    await assertNoConflictingSuiteProfile(supabase, rec.phone, arrival);
+  }
+  await assertNoDuplicateGuest(supabase, rec.phone, arrival);
+
   const insert = {
     phone: rec.phone,
     name: rec.guest_name || null,
     arrival_date: arrival,
     departure_date: rec.departure_date || arrival,
     room: rec.room,
-    room_type: rec.is_premium_day ? "premium_day_guest" : (rec.is_day_guest ? "day_guest" : "suite"),
+    room_type: roomType,
     status: "expected",
     order_number: rec.order_number || null,
     meal_location: rec.meal_location || null,

@@ -53,6 +53,22 @@ function normalizeGuestName(name: string | null | undefined): string {
   return String(name || "").trim().replace(/\s+/g, " ");
 }
 
+/**
+ * Digit-canonical phone key for equality checks only (not a validator) —
+ * mirrors src/utils/guestSegmentGuard.js's normalizeGuestPhoneForLookup
+ * intent. guests.phone is "+972…" in this table but import sources can hand
+ * back a "972…"/"0…" variant; comparing raw strings misses that and lets an
+ * existing suite guest fall through to daypass_create (Mike, P0 2026-08-05).
+ */
+function normalizePhoneDigitsForCompare(phone: string | null | undefined): string {
+  let digits = String(phone ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.startsWith("972")) digits = digits.slice(3);
+  else if (digits.startsWith("0")) digits = digits.slice(1);
+  return digits;
+}
+
 function findGuestByExactNameOnDate(
   rows: GuestRow[],
   guestName: string | null,
@@ -92,6 +108,15 @@ export function findGuestForDoc1Enrichment(
     const byPhone = existingRows.filter((g) => g.phone === phone);
     const hit = pickFromOverlap(byPhone, reportDate, phone);
     if (hit) return hit;
+
+    const normalizedPhone = normalizePhoneDigitsForCompare(phone);
+    if (normalizedPhone) {
+      const byNormalizedPhone = existingRows.filter(
+        (g) => g.phone && normalizePhoneDigitsForCompare(g.phone) === normalizedPhone,
+      );
+      const normalizedHit = pickFromOverlap(byNormalizedPhone, reportDate, phone);
+      if (normalizedHit) return normalizedHit;
+    }
   }
 
   return null;

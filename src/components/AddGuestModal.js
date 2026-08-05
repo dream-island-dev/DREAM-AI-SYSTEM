@@ -32,6 +32,7 @@ import {
 import { ensureMissingDepartureAlert } from "../utils/departureDateGuard";
 import { normalizeGuestPhoneEdit } from "../utils/ezgoParser";
 import { preflightGuestPhoneChange, updateGuestPhoneCascade } from "../utils/updateGuestPhoneCascade";
+import { assertGuestSegmentConsistent, assertNoDuplicateGuest } from "../utils/guestSegmentGuard";
 
 // ── Smart room_type inference ─────────────────────────────────────────────────
 // Deterministic mapping from the room <select> value to DB room_type.
@@ -217,6 +218,11 @@ export default function AddGuestModal({
 
       const oldPhone = guest.phone || null;
       const phoneChanged = isEdit && normalizedPhone !== oldPhone;
+
+      assertGuestSegmentConsistent({ room: patch.room, room_type: patch.room_type });
+      await assertNoDuplicateGuest(supabase, normalizedPhone || oldPhone, patch.arrival_date, {
+        excludeId: isEdit ? guest.id : null,
+      });
 
       let savedGuest;
       if (isEdit) {

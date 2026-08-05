@@ -1,5 +1,6 @@
 import { roomsCanonicallyMatch, resolveSuiteFromEzgoFields } from "../data/suiteRegistry";
 import { buildGuestProfileDoc1SlotsPatch } from "./doc1SpaSlots.js";
+import { normalizeGuestPhoneForLookup } from "./guestSegmentGuard";
 // ── Guest Import Intelligence Layer — canonical contract (Sprint 0) ──────────
 // Pure data transformation — zero Supabase calls, zero side effects, zero DOM.
 //
@@ -527,6 +528,20 @@ export function findGuestForDoc1Enrichment(existingRows, rec) {
     const byPhone = existingRows.filter((g) => g.phone === phone);
     const hit = pickFromOverlap(byPhone);
     if (hit) return hit;
+
+    // Fallback (Mike, P0 2026-08-05): exact-string phone match can miss a
+    // "+972…" vs "972…" formatting mismatch between import source and DB —
+    // normalize before comparing so an existing suite guest is still found
+    // (routed to enrich) instead of falling through to daypass_create and
+    // spawning a split-brain duplicate profile.
+    const normalizedPhone = normalizeGuestPhoneForLookup(phone);
+    if (normalizedPhone) {
+      const byNormalizedPhone = existingRows.filter(
+        (g) => g.phone && normalizeGuestPhoneForLookup(g.phone) === normalizedPhone,
+      );
+      const normalizedHit = pickFromOverlap(byNormalizedPhone);
+      if (normalizedHit) return normalizedHit;
+    }
   }
 
   return null;

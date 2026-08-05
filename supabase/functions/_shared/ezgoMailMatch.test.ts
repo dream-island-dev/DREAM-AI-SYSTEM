@@ -9,7 +9,7 @@
 // assert the exact patch written, not just that *something* was.
 
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
-import { applyCertainSuiteSpaEnrichment, type MatchResult } from "./ezgoMailMatch.ts";
+import { applyCertainSuiteSpaEnrichment, findGuestForDoc1Enrichment, type MatchResult, type GuestRow } from "./ezgoMailMatch.ts";
 import type { Doc1Record } from "./ezgoDoc1Parser.ts";
 
 type FakeResult = { data: unknown; error: { message?: string } | null };
@@ -163,4 +163,21 @@ Deno.test("applyCertainSuiteSpaEnrichment: update failure falls back to false (l
   setUpdateFails(true);
   const ok = await applyCertainSuiteSpaEnrichment(supabase as never, BASE_REC, BASE_MATCH);
   assertEquals(ok, false);
+});
+
+// P0 2026-08-05: a "972…" (no leading +) rec.phone used to miss the exact-string
+// match against guests.phone's "+972…" and fall through to daypass_create,
+// spawning a split-brain duplicate for a guest who already has an active suite
+// stay covering the date.
+Deno.test("findGuestForDoc1Enrichment: normalized-phone fallback finds the suite guest despite a +/no-+ mismatch", () => {
+  const suiteGuest = {
+    id: 1,
+    phone: "+972501111111",
+    order_number: null,
+    arrival_date: "2026-07-18",
+    departure_date: "2026-07-20",
+    room: "אמטיסט 8",
+  } as unknown as GuestRow;
+  const rec = { phone: "972501111111", arrival_date: "2026-07-19", spa_time: "14:00" } as Doc1Record;
+  assertEquals(findGuestForDoc1Enrichment([suiteGuest], rec), suiteGuest);
 });

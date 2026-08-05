@@ -3,7 +3,11 @@
 import { GENERIC_DAY_PASS_ROOM } from "../data/suiteRegistry";
 import { buildDoc1EnrichmentPatch } from "./guestImportIntelligence";
 import { buildGuestProfileDoc1SlotsPatch } from "./doc1SpaSlots.js";
-import { isCanonicalSuiteRoom, isPremiumDayRoom } from "./pipelineSegment";
+import { isEffectiveSuiteGuest, isEffectiveDayPassGuest } from "./pipelineSegment";
+import {
+  assertNoConflictingSuiteProfile,
+  assertNoDuplicateGuest,
+} from "./guestSegmentGuard";
 
 export const WORKFLOW_META = {
   suite_spa_sync: { text: "סנכרון ספא סוויטה", color: "#1E40AF", bg: "#DBEAFE" },
@@ -15,21 +19,6 @@ export const WORKFLOW_META = {
   conflict: { text: "בדוק", color: "#A32D2D", bg: "#FCEBEB" },
   noop: { text: "ללא שינוי", color: "#666", bg: "#eee" },
 };
-
-function isEffectiveSuiteGuest(guest) {
-  if (!guest) return false;
-  if (isPremiumDayRoom(guest.room)) return false;
-  return isCanonicalSuiteRoom(guest.room);
-}
-
-function isEffectiveDayPassGuest(guest) {
-  if (!guest) return false;
-  if (isCanonicalSuiteRoom(guest.room)) return false;
-  if (isPremiumDayRoom(guest.room)) return true;
-  const rt = String(guest.room_type || "");
-  if (rt !== "day_guest" && rt !== "premium_day_guest") return false;
-  return String(guest.room || "").trim() !== "";
-}
 
 function guestHasSpaOnDate(guest, reportDateYmd) {
   if (!guest) return false;
@@ -188,36 +177,10 @@ export function stripWorkflowPatch(patch) {
   return out;
 }
 
-/**
- * Hermetic day-pass create gate (Mike, P1.5 2026-08-05): a mail/import row can
- * be mis-resolved as a day visit for a guest who already has an active suite
- * stay covering that date (e.g. a mid-stay row mis-parsed as day-pass) — that
- * used to insert a phantom "בילוי יומי" duplicate profile, split-brain with
- * the real suite profile. Window-overlap match (not exact arrival_date) so a
- * stray day-pass row anywhere inside an existing multi-night suite stay is
- * still caught, not just an exact-date collision.
- */
-export async function assertNoConflictingSuiteProfile(supabase, phone, arrivalDate) {
-  if (!phone || !arrivalDate) return;
-  const { data, error } = await supabase
-    .from("guests")
-    .select("id, name, room, room_type, arrival_date, departure_date")
-    .eq("phone", phone)
-    .neq("status", "cancelled")
-    .lte("arrival_date", arrivalDate)
-    .or(`departure_date.is.null,departure_date.gte.${arrivalDate}`);
-  if (error) throw error;
-  const conflict = (data || []).find((g) => isEffectiveSuiteGuest(g));
-  if (conflict) {
-    throw new Error(
-      `לא ניתן ליצור פרופיל בילוי יומי — קיים כבר פרופיל סוויטה פעיל (${conflict.name || phone}${conflict.room ? ` · ${conflict.room}` : ""}) לאותו טלפון בתאריך זה`,
-    );
-  }
-}
-
 export async function createDaypassGuestFromRec(supabase, rec, reportDateYmd) {
   const recArrivalDate = rec.arrival_date || reportDateYmd;
   await assertNoConflictingSuiteProfile(supabase, rec.phone, recArrivalDate);
+  await assertNoDuplicateGuest(supabase, rec.phone, recArrivalDate);
   const insert = {
     phone: rec.phone,
     name: rec.guest_name || null,

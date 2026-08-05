@@ -11,6 +11,7 @@ import {
 import { buildEnrichGuestPatch } from "../utils/guestImportIntelligence";
 import { normalizeGuestPhoneEdit } from "../utils/ezgoParser";
 import { mealPlanLabel } from "../data/stayMealsSchema";
+import { assertNoConflictingSuiteProfile, assertNoDuplicateGuest } from "../utils/guestSegmentGuard";
 
 function todayYmd() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
@@ -201,7 +202,7 @@ export default function SmartPastePanel({ showToast }) {
       const arrival = c.arrival_date || contextDate || todayYmd();
       const row = {
         name: c.guest_name || "אורח יום",
-        phone: c.phone_raw ? normalizeGuestPhoneEdit(c.phone_raw) : null,
+        phone: c.phone_raw ? normalizeGuestPhoneEdit(c.phone_raw).value : null,
         arrival_date: arrival,
         departure_date: c.departure_date || arrival,
         room_type: "day_guest",
@@ -212,6 +213,8 @@ export default function SmartPastePanel({ showToast }) {
         spa_time: c.spa_time || null,
         order_number: c.order_number || null,
       };
+      await assertNoConflictingSuiteProfile(supabase, row.phone, arrival);
+      await assertNoDuplicateGuest(supabase, row.phone, arrival);
       const { error } = await supabase.from("guests").insert(row);
       if (error) throw error;
       showToast?.(`✓ נוצר פרופיל בילוי יומי — ${row.name}`);

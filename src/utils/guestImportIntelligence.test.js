@@ -560,6 +560,19 @@ describe("Doc 1 enrichment — preserve multi-night stay dates", () => {
     expect(findGuestForDoc1Enrichment([suiteGuest], rec)).toBeNull();
   });
 
+  // P0 2026-08-05: a "972…" (no leading +) rec.phone from an import source
+  // used to miss the exact-string match against guests.phone's "+972…" and
+  // fall through to daypass_create, spawning a split-brain duplicate for a
+  // guest who already has an active suite stay covering the date.
+  test("findGuestForDoc1Enrichment: normalized-phone fallback finds the suite guest despite a +/no-+ mismatch", () => {
+    const rec = {
+      phone: "972501111111",
+      arrival_date: "2026-07-19",
+      spa_time: "14:00",
+    };
+    expect(findGuestForDoc1Enrichment([suiteGuest], rec)).toEqual(suiteGuest);
+  });
+
   test("buildDoc1EnrichmentPatch: never includes arrival_date", () => {
     const rec = {
       arrival_date: "2026-07-19",

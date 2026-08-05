@@ -133,6 +133,11 @@ function guestTargetFromLine(line) {
   };
 }
 
+/** Best-effort human label for a line — batch failures must name a guest, never fail silently. */
+function lineDisplayName(line) {
+  return line?.guests?.name || line?.parsed_json?.guest_name || line?.parsed_json?.phone || `שורה #${line?.id ?? "?"}`;
+}
+
 const BTN = {
   approve: {
     padding: "4px 10px", borderRadius: 8, border: "none",
@@ -826,6 +831,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     }
     setBusy(true);
     let ok = 0;
+    const failures = [];
     try {
       for (const line of pending) {
         try {
@@ -838,9 +844,16 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
             await createLineInternal(line);
           }
           ok += 1;
-        } catch { /* continue */ }
+        } catch (e) {
+          failures.push(`${lineDisplayName(line)}: ${e?.message ?? e}`);
+        }
       }
-      showToast?.(`טופלו ${ok} שורות (ללא שליחת הצעת ספא)`, "ok");
+      const summary = `טופלו ${ok} שורות (ללא שליחת הצעת ספא)`;
+      if (failures.length) {
+        showToast?.(`${summary} · ⚠ ${failures.length} נכשלו — ${failures.join(" · ")}`, "err");
+      } else {
+        showToast?.(summary, "ok");
+      }
       await loadLines(selectedId);
       await loadIngests();
     } finally {
@@ -901,13 +914,20 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       return;
     }
     let ok = 0;
+    const failures = [];
     for (const line of pending) {
       try {
         await applyLine(line);
         ok += 1;
-      } catch { /* continue */ }
+      } catch (e) {
+        failures.push(`${lineDisplayName(line)}: ${e?.message ?? e}`);
+      }
     }
-    showToast?.(`אושרו ${ok} שורות`, "ok");
+    if (failures.length) {
+      showToast?.(`אושרו ${ok} שורות · ⚠ ${failures.length} נכשלו — ${failures.join(" · ")}`, "err");
+    } else {
+      showToast?.(`אושרו ${ok} שורות`, "ok");
+    }
   };
 
   const createBatch = async (workflowId) => {
@@ -917,13 +937,20 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       return;
     }
     let ok = 0;
+    const failures = [];
     for (const line of pending) {
       try {
         await createLineInternal(line);
         ok += 1;
-      } catch { /* continue */ }
+      } catch (e) {
+        failures.push(`${lineDisplayName(line)}: ${e?.message ?? e}`);
+      }
     }
-    showToast?.(`נוצרו ${ok} פרופילים`, "ok");
+    if (failures.length) {
+      showToast?.(`נוצרו ${ok} פרופילים · ⚠ ${failures.length} נכשלו — ${failures.join(" · ")}`, "err");
+    } else {
+      showToast?.(`נוצרו ${ok} פרופילים`, "ok");
+    }
     await loadLines(selectedId);
     await loadIngests();
   };
