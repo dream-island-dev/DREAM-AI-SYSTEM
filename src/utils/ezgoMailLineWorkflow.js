@@ -188,8 +188,36 @@ export function stripWorkflowPatch(patch) {
   return out;
 }
 
+/**
+ * Hermetic day-pass create gate (Mike, P1.5 2026-08-05): a mail/import row can
+ * be mis-resolved as a day visit for a guest who already has an active suite
+ * stay covering that date (e.g. a mid-stay row mis-parsed as day-pass) — that
+ * used to insert a phantom "בילוי יומי" duplicate profile, split-brain with
+ * the real suite profile. Window-overlap match (not exact arrival_date) so a
+ * stray day-pass row anywhere inside an existing multi-night suite stay is
+ * still caught, not just an exact-date collision.
+ */
+export async function assertNoConflictingSuiteProfile(supabase, phone, arrivalDate) {
+  if (!phone || !arrivalDate) return;
+  const { data, error } = await supabase
+    .from("guests")
+    .select("id, name, room, room_type, arrival_date, departure_date")
+    .eq("phone", phone)
+    .neq("status", "cancelled")
+    .lte("arrival_date", arrivalDate)
+    .or(`departure_date.is.null,departure_date.gte.${arrivalDate}`);
+  if (error) throw error;
+  const conflict = (data || []).find((g) => isEffectiveSuiteGuest(g));
+  if (conflict) {
+    throw new Error(
+      `לא ניתן ליצור פרופיל בילוי יומי — קיים כבר פרופיל סוויטה פעיל (${conflict.name || phone}${conflict.room ? ` · ${conflict.room}` : ""}) לאותו טלפון בתאריך זה`,
+    );
+  }
+}
+
 export async function createDaypassGuestFromRec(supabase, rec, reportDateYmd) {
   const recArrivalDate = rec.arrival_date || reportDateYmd;
+  await assertNoConflictingSuiteProfile(supabase, rec.phone, recArrivalDate);
   const insert = {
     phone: rec.phone,
     name: rec.guest_name || null,
