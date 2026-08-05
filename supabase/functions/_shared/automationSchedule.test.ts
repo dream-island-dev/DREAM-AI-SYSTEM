@@ -47,6 +47,8 @@ import {
   isSpaUpsellAcceptanceReply,
   isSpaUpsellAcceptanceEligible,
   isLowValueCourtesyMessage,
+  getAutomationScopeStageSkipReason,
+  getAutomationScopeTriggerBlockReason,
   type AutomationStage,
   type GuestForSchedule,
 } from "./automationSchedule.ts";
@@ -1203,4 +1205,30 @@ Deno.test("isLowValueCourtesyMessage: polite decline closers", () => {
   assertEquals(isLowValueCourtesyMessage("לא תודה"), true);
   assertEquals(isLowValueCourtesyMessage("לא צריך"), true);
   assertEquals(isLowValueCourtesyMessage("לא מגיעים"), false);
+});
+
+// Doc2 mail group-import P0 (2026-08-05): a group guest imported with
+// automation_scope='muted' must block cron stages 1-4 AND whatsapp-send
+// pipeline triggers, but room_ready (manual, after HK approval) and staff
+// manual sends must still go through — documents the existing exemption these
+// import-time fixes now rely on being correct.
+Deno.test("getAutomationScopeStageSkipReason: muted guest blocks every cron stage, including mid_stay", () => {
+  const muted = { automation_scope: "muted" };
+  assertEquals(getAutomationScopeStageSkipReason(muted, "night_before"), "automation_muted");
+  assertEquals(getAutomationScopeStageSkipReason(muted, "morning_suite"), "automation_muted");
+  assertEquals(getAutomationScopeStageSkipReason(muted, "mid_stay"), "automation_muted");
+});
+
+Deno.test("getAutomationScopeTriggerBlockReason: muted guest blocks pipeline triggers but room_ready is exempt", () => {
+  const muted = { automation_scope: "muted" };
+  const exempt = new Set(["room_ready", "manual_send"]);
+  assertEquals(getAutomationScopeTriggerBlockReason(muted, "night_before", exempt), "automation_muted");
+  assertEquals(getAutomationScopeTriggerBlockReason(muted, "room_ready", exempt), null);
+  assertEquals(getAutomationScopeTriggerBlockReason(muted, "manual_send", exempt), null);
+});
+
+Deno.test("getAutomationScopeTriggerBlockReason: full-scope guest is never blocked", () => {
+  const full = { automation_scope: "full" };
+  const exempt = new Set(["room_ready"]);
+  assertEquals(getAutomationScopeTriggerBlockReason(full, "night_before", exempt), null);
 });

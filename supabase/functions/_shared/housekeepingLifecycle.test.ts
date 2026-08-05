@@ -103,6 +103,36 @@ Deno.test("scoreGuestForCheckout: departing today checked_in wins", () => {
   assertEquals(score < HOUSEKEEPING_SCORE_OUT_OF_RANGE, true);
 });
 
+Deno.test("scoreGuestForCheckout: recently checked_out (within lookback) still a dedupe candidate", () => {
+  const recentlyOut = {
+    id: 3,
+    status: "checked_out",
+    arrival_date: "2026-07-27",
+    departure_date: "2026-07-29", // 1 day ago
+  };
+  assertEquals(scoreGuestForCheckout(recentlyOut, today), 6);
+});
+
+Deno.test("scoreGuestForCheckout: stale checked_out (past lookback window) excluded — regression for P0 2026-08-05 ambiguous_guest wall-of-names on ג'ספר 3", () => {
+  const monthsAgo = {
+    id: 4,
+    status: "checked_out",
+    arrival_date: "2026-04-01",
+    departure_date: "2026-04-05",
+  };
+  assertEquals(scoreGuestForCheckout(monthsAgo, today), HOUSEKEEPING_SCORE_OUT_OF_RANGE);
+});
+
+Deno.test("scoreGuestForCheckout: overdue checked_in (never checked out) still beats stale checked_out regardless of age", () => {
+  const stillIn = {
+    id: 5,
+    status: "checked_in",
+    arrival_date: "2026-06-01",
+    departure_date: "2026-06-10", // overdue by weeks, never checked out
+  };
+  assertEquals(scoreGuestForCheckout(stillIn, today), 5);
+});
+
 Deno.test("isGuestEligibleForHousekeepingCheckIn: future arrival blocked", () => {
   assertEquals(
     isGuestEligibleForHousekeepingCheckIn({ arrival_date: "2026-07-31", departure_date: "2026-08-02", status: "expected" }, today),

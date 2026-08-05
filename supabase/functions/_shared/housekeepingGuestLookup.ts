@@ -457,8 +457,16 @@ export async function findDepartingGuestForSuite(
   return picked;
 }
 
+const AMBIGUOUS_HINT_MAX_NAMES = 2;
+
+/** Capped at 2 names so a wide tie (e.g. many historical occupants of the same
+ * physical room) never renders as a wall of text — whether logged or, if
+ * HOUSEKEEPING_WA_GROUP_REPLY is ever turned on, sent to the group. */
 export function formatAmbiguousGuestHint(candidates: SuiteGuestRow[]): string {
-  return candidates
-    .map((g) => `${g.name ?? "—"} (הגעה ${g.arrival_date ?? "?"}, עזיבה ${g.departure_date ?? "?"})`)
-    .join(" · ");
+  const shown = candidates
+    .slice(0, AMBIGUOUS_HINT_MAX_NAMES)
+    .map((g) => `${g.name ?? "—"} (הגעה ${g.arrival_date ?? "?"}, עזיבה ${g.departure_date ?? "?"})`);
+  const remaining = candidates.length - shown.length;
+  if (remaining > 0) shown.push(`ועוד ${remaining}`);
+  return shown.join(" · ");
 }

@@ -46,6 +46,14 @@ function pickEnrichValue(importVal, existingVal) {
   return undefined;
 }
 
+// Mirrors _shared/importAutomationScope.ts's mergeAutomationScope — never lets
+// an enrichment write loosen an already-muted guest back toward full.
+function mergeAutomationScope(existing, incoming) {
+  const rank = (s) => (s === "muted" ? 2 : s === "courtesy_only" ? 1 : 0);
+  const r = Math.max(rank(existing), rank(incoming));
+  return r === 2 ? "muted" : r === 1 ? "courtesy_only" : "full";
+}
+
 export function buildDoc2EnrichmentPatch(rec, guest) {
   if (!guest) return {};
   const patch = {};
@@ -72,6 +80,17 @@ export function buildDoc2EnrichmentPatch(rec, guest) {
   if (rec.guest_name) {
     const picked = pickEnrichValue(rec.guest_name, guest.name);
     if (picked !== undefined) patch.name = picked;
+  }
+  if (rec.meal_time) {
+    const picked = pickEnrichValue(rec.meal_time, guest.meal_time);
+    if (picked !== undefined) patch.meal_time = picked;
+  }
+  if (rec.automation_scope) {
+    const merged = mergeAutomationScope(guest.automation_scope, rec.automation_scope);
+    if (merged !== (guest.automation_scope || "full")) {
+      patch.automation_scope = merged;
+      patch.automation_muted = merged === "muted";
+    }
   }
   return patch;
 }
@@ -111,7 +130,11 @@ export function classifyDoc2MailWorkflow(rec, guest) {
     };
   }
   if (!matchedGuest) {
-    if (rec.is_day_guest || isPremiumDayRoom(rec.room)) {
+    // SUITE-FIRST (Mike, P0 2026-08-05): rec.room already wins over a day-pass
+    // label at parse time server-side; this guard is defense-in-depth against a
+    // stale is_day_guest on an older parsed_json row — never route to
+    // daypass_create when the room resolved to a canonical suite.
+    if ((rec.is_day_guest || isPremiumDayRoom(rec.room)) && !isCanonicalSuiteRoom(rec.room)) {
       return {
         workflow: "daypass_create",
         action: "create",

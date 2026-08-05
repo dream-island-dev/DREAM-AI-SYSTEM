@@ -1,7 +1,7 @@
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import {
   buildHousekeepingCheckInAckLine,
-  HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS,
+  HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS,
 } from "./housekeepingCheckInSignal.ts";
 
 Deno.test("buildHousekeepingCheckInAckLine: skipped_no_suite uses roomNumber (no roomId exists)", () => {
@@ -55,13 +55,13 @@ Deno.test("buildHousekeepingCheckInAckLine: turnover implicit-co hint unchanged"
   assertEquals(line, "✅ חדר רובי 14 — צ'ק-אין נקלט (נכנס) · יצא קודם: יוצא");
 });
 
-Deno.test("HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS: covers every problem action, excludes success/dedup", () => {
-  assertEquals(HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS.has("skipped_no_suite"), true);
-  assertEquals(HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS.has("no_guest"), true);
-  assertEquals(HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS.has("ambiguous_guest"), true);
-  assertEquals(HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS.has("guest_not_eligible"), true);
-  assertEquals(HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS.has("error"), true);
-  assertEquals(HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS.has("updated"), false);
-  assertEquals(HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS.has("already_checked_in"), false);
-  assertEquals(HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS.has("dedup"), false);
+Deno.test("HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS: covers every problem action, excludes success/dedup", () => {
+  assertEquals(HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS.has("skipped_no_suite"), true);
+  assertEquals(HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS.has("no_guest"), true);
+  assertEquals(HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS.has("ambiguous_guest"), true);
+  assertEquals(HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS.has("guest_not_eligible"), true);
+  assertEquals(HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS.has("error"), true);
+  assertEquals(HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS.has("updated"), false);
+  assertEquals(HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS.has("already_checked_in"), false);
+  assertEquals(HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS.has("dedup"), false);
 });

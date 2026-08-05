@@ -2,7 +2,7 @@
  * Mirrors supabase/functions/_shared/housekeepingCheckInSignal.ts (Deno boundary).
  */
 
-export const HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS = new Set([
+export const HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS = new Set([
   "skipped_no_suite", "no_guest", "ambiguous_guest", "guest_not_eligible", "error",
 ]);
 

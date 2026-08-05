@@ -1,0 +1,50 @@
+import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
+import {
+  isCorporateMuteCoordName,
+  mergeAutomationScope,
+  resolveDoc2ImportAutomationScope,
+} from "./importAutomationScope.ts";
+
+Deno.test("resolveDoc2ImportAutomationScope: remark group occupant → muted, not courtesy_only", () => {
+  assertEquals(
+    resolveDoc2ImportAutomationScope({ coordNameRaw: "בנק לאומי ועד תיכון", isRemarkGroupOccupant: true }),
+    "muted",
+  );
+});
+
+Deno.test("resolveDoc2ImportAutomationScope: corporate coord without remark occupant → muted", () => {
+  assertEquals(
+    resolveDoc2ImportAutomationScope({ coordNameRaw: "עיריית תל אביב", isRemarkGroupOccupant: false }),
+    "muted",
+  );
+});
+
+Deno.test("resolveDoc2ImportAutomationScope: solo individual booking → full", () => {
+  assertEquals(
+    resolveDoc2ImportAutomationScope({ coordNameRaw: "רחל אופיר", isRemarkGroupOccupant: false }),
+    "full",
+  );
+});
+
+Deno.test("isCorporateMuteCoordName: municipal/bank aliases", () => {
+  assertEquals(isCorporateMuteCoordName("עיריית תל אביב"), true);
+  assertEquals(isCorporateMuteCoordName("בנק לאומי ועד תיכון"), true);
+  assertEquals(isCorporateMuteCoordName("רחל אופיר"), false);
+  assertEquals(isCorporateMuteCoordName(null), false);
+});
+
+Deno.test("mergeAutomationScope: never loosens an already-muted guest", () => {
+  assertEquals(mergeAutomationScope("muted", "full"), "muted");
+  assertEquals(mergeAutomationScope("muted", null), "muted");
+});
+
+Deno.test("mergeAutomationScope: escalates toward more restrictive", () => {
+  assertEquals(mergeAutomationScope("full", "muted"), "muted");
+  assertEquals(mergeAutomationScope("full", "courtesy_only"), "courtesy_only");
+  assertEquals(mergeAutomationScope("courtesy_only", "muted"), "muted");
+});
+
+Deno.test("mergeAutomationScope: full stays full when both full/unset", () => {
+  assertEquals(mergeAutomationScope(null, null), "full");
+  assertEquals(mergeAutomationScope("full", "full"), "full");
+});

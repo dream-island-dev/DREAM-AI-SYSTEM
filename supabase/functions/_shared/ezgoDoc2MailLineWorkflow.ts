@@ -12,6 +12,7 @@ import {
   isPremiumDayRoom,
   roomsCanonicallyMatch,
 } from "./suiteNames.ts";
+import { mergeAutomationScope } from "./importAutomationScope.ts";
 
 export type Doc2MailWorkflow =
   | "suite_arrival_create"
@@ -33,6 +34,8 @@ export type Doc2GuestRow = {
   room: string | null;
   room_type?: string | null;
   meal_location: string | null;
+  meal_time?: string | null;
+  automation_scope?: string | null;
 };
 
 function patchHasChanges(patch: Record<string, unknown>): boolean {
@@ -84,6 +87,17 @@ export function buildDoc2EnrichmentPatch(
     const picked = pickEnrichValue(rec.guest_name, guest.name);
     if (picked !== undefined) patch.name = picked;
   }
+  if (rec.meal_time) {
+    const picked = pickEnrichValue(rec.meal_time, guest.meal_time);
+    if (picked !== undefined) patch.meal_time = picked;
+  }
+  if (rec.automation_scope) {
+    const merged = mergeAutomationScope(guest.automation_scope, rec.automation_scope);
+    if (merged !== (guest.automation_scope ?? "full")) {
+      patch.automation_scope = merged;
+      patch.automation_muted = merged === "muted";
+    }
+  }
   return patch;
 }
 
@@ -132,7 +146,12 @@ export function classifyDoc2MailWorkflow(
   }
 
   if (!matchedGuest) {
-    if (rec.is_day_guest || isPremiumDayRoom(rec.room)) {
+    // SUITE-FIRST (Mike, P0 2026-08-05): rec.room already wins over a day-pass
+    // label at parse time (resolveSuiteRoomFromEzgoLabel), but this guard stays
+    // as defense-in-depth against a stale is_day_guest on an older parsed_json
+    // row — never route to daypass_create when the room resolved to a canonical
+    // suite.
+    if ((rec.is_day_guest || isPremiumDayRoom(rec.room)) && !isCanonicalSuiteRoom(rec.room)) {
       return {
         workflow: "daypass_create",
         action: "create",

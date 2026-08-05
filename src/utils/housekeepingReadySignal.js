@@ -16,7 +16,7 @@ export function buildHousekeepingGroupAckMessage(items) {
   return lines.join("\n");
 }
 
-export const HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS = new Set(["skipped_no_suite", "error"]);
+export const HOUSEKEEPING_READY_PROBLEM_ACTIONS = new Set(["skipped_no_suite", "error"]);
 
 export function buildHousekeepingReadyAckLine(result) {
   const { roomNumber, roomId, guestName, action } = result ?? {};

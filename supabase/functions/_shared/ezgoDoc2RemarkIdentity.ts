@@ -7,7 +7,8 @@ import {
 } from "./ezgoDoc1Parser.ts";
 
 const IL_MOBILE_RE = /(0(?:5[0-9])[-. ]?\d{3}[-. ]?\d{4})(?!\d)/g;
-const MEAL_TIME_REMARK_RE = /א\.?\s*ערב\s*\d{1,2}:\d{2}/;
+const IL_MOBILE_FIRST_RE = /(0(?:5[0-9])[-. ]?\d{3}[-. ]?\d{4})(?!\d)/;
+const MEAL_TIME_REMARK_RE = /א\.?\s*ערב\s*(\d{1,2}:\d{2})/;
 
 export function extractPhonesFromRemarkText(text: string): string[] {
   const out: string[] = [];
@@ -19,16 +20,22 @@ export function extractPhonesFromRemarkText(text: string): string[] {
   return out;
 }
 
+/**
+ * Dual/multi-occupant remarks ("אורטל בנטורה 050-3302020 / דני כהן 052-1234567")
+ * used to break this: stripping every phone match from the whole string first
+ * left both names glued together into one garbled blob, which then got paired
+ * with remarkPhones[0] — occupant #1's phone next to a #1+#2 mashed name (Mike,
+ * P0 2026-08-05). Take everything BEFORE the first phone instead (same strategy
+ * as ezgoParser.js's extractNameFromRemark, proven there for the CSV path) —
+ * that's occupant #1's name segment, correctly paired with remarkPhones[0].
+ */
 export function extractNameFromRemarkText(remark: string): string | null {
   const s = String(remark || "").trim();
   if (!s) return null;
-  const phones = extractPhonesFromRemarkText(s);
-  if (!phones.length) return null;
+  const firstPhone = IL_MOBILE_FIRST_RE.exec(s);
+  if (!firstPhone) return null;
 
-  let name = s;
-  for (const p of phones) {
-    name = name.replace(p, "").replace(/0\d{2}[-. ]?\d{3}[-. ]?\d{4}/g, "");
-  }
+  let name = s.slice(0, firstPhone.index);
   name = name.replace(/\s*-\s*א\.?\s*ערב\s*\d{1,2}:\d{2}/g, "");
   name = name.replace(MEAL_TIME_REMARK_RE, "");
   name = name.replace(/[,;|]+/g, " ").replace(/\s+/g, " ").trim();
@@ -43,6 +50,13 @@ export function extractNameFromRemarkText(remark: string): string | null {
   }
 
   return name || null;
+}
+
+/** EZGO remark meal-time shorthand — "א. ערב 19:30" → "19:30". Mirrors
+ * ezgoParser.js's extractMealTimeFromRemark for the CSV path. */
+export function extractMealTimeFromRemarkText(remark: string): string | null {
+  const m = String(remark || "").match(MEAL_TIME_REMARK_RE);
+  return m ? m[1] : null;
 }
 
 function isDummyPhone(phone: string | null): boolean {

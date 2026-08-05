@@ -54,6 +54,69 @@ Deno.test("parseHtmlArrivalsReport: duplicate coordinator → occupant from הע
   assertEquals(rows[1].order_number, "262984");
 });
 
+Deno.test("parseHtmlArrivalsReport: group occupants → automation_scope=muted, meal_time extracted — P0 2026-08-05", () => {
+  const rows = parseHtmlArrivalsReport(GROUP_COORD_HTML);
+  assertEquals(rows[0].automation_scope, "muted");
+  assertEquals(rows[0].automation_muted, true);
+  assertEquals(rows[0].is_remark_group_occupant, true);
+  assertEquals(rows[0].meal_time, "20:00");
+  assertEquals(rows[1].meal_time, "19:30");
+});
+
+Deno.test("parseHtmlArrivalsReport: solo row → automation_scope=full, not muted", () => {
+  const rows = parseHtmlArrivalsReport(SAMPLE_ROW_HTML);
+  assertEquals(rows[0].automation_scope, "full");
+  assertEquals(rows[0].automation_muted, false);
+  assertEquals(rows[0].is_remark_group_occupant, false);
+});
+
+const MUNICIPAL_GROUP_3ROW_HTML = `
+<table><tr><td>כניסה</td><td>04/08/2026</td></tr>
+<tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
+<tr><td></td><td>301111</td><td>סוויטת ג'ספר - 1</td><td>HB</td><td></td><td>1</td><td>2</td><td>עיריית תל אביב , 0501112222</td><td>2,000₪</td><td>דנה לוי 050-1112222 - א. ערב 19:00</td></tr>
+<tr><td></td><td>301111</td><td>סוויטת ג'ספר - 2</td><td>HB</td><td></td><td>1</td><td>2</td><td>עיריית תל אביב , 0501112222</td><td>2,000₪</td><td>יוסי כהן 052-3334444 - א. ערב 19:30</td></tr>
+<tr><td></td><td>301111</td><td>סוויטת ג'ספר - 3</td><td>HB</td><td></td><td>1</td><td>2</td><td>עיריית תל אביב , 0501112222</td><td>2,000₪</td><td>רונית עמר 054-5556666 - א. ערב 20:00</td></tr>
+</table>`;
+
+Deno.test("parseHtmlArrivalsReport: municipal 3-row group → 3 profiles, all automation_scope=muted — P0 2026-08-05", () => {
+  const rows = parseHtmlArrivalsReport(MUNICIPAL_GROUP_3ROW_HTML);
+  assertEquals(rows.length, 3);
+  assertEquals(rows.map((r) => r.guest_name), ["דנה לוי", "יוסי כהן", "רונית עמר"]);
+  assertEquals(rows.map((r) => r.phone), ["+972501112222", "+972523334444", "+972545556666"]);
+  assertEquals(rows.every((r) => r.automation_scope === "muted"), true);
+  assertEquals(rows.every((r) => r.automation_muted === true), true);
+  assertEquals(rows.every((r) => r.is_remark_group_occupant === true), true);
+  assertEquals(rows.map((r) => r.room), ["ג׳ספר 1", "ג׳ספר 2", "ג׳ספר 3"]);
+});
+
+const SUITE_WITH_DAYPASS_SUFFIX_HTML = `
+<table><tr><td>כניסה</td><td>04/08/2026</td></tr>
+<tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
+<tr><td></td><td>301999</td><td>אמטיסט 11 - בילוי יומי</td><td>BB</td><td></td><td>1</td><td>2</td><td>רותם שגיא , 0521234567</td><td>1,500₪</td><td></td></tr>
+</table>`;
+
+Deno.test("parseHtmlArrivalsReport: 'אמטיסט 11 - בילוי יומי' → suite room, is_day_guest=false, NOT daypass — P0 2026-08-05", () => {
+  const rows = parseHtmlArrivalsReport(SUITE_WITH_DAYPASS_SUFFIX_HTML);
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].room, "אמטיסט 11");
+  assertEquals(rows[0].is_day_guest, false);
+  assertEquals(rows[0].is_premium_day, false);
+});
+
+const MUNICIPAL_SOLO_HTML = `
+<table><tr><td>כניסה</td><td>03/08/2026</td></tr>
+<tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
+<tr><td></td><td>270111</td><td>סוויטת רובי - 14</td><td>HB</td><td></td><td>1</td><td>2</td><td>עיריית תל אביב , 0501112222</td><td>2,000₪</td><td></td></tr>
+</table>`;
+
+Deno.test("parseHtmlArrivalsReport: single-row municipal coordinator (no remark occupant) → automation_scope=muted", () => {
+  const rows = parseHtmlArrivalsReport(MUNICIPAL_SOLO_HTML);
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].is_remark_group_occupant, false);
+  assertEquals(rows[0].automation_scope, "muted");
+  assertEquals(rows[0].room, "רובי 14");
+});
+
 Deno.test("parseHtmlArrivalsReport: solo row ignores remark occupant", () => {
   const html = `
 <table><tr><td>כניסה</td><td>03/08/2026</td></tr>

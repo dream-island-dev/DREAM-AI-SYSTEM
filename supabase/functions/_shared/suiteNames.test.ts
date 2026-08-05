@@ -10,7 +10,35 @@ import {
   isEffectiveDayPassGuest,
   isEffectiveSuiteGuest,
   isPremiumDayRoom,
+  resolveSuiteRoomFromEzgoLabel,
 } from "./suiteNames.ts";
+
+Deno.test("resolveSuiteRoomFromEzgoLabel: suite wins over בילוי יומי substring — P0 2026-08-05 regression (אמטיסט 11 - בילוי יומי misclassified as day_guest)", () => {
+  assertEquals(resolveSuiteRoomFromEzgoLabel("אמטיסט 11 - בילוי יומי"), "אמטיסט 11");
+  assertEquals(resolveSuiteRoomFromEzgoLabel("סוויטת ג'ספר - 3 בילוי יומי"), "ג׳ספר 3");
+});
+
+Deno.test("resolveSuiteRoomFromEzgoLabel: suite wins over ביקור יומי substring too", () => {
+  assertEquals(resolveSuiteRoomFromEzgoLabel("רובי 14 - ביקור יומי"), "רובי 14");
+});
+
+Deno.test("resolveSuiteRoomFromEzgoLabel: standalone בילוי יומי with no suite number stays day-pass", () => {
+  assertEquals(resolveSuiteRoomFromEzgoLabel("בילוי יומי"), "בילוי יומי");
+  assertEquals(resolveSuiteRoomFromEzgoLabel("חבילת בילוי יומי"), "בילוי יומי");
+});
+
+Deno.test("resolveSuiteRoomFromEzgoLabel: standalone ביקור יומי with no suite number is day-pass", () => {
+  assertEquals(resolveSuiteRoomFromEzgoLabel("ביקור יומי"), "בילוי יומי");
+});
+
+Deno.test("resolveSuiteRoomFromEzgoLabel: Premium Day still wins regardless of order", () => {
+  assertEquals(resolveSuiteRoomFromEzgoLabel("Premium Day 1"), "Premium Day 1");
+  assertEquals(resolveSuiteRoomFromEzgoLabel("פרימיום 2"), "Premium Day 2");
+});
+
+Deno.test("resolveSuiteRoomFromEzgoLabel: plain suite label unaffected", () => {
+  assertEquals(resolveSuiteRoomFromEzgoLabel("סוויטת אמטיסט - 8"), "אמטיסט 8");
+});
 
 Deno.test("isPremiumDayRoom — Premium Day 1/2 only", () => {
   assertEquals(isPremiumDayRoom("Premium Day 1"), true);

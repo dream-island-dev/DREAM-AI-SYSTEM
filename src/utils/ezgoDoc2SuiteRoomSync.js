@@ -27,8 +27,26 @@ export function guestRoomLabelsInclude(guestRoom, incomingRoom) {
   return labels.some((label) => roomsCanonicallyMatch(label, incomingRoom));
 }
 
+// Restrictiveness rank, mirrors public.merge_automation_scope (migration 154) /
+// _shared/importAutomationScope.ts. Applied client-side because this file writes
+// directly via the Supabase JS client, not through the sync_suite_arrivals RPC.
+// Never lets an enrichment write loosen an already-muted guest back toward full.
+function mergeAutomationScope(existing, incoming) {
+  const rank = (s) => (s === "muted" ? 2 : s === "courtesy_only" ? 1 : 0);
+  const r = Math.max(rank(existing), rank(incoming));
+  return r === 2 ? "muted" : r === 1 ? "courtesy_only" : "full";
+}
+
 export function isSameDoc2Booking(rec, guest) {
-  if (rec.order_number && guest.order_number && rec.order_number === guest.order_number) {
+  // An explicit order-number mismatch is authoritative — never fall through to
+  // the softer phone/date heuristic below (would silently merge two different
+  // bookings). Same order_number is NOT sufficient on its own either — group/
+  // municipal bookings share one order_number across genuinely different
+  // occupants; an explicit phone mismatch when both are known must still block
+  // the merge (Mike, P0 2026-08-05: never merge via order_number when phones differ).
+  if (rec.order_number && guest.order_number) {
+    if (rec.order_number !== guest.order_number) return false;
+    if (rec.phone && guest.phone && rec.phone !== guest.phone) return false;
     return true;
   }
   const recDate = rec.arrival_date ? String(rec.arrival_date).slice(0, 10) : null;
@@ -69,6 +87,17 @@ export function buildDoc2GuestEnrichPatch(rec, guest) {
     const picked = pickEnrichValue(rec.guest_name, guest.name);
     if (picked !== undefined) patch.name = picked;
   }
+  if (rec.meal_time) {
+    const picked = pickEnrichValue(rec.meal_time, guest.meal_time);
+    if (picked !== undefined) patch.meal_time = picked;
+  }
+  if (rec.automation_scope) {
+    const merged = mergeAutomationScope(guest.automation_scope, rec.automation_scope);
+    if (merged !== (guest.automation_scope || "full")) {
+      patch.automation_scope = merged;
+      patch.automation_muted = merged === "muted";
+    }
+  }
   return patch;
 }
 
@@ -77,7 +106,7 @@ export async function findGuestForDoc2SuiteCreate(supabase, rec, reportDateYmd) 
   if (!arrival) return null;
 
   const select =
-    "id, name, phone, order_number, arrival_date, departure_date, room, room_type, meal_location";
+    "id, name, phone, order_number, arrival_date, departure_date, room, room_type, meal_location, meal_time, automation_scope";
 
   if (rec.order_number) {
     const { data } = await supabase
@@ -216,7 +245,7 @@ export async function recomputeGuestCombinedRoom(supabase, guestId, fallbackRoom
 export async function applyDoc2SuiteRoomAdd(supabase, { guestId, rec, reportDateYmd }) {
   const { data: guest, error: gErr } = await supabase
     .from("guests")
-    .select("id, name, phone, order_number, arrival_date, departure_date, room, meal_location")
+    .select("id, name, phone, order_number, arrival_date, departure_date, room, meal_location, meal_time, automation_scope")
     .eq("id", guestId)
     .maybeSingle();
   if (gErr || !guest) throw gErr || new Error("אורח לא נמצא");
@@ -268,6 +297,7 @@ export async function createDoc2SuiteArrival(supabase, rec, reportDateYmd) {
   }
 
   const arrival = rec.arrival_date || reportDateYmd;
+  const automationScope = rec.automation_scope || "full";
   const insert = {
     phone: rec.phone,
     name: rec.guest_name || null,
@@ -278,6 +308,9 @@ export async function createDoc2SuiteArrival(supabase, rec, reportDateYmd) {
     status: "expected",
     order_number: rec.order_number || null,
     meal_location: rec.meal_location || null,
+    meal_time: rec.meal_time || null,
+    automation_scope: automationScope,
+    automation_muted: automationScope === "muted",
     guest_index: 1,
   };
 

@@ -7,12 +7,17 @@ import {
 } from "./ezgoDoc1Parser.ts";
 import {
   duplicateCoordNameKeys,
+  extractMealTimeFromRemarkText,
   resolveDoc2GuestIdentity,
 } from "./ezgoDoc2RemarkIdentity.ts";
 import {
   isPremiumDayRoom,
   resolveSuiteRoomFromEzgoLabel,
 } from "./suiteNames.ts";
+import {
+  resolveDoc2ImportAutomationScope,
+  type ImportAutomationScope,
+} from "./importAutomationScope.ts";
 
 export type Doc2Section = "arrival" | "departure";
 
@@ -35,6 +40,13 @@ export type Doc2Record = {
   departure_date: string | null;
   is_day_guest: boolean;
   is_premium_day: boolean;
+  // Optional — absent on hand-built fixtures predating P0 2026-08-05; downstream
+  // readers (ezgoDoc2SuiteRoomSync.ts, ezgoDoc2MailLineWorkflow.ts) default
+  // automation_scope to "full" when unset, same as a plain individual booking.
+  meal_time?: string | null;
+  automation_scope?: ImportAutomationScope;
+  automation_muted?: boolean;
+  is_remark_group_occupant?: boolean;
 };
 
 function htmlCellText(html: string): string {
@@ -204,9 +216,14 @@ export function parseHtmlArrivalsReport(htmlText: string): Doc2Record[] {
     const is_premium_day = isPremiumDayRoom(room);
     const is_day_guest = room === "בילוי יומי" || is_premium_day;
     const meal_location = boardBasisToMealLocation(row.board_basis || "");
+    const meal_time = extractMealTimeFromRemarkText(row.notes || "");
     const departure_date = arrivalDate && row.nights != null
       ? addDaysYmd(arrivalDate, row.nights)
       : arrivalDate;
+    const automation_scope = resolveDoc2ImportAutomationScope({
+      coordNameRaw: row.coordName,
+      isRemarkGroupOccupant: coordNameDuplicated,
+    });
 
     records.push({
       _report: "doc2",
@@ -227,6 +244,10 @@ export function parseHtmlArrivalsReport(htmlText: string): Doc2Record[] {
       departure_date,
       is_day_guest,
       is_premium_day,
+      meal_time,
+      automation_scope,
+      automation_muted: automation_scope === "muted",
+      is_remark_group_occupant: coordNameDuplicated,
     });
   }
 

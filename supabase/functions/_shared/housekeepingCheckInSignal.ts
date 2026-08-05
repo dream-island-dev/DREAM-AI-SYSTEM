@@ -37,11 +37,11 @@ export interface HousekeepingCheckInResult {
   error?: string;
 }
 
-/** Actions where staff need to see the outcome no matter what — genuine
- * failures/uncertainty, never gated behind HOUSEKEEPING_WA_GROUP_REPLY
- * (Zero Data Loss / Fail Visible, CLAUDE.md §0). Success/no-op confirmations
- * ("updated", "already_checked_in", "dedup") stay opt-in — see whapi-webhook. */
-export const HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS: ReadonlySet<HousekeepingCheckInAction> = new Set([
+/** Genuine failure/uncertainty actions. As of 2026-08-05 these no longer bypass
+ * HOUSEKEEPING_WA_GROUP_REPLY to post in the group (Mike: the HK group is
+ * receive-only, zero exceptions) — whapi-webhook uses this set only to decide what
+ * gets a console.warn when the group stays silent. See housekeepingAckSelect.ts. */
+export const HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS: ReadonlySet<HousekeepingCheckInAction> = new Set([
   "skipped_no_suite",
   "no_guest",
   "ambiguous_guest",

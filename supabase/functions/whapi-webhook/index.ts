@@ -70,17 +70,17 @@ import {
 import {
   applyHousekeepingReadySignal,
   buildHousekeepingReadyAckLine,
-  HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS,
+  HOUSEKEEPING_READY_PROBLEM_ACTIONS,
 } from "../_shared/housekeepingReadySignal.ts";
 import {
   applyHousekeepingCheckInSignal,
   buildHousekeepingCheckInAckLine,
-  HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS,
+  HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS,
 } from "../_shared/housekeepingCheckInSignal.ts";
 import {
   applyHousekeepingCheckOutSignal,
   buildHousekeepingCheckOutAckLine,
-  HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS,
+  HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS,
 } from "../_shared/housekeepingCheckOutSignal.ts";
 import { isWhapiGuestSosActive, shouldAutoReplyGuestWhapiDm, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
@@ -188,7 +188,7 @@ import {
   stripOutboundDispatchTag,
 } from "../_shared/outboundDispatchTag.ts";
 import { applyTimeGreetingToGuestReply } from "../_shared/guestTimeGreeting.ts";
-import { selectHousekeepingAckLines } from "../_shared/housekeepingAckSelect.ts";
+import { selectHousekeepingAckLines, warnHousekeepingProblemSignals } from "../_shared/housekeepingAckSelect.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -1697,10 +1697,11 @@ serve(async (req: Request) => {
         const checkOutRooms = parseHousekeepingCheckOutRoomNumbers(msg.text);
         if (readyRooms.length === 0 && checkInRooms.length === 0 && checkOutRooms.length === 0) {
           let nearMissAck = false;
-          // Fail Visible: a message that LOOKS like a housekeeping signal but didn't
-          // parse (e.g. an unrecognized format) is exactly the silent-drop risk this
-          // gate exists to catch — always clarify, regardless of hkGroupReply.
-          if (looksLikeHousekeepingNearMiss(msg.text)) {
+          const nearMiss = looksLikeHousekeepingNearMiss(msg.text);
+          // Mike, 2026-08-05 (P0): the group is receive-only — a near-miss clarify is
+          // still outbound to the group, so it stays behind hkGroupReply like every
+          // other reply. When silent, log it instead so ops still has a trail.
+          if (nearMiss && hkGroupReply) {
             const clarify = buildHousekeepingNearMissClarification(msg.text);
             try {
               await sendWhapiText(msg.chatId, clarify, { noLinkPreview: true });
@@ -1708,6 +1709,10 @@ serve(async (req: Request) => {
             } catch (e) {
               console.warn(`[whapi-webhook] housekeeping near-miss ack failed for ${msg.id}:`, (e as Error).message);
             }
+          } else if (nearMiss) {
+            console.warn(
+              `[housekeeping:near_miss:silent] msg=${msg.id} chat=${msg.chatId} text=${JSON.stringify(msg.text)}`,
+            );
           }
           await ingestStaffGroupMessage(supabase, {
             waMessageId: msg.id,
@@ -1723,7 +1728,7 @@ serve(async (req: Request) => {
           results.push({
             id: msg.id,
             channel: "housekeeping",
-            ignored: nearMissAck ? "hk_near_miss_clarify" : "no_housekeeping_pattern",
+            ignored: nearMissAck ? "hk_near_miss_clarify" : nearMiss ? "hk_near_miss_silent" : "no_housekeeping_pattern",
             chat_id: msg.chatId,
           });
           continue;
@@ -1782,29 +1787,30 @@ serve(async (req: Request) => {
           }));
         }
 
-        // Fail Visible (CLAUDE.md §0): failure/uncertainty lines always post, so a
-        // signal that didn't update the DB is never silently dropped. Plain success
-        // confirmations stay behind hkGroupReply — see selectHousekeepingAckLines.
-        const ackLines = [
-          ...selectHousekeepingAckLines(
-            readySignals, buildHousekeepingReadyAckLine, HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS, hkGroupReply,
-          ),
-          ...selectHousekeepingAckLines(
-            checkInSignals, buildHousekeepingCheckInAckLine, HOUSEKEEPING_CHECKIN_ALWAYS_VISIBLE_ACTIONS, hkGroupReply,
-          ),
-          ...selectHousekeepingAckLines(
-            checkOutSignals, buildHousekeepingCheckOutAckLine, HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS, hkGroupReply,
-          ),
-        ];
-        const ackText = ackLines.join("\n");
+        // Mike, 2026-08-05 (P0): the group is receive-only — when hkGroupReply is
+        // false NOTHING posts back, including failure/ambiguous lines that used to
+        // bypass the flag. Silent mode still gets a console.warn trail per problem
+        // signal (Fail Visible in logs, not chat) — see warnHousekeepingProblemSignals.
         let ackSent = false;
-        if (ackText) {
-          try {
-            await sendWhapiText(msg.chatId, ackText, { noLinkPreview: true });
-            ackSent = true;
-          } catch (e) {
-            console.warn(`[whapi-webhook] housekeeping ack failed for ${msg.id}:`, (e as Error).message);
+        if (hkGroupReply) {
+          const ackLines = [
+            ...selectHousekeepingAckLines(readySignals, buildHousekeepingReadyAckLine, hkGroupReply),
+            ...selectHousekeepingAckLines(checkInSignals, buildHousekeepingCheckInAckLine, hkGroupReply),
+            ...selectHousekeepingAckLines(checkOutSignals, buildHousekeepingCheckOutAckLine, hkGroupReply),
+          ];
+          const ackText = ackLines.join("\n");
+          if (ackText) {
+            try {
+              await sendWhapiText(msg.chatId, ackText, { noLinkPreview: true });
+              ackSent = true;
+            } catch (e) {
+              console.warn(`[whapi-webhook] housekeeping ack failed for ${msg.id}:`, (e as Error).message);
+            }
           }
+        } else {
+          warnHousekeepingProblemSignals("ready", readySignals, HOUSEKEEPING_READY_PROBLEM_ACTIONS);
+          warnHousekeepingProblemSignals("check_in", checkInSignals, HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS);
+          warnHousekeepingProblemSignals("check_out", checkOutSignals, HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS);
         }
 
         console.log(

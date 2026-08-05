@@ -55,13 +55,18 @@ const EZGO_SUITE_BRAND_ALIASES: Record<string, string> = {
   "אקווהמרין": "אקווה מרין",
 };
 
-/** Map EZGO mail/CSV room label ("סוויטת אמטיסט - 8") → canonical SUITE_REGISTRY name. */
+/** Map EZGO mail/CSV room label ("סוויטת אמטיסט - 8") → canonical SUITE_REGISTRY name.
+ *
+ * SUITE-FIRST (Mike, P0 2026-08-05): a canonical suite number in the label wins
+ * over a "בילוי יומי"/"ביקור יומי" substring — e.g. "אמטיסט 11 - בילוי יומי" is
+ * suite אמטיסט 11, not a day-pass. Day-pass is resolved only as a fallback, once
+ * no canonical suite number could be matched. Premium Day is checked first since
+ * it names a dedicated day-pass room, not a substring flag on a suite label. */
 export function resolveSuiteRoomFromEzgoLabel(raw: unknown): string {
   const label = String(raw ?? "").trim();
   if (!label) return "";
   if (/premium\s*day\s*2|פרימיום.*2/i.test(label)) return "Premium Day 2";
   if (/premium\s*day\s*1|פרימיום/i.test(label)) return "Premium Day 1";
-  if (/בילוי\s*יומי/i.test(label)) return "בילוי יומי";
 
   let text = label.replace(/^סוויטת\s+/i, "").trim();
   for (const [alias, canon] of Object.entries(EZGO_SUITE_BRAND_ALIASES)) {
@@ -71,18 +76,20 @@ export function resolveSuiteRoomFromEzgoLabel(raw: unknown): string {
   const numMatch = text.match(/(?:^|[\s\-–])(\d{1,2})(?:\s|$|סוויטה)/)
     ?? text.match(/(\d{1,2})\s*$/);
   const num = numMatch?.[1];
-  if (!num) return "";
+  if (num) {
+    const candidates = CANONICAL_SUITE_NAMES.filter((s) => s.endsWith(` ${num}`));
+    if (candidates.length === 1) return candidates[0];
 
-  const candidates = CANONICAL_SUITE_NAMES.filter((s) => s.endsWith(` ${num}`));
-  if (candidates.length === 1) return candidates[0];
+    const brandChunk = text.split(/[-–]/)[0]?.trim() || text;
+    const brandNorm = normalizeRoomName(brandChunk);
+    const narrowed = candidates.filter((s) => {
+      const suiteBrand = normalizeRoomName(s.replace(/ \d+$/, ""));
+      return suiteBrand.includes(brandNorm) || brandNorm.includes(suiteBrand);
+    });
+    if (narrowed.length === 1) return narrowed[0];
+  }
 
-  const brandChunk = text.split(/[-–]/)[0]?.trim() || text;
-  const brandNorm = normalizeRoomName(brandChunk);
-  const narrowed = candidates.filter((s) => {
-    const suiteBrand = normalizeRoomName(s.replace(/ \d+$/, ""));
-    return suiteBrand.includes(brandNorm) || brandNorm.includes(suiteBrand);
-  });
-  if (narrowed.length === 1) return narrowed[0];
+  if (/בילוי\s*יומי|ביקור\s*יומי/i.test(label)) return "בילוי יומי";
   return "";
 }
 

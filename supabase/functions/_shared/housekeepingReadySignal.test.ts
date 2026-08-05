@@ -1,7 +1,7 @@
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import {
   buildHousekeepingReadyAckLine,
-  HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS,
+  HOUSEKEEPING_READY_PROBLEM_ACTIONS,
 } from "./housekeepingReadySignal.ts";
 
 Deno.test("buildHousekeepingReadyAckLine: skipped_no_suite uses roomNumber (no roomId exists)", () => {
@@ -56,11 +56,11 @@ Deno.test("buildHousekeepingReadyAckLine: existing success/no-op lines unchanged
   );
 });
 
-Deno.test("HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS: only skipped_no_suite + error, not success/occupied/dedup", () => {
-  assertEquals(HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS.has("skipped_no_suite"), true);
-  assertEquals(HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS.has("error"), true);
-  assertEquals(HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS.has("updated"), false);
-  assertEquals(HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS.has("already_pending"), false);
-  assertEquals(HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS.has("skipped_occupied"), false);
-  assertEquals(HOUSEKEEPING_READY_ALWAYS_VISIBLE_ACTIONS.has("dedup"), false);
+Deno.test("HOUSEKEEPING_READY_PROBLEM_ACTIONS: only skipped_no_suite + error, not success/occupied/dedup", () => {
+  assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("skipped_no_suite"), true);
+  assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("error"), true);
+  assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("updated"), false);
+  assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("already_pending"), false);
+  assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("skipped_occupied"), false);
+  assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("dedup"), false);
 });

@@ -1,7 +1,7 @@
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import {
   buildHousekeepingCheckOutAckLine,
-  HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS,
+  HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS,
 } from "./housekeepingCheckOutSignal.ts";
 
 Deno.test("buildHousekeepingCheckOutAckLine: turnover incoming hint", () => {
@@ -69,12 +69,12 @@ Deno.test("buildHousekeepingCheckOutAckLine: dedup stays silent", () => {
   assertEquals(line, null);
 });
 
-Deno.test("HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS: covers every problem action, excludes success/dedup", () => {
-  assertEquals(HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS.has("skipped_no_suite"), true);
-  assertEquals(HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS.has("no_guest"), true);
-  assertEquals(HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS.has("ambiguous_guest"), true);
-  assertEquals(HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS.has("error"), true);
-  assertEquals(HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS.has("updated"), false);
-  assertEquals(HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS.has("already_checked_out"), false);
-  assertEquals(HOUSEKEEPING_CHECKOUT_ALWAYS_VISIBLE_ACTIONS.has("dedup"), false);
+Deno.test("HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS: covers every problem action, excludes success/dedup — used for console.warn only, never bypasses hkGroupReply", () => {
+  assertEquals(HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS.has("skipped_no_suite"), true);
+  assertEquals(HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS.has("no_guest"), true);
+  assertEquals(HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS.has("ambiguous_guest"), true);
+  assertEquals(HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS.has("error"), true);
+  assertEquals(HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS.has("updated"), false);
+  assertEquals(HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS.has("already_checked_out"), false);
+  assertEquals(HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS.has("dedup"), false);
 });

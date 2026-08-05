@@ -1,4 +1,5 @@
-import { classifyDoc2MailWorkflow } from "./ezgoDoc2MailLineWorkflow.ts";
+import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
+import { buildDoc2EnrichmentPatch, classifyDoc2MailWorkflow } from "./ezgoDoc2MailLineWorkflow.ts";
 import {
   buildCombinedRoomLabel,
   doc2MailResLineId,
@@ -60,6 +61,21 @@ Deno.test("combined room label already includes incoming room → noop", () => {
 Deno.test("isSameDoc2Booking matches order number", () => {
   if (!isSameDoc2Booking(shacharSecondRoom, shacharGuest)) {
     throw new Error("expected same booking by order");
+  }
+});
+
+Deno.test("isSameDoc2Booking: same order_number but different phones → false — P0 2026-08-05 regression (never merge group occupants via order alone)", () => {
+  const rec = { ...shacharSecondRoom, phone: "+972501112233" };
+  const guest = { ...shacharGuest, phone: "+972529998877" };
+  if (isSameDoc2Booking(rec, guest)) {
+    throw new Error("expected false — order match must not override a phone mismatch");
+  }
+});
+
+Deno.test("isSameDoc2Booking: same order_number, one side missing phone → still matches (unchanged)", () => {
+  const rec = { ...shacharSecondRoom, phone: null };
+  if (!isSameDoc2Booking(rec, shacharGuest)) {
+    throw new Error("expected true when one side has no phone to compare");
   }
 });
 
@@ -191,6 +207,42 @@ Deno.test("fixture row 278993 (אמטיסט בלי מספר) → suite_arrival_c
   if (r.workflow !== "suite_arrival_create") {
     throw new Error(`expected suite_arrival_create got ${r.workflow}`);
   }
+});
+
+Deno.test("classifyDoc2MailWorkflow: daypass guard blocks stale is_day_guest when room already resolved to a canonical suite — P0 2026-08-05 regression", () => {
+  const rec = {
+    ...noRoomOrderOnly,
+    order_number: null,
+    room: "אמטיסט 11",
+    is_day_guest: true, // stale flag, as if from an older parsed_json row
+  };
+  const r = classifyDoc2MailWorkflow(rec, null);
+  if (r.workflow !== "suite_arrival_create") {
+    throw new Error(`expected suite_arrival_create (suite wins), got ${r.workflow}`);
+  }
+});
+
+Deno.test("classifyDoc2MailWorkflow: genuine day-pass still routes to daypass_create", () => {
+  const rec = { ...noRoomOrderOnly, order_number: null, room: "בילוי יומי", is_day_guest: true };
+  const r = classifyDoc2MailWorkflow(rec, null);
+  if (r.workflow !== "daypass_create") {
+    throw new Error(`expected daypass_create, got ${r.workflow}`);
+  }
+});
+
+Deno.test("buildDoc2EnrichmentPatch: escalates existing guest to muted when rec resolves to a group occupant", () => {
+  const guest = { ...shacharGuest, automation_scope: "full" };
+  const rec = { ...shacharSecondRoom, room: shacharGuest.room, automation_scope: "muted" as const };
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  assertEquals(patch.automation_scope, "muted");
+  assertEquals(patch.automation_muted, true);
+});
+
+Deno.test("buildDoc2EnrichmentPatch: never un-mutes an already-muted guest", () => {
+  const guest = { ...shacharGuest, automation_scope: "muted" };
+  const rec = { ...shacharSecondRoom, room: shacharGuest.room, automation_scope: "full" as const };
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  assertEquals("automation_scope" in patch, false);
 });
 
 Deno.test("returning guest with new arrival → suite_arrival_create not enrich", () => {

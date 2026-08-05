@@ -603,7 +603,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     try {
       const { data: guest, error: gErr } = await supabase
         .from("guests")
-        .select("id, name, phone, order_number, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, treatment_count, guest_profile")
+        .select("id, name, phone, order_number, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, treatment_count, guest_profile, automation_scope")
         .eq("id", line.match_guest_id)
         .maybeSingle();
       if (gErr || !guest) throw gErr || new Error("אורח לא נמצא");

@@ -10,6 +10,17 @@ export const READY_GUEST_STATUSES = new Set(["pending", "expected", "room_ready"
 /** Score ≥ this → guest is excluded from WA room matching. */
 export const HOUSEKEEPING_SCORE_OUT_OF_RANGE = 100;
 
+/** How many days past departure a checked_out guest still counts as a live
+ * "already_checked_out" Co dedupe candidate. Beyond this it's just room history —
+ * see scoreGuestForCheckout. */
+const CHECKOUT_STALE_LOOKBACK_DAYS = 3;
+
+function daysBetweenYmd(fromYmd: string, toYmd: string): number {
+  const from = new Date(`${fromYmd}T00:00:00Z`).getTime();
+  const to = new Date(`${toYmd}T00:00:00Z`).getTime();
+  return Math.round((to - from) / 86_400_000);
+}
+
 /**
  * Guest is physically eligible for this calendar day.
  * Open-ended stay (no departure_date) counts only on arrival day — blocks stale ghosts.
@@ -71,8 +82,14 @@ export function scoreGuestForCheckout(g: SuiteGuestRow, today: string): number {
 
   if (g.departure_date && g.departure_date < today) {
     if (g.status === "checked_in") return 5;
-    if (g.status === "checked_out") return 6;
-    return 15;
+    // Already checked out — still a live "already_checked_out" Co dedupe match for
+    // a few days after the real departure. Unbounded, every guest who ever occupied
+    // this physical room historically ties at the same score (Mike, P0 2026-08-05:
+    // ~12-way ambiguous_guest on ג'ספר 3 from months of past occupants).
+    if (g.status === "checked_out" && daysBetweenYmd(g.departure_date, today) <= CHECKOUT_STALE_LOOKBACK_DAYS) {
+      return 6;
+    }
+    return HOUSEKEEPING_SCORE_OUT_OF_RANGE;
   }
 
   return HOUSEKEEPING_SCORE_OUT_OF_RANGE;
