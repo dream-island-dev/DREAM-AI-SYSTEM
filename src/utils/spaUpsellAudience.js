@@ -143,6 +143,12 @@ export function isSpaUpsellEligible(guest, dateYmd) {
   return true;
 }
 
+/** Paste/send hub — day-pass row must match the selected arrival date. */
+export function isSpaUpsellEligibleOnArrivalDate(guest, arrivalDate) {
+  if (!arrivalDate || guest?.arrival_date !== arrivalDate) return false;
+  return isSpaUpsellEligible(guest, arrivalDate);
+}
+
 /**
  * Load day-pass guests arriving on `arrivalDate` who have no spa and no prior upsell.
  * @param {import("@supabase/supabase-js").SupabaseClient} supabase

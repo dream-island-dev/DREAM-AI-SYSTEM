@@ -29,7 +29,7 @@ export function normalizeGuestPhoneForLookup(phone) {
  * that only tries one form misses the other and lets a split-brain profile
  * slip past the guard — so every DB query below tries both.
  */
-function phoneLookupVariants(phone) {
+export function phoneLookupVariants(phone) {
   const normalized = normalizeGuestPhoneForLookup(phone);
   if (!normalized) return [];
   const variants = new Set([normalized]);

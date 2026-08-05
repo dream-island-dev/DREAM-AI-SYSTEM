@@ -1,7 +1,12 @@
 // Spa upsell hub — leads fetch, paste merge, staff copy, Whapi template prep.
 
 import { parseWaiterPulsePaste } from "./waiterPulseContacts";
-import { isSpaUpsellEligible } from "./spaUpsellAudience";
+import {
+  guestHasSpaOnDate,
+  isSpaUpsellEligibleOnArrivalDate,
+} from "./spaUpsellAudience";
+import { normalizeGuestPhoneForLookup, phoneLookupVariants } from "./guestSegmentGuard";
+import { isEffectiveSuiteGuest } from "./pipelineSegment";
 
 const STAFF_APP_ORIGIN = "https://dream-ai-system.vercel.app";
 
@@ -166,9 +171,114 @@ export async function fetchSpaUpsellSentCount(supabase, arrivalDate) {
   return count ?? 0;
 }
 
+function guestStayOverlapsDate(guest, dateYmd) {
+  if (!guest?.arrival_date || !dateYmd) return false;
+  const dep = guest.departure_date || guest.arrival_date;
+  return guest.arrival_date <= dateYmd && dep >= dateYmd;
+}
+
+/** Index guest rows by normalized phone (+972 / 972 variants share one key). */
+export function indexGuestsByPhoneKey(guests) {
+  const byKey = new Map();
+  for (const g of guests ?? []) {
+    const key = normalizeGuestPhoneForLookup(g.phone);
+    if (!key) continue;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(g);
+  }
+  return byKey;
+}
+
+function buildPasteGuestItem(row, guest) {
+  return {
+    id: guest.id,
+    name: row.name || guest.name,
+    phone: guest.phone,
+    room: guest.room,
+    source: "paste",
+    arrival_date: guest.arrival_date,
+  };
+}
+
+function ineligibleReasonForGuest(guest, arrivalDate) {
+  if (isEffectiveSuiteGuest(guest)) {
+    return `אורח סוויטה (${guest.room || "—"}) — מרכז זה לבילוי יומי בלבד`;
+  }
+  if (guest.msg_spa_upsell_sent) return "כבר נשלחה הצעה";
+  if (guestHasSpaOnDate(guest, arrivalDate)) return "יש תור ספא";
+  if (!String(guest.room ?? "").trim()) return "חסר שיוך חדר/חבילה";
+  return "לא מתאים לבילוי יומי";
+}
+
+function buildPriorVisitHint(matches, arrivalDate) {
+  const priorDates = [
+    ...new Set(
+      matches
+        .filter((g) => g.arrival_date && g.arrival_date !== arrivalDate && !isEffectiveSuiteGuest(g))
+        .map((g) => g.arrival_date),
+    ),
+  ];
+  if (!priorDates.length || !arrivalDate) return null;
+  return `יש ביקור קודם ב-${priorDates.join(", ")} — «צור פרופיל» יוסיף שורה חדשה ל-${arrivalDate} בלבד (לא כפילות)`;
+}
+
 /**
- * Merge pasted phone/name rows with guest profiles (any arrival date).
- * @returns {{ merged: Array, notFound: Array, ineligible: Array }}
+ * Pure resolver — maps one pasted row + all DB matches to merged / notFound / ineligible.
+ * @returns {{ kind: "merged" | "notFound" | "ineligible", item?: object, reason?: string, hint?: string }}
+ */
+export function resolvePastedRowAgainstGuests(row, matches, arrivalDate) {
+  if (!matches?.length) return { kind: "notFound" };
+
+  const onDate = arrivalDate
+    ? matches.filter((g) => g.arrival_date === arrivalDate)
+    : matches;
+
+  if (!onDate.length) {
+    const suiteOverlap = arrivalDate
+      ? matches.find((g) => isEffectiveSuiteGuest(g) && guestStayOverlapsDate(g, arrivalDate))
+      : null;
+    if (suiteOverlap) {
+      return {
+        kind: "ineligible",
+        item: buildPasteGuestItem(row, suiteOverlap),
+        reason: `אורח סוויטה (${suiteOverlap.room || "—"}) — לא ניתן ליצור בילוי יומי לתאריך ${arrivalDate}`,
+      };
+    }
+    const hint = buildPriorVisitHint(matches, arrivalDate);
+    return hint ? { kind: "notFound", hint } : { kind: "notFound" };
+  }
+
+  if (onDate.length > 1) {
+    const guest = onDate[0];
+    return {
+      kind: "ineligible",
+      item: buildPasteGuestItem(row, guest),
+      reason: `כפילות פרופיל (${onDate.length} שורות ל-${arrivalDate}) — פתח AddGuestModal לתיקון`,
+    };
+  }
+
+  const guest = onDate[0];
+  const item = buildPasteGuestItem(row, guest);
+
+  if (isEffectiveSuiteGuest(guest)) {
+    return { kind: "ineligible", item, reason: ineligibleReasonForGuest(guest, arrivalDate) };
+  }
+
+  if (isSpaUpsellEligibleOnArrivalDate(guest, arrivalDate)) {
+    return { kind: "merged", item };
+  }
+
+  return {
+    kind: "ineligible",
+    item,
+    reason: ineligibleReasonForGuest(guest, arrivalDate),
+  };
+}
+
+/**
+ * Merge pasted phone/name rows with guest profiles for the hub's arrival date.
+ * Phone lookup uses +972 / 972 variants (guestSegmentGuard parity).
+ * @returns {{ merged: Array, notFound: Array, ineligible: Array, invalid: string[] }}
  */
 export async function mergePastedSpaUpsellContacts(supabase, pasteText, arrivalDate) {
   const { rows, invalid } = parseWaiterPulsePaste(pasteText);
@@ -176,36 +286,33 @@ export async function mergePastedSpaUpsellContacts(supabase, pasteText, arrivalD
     return { merged: [], notFound: [], ineligible: [], invalid };
   }
 
-  const phones = [...new Set(rows.map((r) => r.phone))];
+  const queryPhones = new Set();
+  for (const row of rows) {
+    for (const v of phoneLookupVariants(row.phone)) queryPhones.add(v);
+  }
+
   const { data, error } = await supabase
     .from("guests")
-    .select("id, phone, name, room_type, room, spa_date, spa_time, arrival_date, status, msg_spa_upsell_sent")
-    .in("phone", phones);
+    .select("id, phone, name, room_type, room, spa_date, spa_time, arrival_date, departure_date, status, msg_spa_upsell_sent")
+    .in("phone", [...queryPhones])
+    .neq("status", "cancelled");
 
   if (error) throw error;
 
-  const byPhone = new Map((data ?? []).map((g) => [g.phone, g]));
+  const byPhoneKey = indexGuestsByPhoneKey(data);
   const merged = [];
   const notFound = [];
   const ineligible = [];
 
   for (const row of rows) {
-    const guest = byPhone.get(row.phone);
-    if (!guest) {
-      notFound.push(row);
-      continue;
-    }
-    const eligible = isSpaUpsellEligible(guest, arrivalDate || guest.arrival_date);
-    const item = {
-      id: guest.id,
-      name: row.name || guest.name,
-      phone: guest.phone,
-      room: guest.room,
-      source: "paste",
-      arrival_date: guest.arrival_date,
-    };
-    if (eligible) merged.push(item);
-    else ineligible.push({ ...item, reason: guest.msg_spa_upsell_sent ? "כבר נשלחה הצעה" : "יש ספא / לא מתאים" });
+    const key = normalizeGuestPhoneForLookup(row.phone);
+    const matches = key ? (byPhoneKey.get(key) ?? []) : [];
+    const resolved = resolvePastedRowAgainstGuests(row, matches, arrivalDate);
+
+    if (resolved.kind === "notFound") {
+      notFound.push(resolved.hint ? { ...row, hint: resolved.hint } : row);
+    } else if (resolved.kind === "merged") merged.push(resolved.item);
+    else ineligible.push({ ...resolved.item, reason: resolved.reason });
   }
 
   return { merged, notFound, ineligible, invalid };

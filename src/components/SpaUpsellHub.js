@@ -26,7 +26,7 @@ import {
   resolveSpaUpsellLead,
 } from "../utils/spaUpsellHub";
 import { createDaypassGuestsBatch } from "../utils/daypassGuestCreate";
-import { isSpaUpsellEligible } from "../utils/spaUpsellAudience";
+import { isSpaUpsellEligibleOnArrivalDate } from "../utils/spaUpsellAudience";
 import { formatIsraelDateTime } from "../utils/israelTime";
 
 const BATCH_POLL_INTERVAL_MS = 4000;
@@ -380,7 +380,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
         .select("id, phone, name, room_type, room, spa_date, spa_time, arrival_date, status, msg_spa_upsell_sent")
         .in("id", created.map((g) => g.id));
       const eligible = (freshGuests ?? [])
-        .filter((g) => isSpaUpsellEligible(g, arrivalDate))
+        .filter((g) => isSpaUpsellEligibleOnArrivalDate(g, arrivalDate))
         .map((g) => ({ id: g.id, name: g.name, phone: g.phone, room: g.room, source: "paste" }));
       const added = addMergedPasteRows(eligible);
       const createdPhones = new Set(created.map((g) => g.phone));
@@ -597,7 +597,11 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
                     <span style={{ color: "#B5600A" }}> · ⚠ {pastePreview.ineligible.length} לא מתאימים</span>
                   )}
                   {pastePreview.notFound?.length > 0 && (
-                    <span style={{ color: "#C0392B" }}> · {pastePreview.notFound.length} ללא פרופיל — לחץ «צור פרופיל»</span>
+                    <span style={{ color: "#C0392B" }}>
+                      {" "}
+                      · {pastePreview.notFound.length} ללא פרופיל ל-{arrivalDate}
+                      {" "}(יצירת בילוי יומי — נפרד מהשליחה)
+                    </span>
                   )}
                   {pastePreview.invalid?.length > 0 && (
                     <span style={{ color: "#C0392B" }}> · {pastePreview.invalid.length} לא תקינים</span>
@@ -610,11 +614,33 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
                   background: "#ecfeff", border: "1px solid #A5E4EF", fontSize: 12.5,
                 }}>
                   <div style={{ fontWeight: 700, color: "#0e7490", marginBottom: 6 }}>
-                    ללא פרופיל ב-DB (ייווצרו כבילוי יומי · הגעה {arrivalDate})
+                    אין פרופיל בילוי יומי ל-{arrivalDate} — כפתור «צור פרופיל» יוצר שורה חדשה (בילוי יומי), לא שולח הודעה
                   </div>
                   {pastePreview.notFound.map((r) => (
                     <div key={r.phone} style={{ padding: "4px 0", color: "#155e75" }}>
                       {r.name || "—"} · {r.phone}
+                      {r.hint && (
+                        <div style={{ fontSize: 11.5, color: "#0e7490", marginTop: 2, lineHeight: 1.45 }}>
+                          ℹ️ {r.hint}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {pastePreview?.ineligible?.length > 0 && (
+                <div style={{
+                  marginTop: 10, padding: "10px 12px", borderRadius: 8,
+                  background: "#FFF7ED", border: "1px solid #FDBA74", fontSize: 12.5,
+                }}>
+                  <div style={{ fontWeight: 700, color: "#9A3412", marginBottom: 6 }}>
+                    לא ניתן להוסיף לרשימת השליחה
+                  </div>
+                  {pastePreview.ineligible.map((r) => (
+                    <div key={`${r.phone}-${r.id}`} style={{ padding: "4px 0", color: "#7C2D12" }}>
+                      {r.name || "—"} · {r.phone}
+                      {r.room ? ` · ${r.room}` : ""}
+                      <span style={{ color: "#B45309" }}> — {r.reason}</span>
                     </div>
                   ))}
                 </div>
