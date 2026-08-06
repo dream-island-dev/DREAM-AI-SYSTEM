@@ -23,7 +23,10 @@ export async function notifyRoomPendingApproval(
   }
 
   const guest = (await findArrivingTodayGuestForSuite(supabase, trimmed)).guest;
-  const guestName = guest?.name?.trim() || null;
+  if (!guest) {
+    return { notified: false, guestName: null, reason: "no_arrival_today" };
+  }
+  const guestName = guest.name?.trim() || null;
   const guestLabel = guestName ? `${trimmed} — ${guestName}` : trimmed;
   const sourceNote = opts.source === "housekeeping_wa"
     ? "אות מקבוצת ניקיון"

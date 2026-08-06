@@ -1,7 +1,7 @@
 // Apply a housekeeping "room ready" signal → room_status gate that AICopilot listens on.
 // Turnover lifecycle (WA group + UI):
 //   Co N        → guests.checked_out + room_status.לניקיון
-//   N✅ / מוכן  → room_status.ממתין לאישור (bell only — guests stays pending/expected)
+//   N✅ / מוכן  → ממתין לאישור only when a guest arrives TODAY; else פנוי (no bell)
 //   AICopilot   → room_ready WA + guests.room_ready + room_status.פנוי
 //   N צק אין    → guests.checked_in + room_status.תפוס
 // Does NOT set guests.room_ready — manager approval is the guest-profile step.
@@ -15,6 +15,7 @@ export type HousekeepingReadyAction =
   | "updated"
   | "already_pending"
   | "skipped_occupied"
+  | "skipped_future_arrival"
   | "dedup"
   | "skipped_no_suite"
   | "error";
@@ -80,6 +81,8 @@ export function buildHousekeepingReadyAckLine(result: HousekeepingReadyResult): 
     case "skipped_occupied":
       const name = guestName?.trim();
       return `ℹ️ ${roomId} — אורח במשך שהות${name ? ` (${name})` : ""}`;
+    case "skipped_future_arrival":
+      return `ℹ️ ${roomId} — נקי ופנוי · אין אורח עם הגעה היום (הודעת מוכן תישלח ביום ההגעה)`;
     case "error":
       return `🚨 ${roomId} — שגיאת מערכת בסימון "מוכן". בדקו ב-XOS ונסו לשלוח שוב, או פנו לתמיכה.`;
     case "dedup":
@@ -154,6 +157,37 @@ export async function applyHousekeepingReadySignal(
   const guestId = guest?.id ?? null;
   const guestName = guest?.name ?? null;
 
+  const now = new Date().toISOString();
+  const cleanRow = {
+    room_id: roomId,
+    room_clean_status: "clean" as const,
+    jacuzzi_status: "clean" as const,
+    cleaning_started_at: null,
+    cleaning_ended_at: now,
+    updated_at: now,
+  };
+
+  // Turnover before tomorrow's arrival — room is clean; no manager bell / room_ready WA.
+  if (!guest) {
+    const { error: vacantErr } = await supabase.from("room_status").upsert(
+      { ...cleanRow, status: "פנוי" },
+      { onConflict: "room_id" },
+    );
+    if (vacantErr) {
+      console.error(`[housekeepingReadySignal] vacant upsert failed for ${roomId}:`, vacantErr.message);
+      return {
+        ok: false, roomNumber, roomId, guestId: null, guestName: null,
+        action: "error", error: vacantErr.message,
+      };
+    }
+    console.log(
+      `[housekeepingReadySignal] ${roomId} (#${roomNumber}) → פנוי (no arriving-today guest, wa=${waMessageId})`,
+    );
+    return {
+      ok: true, roomNumber, roomId, guestId: null, guestName: null, action: "skipped_future_arrival",
+    };
+  }
+
   const { data: existing } = await supabase
     .from("room_status")
     .select("status")
@@ -166,16 +200,10 @@ export async function applyHousekeepingReadySignal(
     };
   }
 
-  const now = new Date().toISOString();
   const { error: upsertErr } = await supabase.from("room_status").upsert(
     {
-      room_id: roomId,
+      ...cleanRow,
       status: "ממתין לאישור",
-      room_clean_status: "clean",
-      jacuzzi_status: "clean",
-      cleaning_started_at: null,
-      cleaning_ended_at: now,
-      updated_at: now,
     },
     { onConflict: "room_id" },
   );
@@ -191,7 +219,7 @@ export async function applyHousekeepingReadySignal(
   await notifyRoomPendingApproval(supabase, roomId, { source: "housekeeping_wa" });
   console.log(
     `[housekeepingReadySignal] ${roomId} (#${roomNumber}) → ממתין לאישור` +
-    (guestName ? ` guest=${guestName}` : " no_guest_today") +
+    (guestName ? ` guest=${guestName}` : "") +
     ` (wa=${waMessageId})`,
   );
 

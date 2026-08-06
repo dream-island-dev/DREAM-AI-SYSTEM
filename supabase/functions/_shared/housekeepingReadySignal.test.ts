@@ -56,11 +56,24 @@ Deno.test("buildHousekeepingReadyAckLine: existing success/no-op lines unchanged
   );
 });
 
-Deno.test("HOUSEKEEPING_READY_PROBLEM_ACTIONS: only skipped_no_suite + error, not success/occupied/dedup", () => {
+Deno.test("buildHousekeepingReadyAckLine: skipped_future_arrival — clean vacant, no bell", () => {
+  const line = buildHousekeepingReadyAckLine({
+    ok: true,
+    roomNumber: 5,
+    roomId: "ג׳ספר 5",
+    guestId: null,
+    guestName: null,
+    action: "skipped_future_arrival",
+  });
+  assertEquals(line, "ℹ️ ג׳ספר 5 — נקי ופנוי · אין אורח עם הגעה היום (הודעת מוכן תישלח ביום ההגעה)");
+});
+
+Deno.test("HOUSEKEEPING_READY_PROBLEM_ACTIONS: only skipped_no_suite + error, not success/occupied/dedup/future", () => {
   assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("skipped_no_suite"), true);
   assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("error"), true);
   assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("updated"), false);
   assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("already_pending"), false);
   assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("skipped_occupied"), false);
+  assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("skipped_future_arrival"), false);
   assertEquals(HOUSEKEEPING_READY_PROBLEM_ACTIONS.has("dedup"), false);
 });

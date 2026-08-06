@@ -144,8 +144,8 @@ export default function AICopilot({ user }) {
       const { data: suiteRows } = await supabase
         .from("suite_rooms")
         .select("guest_id, room_display, room_name, suite_type")
-        .not("guest_id", "is", null)
-        .limit(500);
+        .eq("arrival_date", todayIL)
+        .not("guest_id", "is", null);
 
       const suiteMatch = (suiteRows ?? []).find((sr) =>
         guestRoomMatchesSuiteId(
@@ -210,6 +210,24 @@ export default function AICopilot({ user }) {
       };
     }
 
+    // Legacy / tablet gates without an arriving-today guest — close silently.
+    if (!isEligible) {
+      await supabase
+        .from("room_status")
+        .update({ status: "פנוי", updated_at: new Date().toISOString() })
+        .eq("room_id", roomRow.room_id)
+        .eq("status", "ממתין לאישור");
+      return {
+        ...roomRow,
+        guest: guest ?? null,
+        isEligible: false,
+        alreadyNotified: false,
+        staleGate: true,
+        waSource,
+        _alertId,
+      };
+    }
+
     let alreadyNotified = false;
     if (guest?.id) {
       const { data: suiteRows } = await supabase
@@ -250,7 +268,7 @@ export default function AICopilot({ user }) {
       .eq("status", "ממתין לאישור");
     if (data?.length) {
       const enriched = await Promise.all(data.map(enrichRoom));
-      setAlerts(enriched.filter((a) => !a.alreadyNotified && !a.staleGate));
+      setAlerts(enriched.filter((a) => !a.alreadyNotified && !a.staleGate && a.isEligible));
     }
   }, [enrichRoom]);
 
@@ -268,7 +286,7 @@ export default function AICopilot({ user }) {
           const row = payload.new;
           if (row.status === "ממתין לאישור") {
             const enriched = await enrichRoom(row);
-            if (enriched.alreadyNotified || enriched.staleGate) return;
+            if (enriched.alreadyNotified || enriched.staleGate || !enriched.isEligible) return;
             setAlerts(prev => {
               if (prev.some(a => a.room_id === row.room_id)) return prev;
               return [...prev, enriched];

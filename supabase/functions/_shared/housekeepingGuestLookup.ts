@@ -187,6 +187,7 @@ async function loadGuestsBySuiteRoomToday(
     .from("guests")
     .select(GUEST_SELECT)
     .in("id", guestIds)
+    .eq("arrival_date", today)
     .neq("status", "cancelled");
 
   if (guestErr) {

@@ -33,6 +33,8 @@ export function buildHousekeepingReadyAckLine(result) {
     case "skipped_occupied":
       const name = guestName?.trim();
       return `ℹ️ ${roomId} — אורח במשך שהות${name ? ` (${name})` : ""}`;
+    case "skipped_future_arrival":
+      return `ℹ️ ${roomId} — נקי ופנוי · אין אורח עם הגעה היום (הודעת מוכן תישלח ביום ההגעה)`;
     case "error":
       return `🚨 ${roomId} — שגיאת מערכת בסימון "מוכן". בדקו ב-XOS ונסו לשלוח שוב, או פנו לתמיכה.`;
     case "dedup":
