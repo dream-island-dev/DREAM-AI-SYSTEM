@@ -82,6 +82,7 @@ import {
   buildHousekeepingCheckOutAckLine,
   HOUSEKEEPING_CHECKOUT_PROBLEM_ACTIONS,
 } from "../_shared/housekeepingCheckOutSignal.ts";
+import { persistHousekeepingNearMiss } from "../_shared/housekeepingNearMissSignal.ts";
 import { isWhapiGuestSosActive, shouldAutoReplyGuestWhapiDm, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
 import { resolveGuestByInboundPhone } from "../_shared/arrivalConfirmation.ts";
@@ -1698,6 +1699,18 @@ serve(async (req: Request) => {
         if (readyRooms.length === 0 && checkInRooms.length === 0 && checkOutRooms.length === 0) {
           let nearMissAck = false;
           const nearMiss = looksLikeHousekeepingNearMiss(msg.text);
+          // B3 (2026-08-08): persist regardless of hkGroupReply — this is a DB
+          // audit row, not outbound to the group, so the silence rule below
+          // (which only gates the WA clarify reply) does not apply to it.
+          if (nearMiss) {
+            await persistHousekeepingNearMiss(supabase, {
+              waMessageId: msg.id,
+              sourceLine: msg.text,
+              fromPhone: msg.fromPhone,
+              fromName: msg.fromName,
+              profileId: hkSender.profileId,
+            });
+          }
           // Mike, 2026-08-05 (P0): the group is receive-only — a near-miss clarify is
           // still outbound to the group, so it stays behind hkGroupReply like every
           // other reply. When silent, log it instead so ops still has a trail.

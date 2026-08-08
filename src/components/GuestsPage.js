@@ -55,7 +55,9 @@ import {
 import { formatSuiteRoomLine } from "../utils/guestStaySummary";
 import {
   buildHousekeepingSyncMap,
+  fetchHousekeepingActivityForDate,
   fetchHousekeepingCheckInsForDate,
+  indexHousekeepingActivityRoomIds,
   indexHousekeepingCheckInsByRoom,
   markHousekeepingEventSynced,
   reconcileHousekeepingCheckIns,
@@ -139,21 +141,28 @@ export default function GuestsPage({
       return rows;
     }
 
-    const { rows: hkEvents, error: hkFetchError } = await fetchHousekeepingCheckInsForDate(supabase, israelTodayStr());
-    if (hkFetchError) {
+    const [
+      { rows: hkEvents, error: hkFetchError },
+      { rows: activityEvents, error: activityFetchError },
+    ] = await Promise.all([
+      fetchHousekeepingCheckInsForDate(supabase, israelTodayStr()),
+      fetchHousekeepingActivityForDate(supabase, israelTodayStr()),
+    ]);
+    if (hkFetchError || activityFetchError) {
       // FAIL VISIBLE (P0 2026-08-05): a fetch failure must never look like "no
       // signals today" — the ✅/⚠️ chips below would otherwise silently go stale.
       showToast("err", "⚠ סנכרון קבוצת ניקיון נכשל — צ'יפים עשויים להיות לא מעודכנים");
     }
     const hkByRoom = indexHousekeepingCheckInsByRoom(hkEvents);
-    setHkSyncByGuestId(buildHousekeepingSyncMap(rows, suiteMap, hkByRoom));
+    const activityRoomIds = indexHousekeepingActivityRoomIds(activityEvents);
+    setHkSyncByGuestId(buildHousekeepingSyncMap(rows, suiteMap, hkByRoom, activityRoomIds));
 
     const reconciled = await reconcileHousekeepingCheckIns(supabase, rows, suiteMap, hkByRoom);
     if (!reconciled.length) return rows;
 
     const patchById = new Map(reconciled.map((r) => [r.guestId, r.guestPatch]));
     const nextRows = rows.map((g) => (patchById.has(g.id) ? { ...g, ...patchById.get(g.id) } : g));
-    setHkSyncByGuestId(buildHousekeepingSyncMap(nextRows, suiteMap, hkByRoom));
+    setHkSyncByGuestId(buildHousekeepingSyncMap(nextRows, suiteMap, hkByRoom, activityRoomIds));
     suppressRealtimeRefresh();
     if (!silent) {
       showToast("ok", `סונכרנו ${reconciled.length} צ'ק-אינים מקבוצת הניקיון`);
@@ -517,6 +526,27 @@ export default function GuestsPage({
         >
           {busy === guest.id ? "⏳" : "⚠️ סנכרן מקבוצה"}
         </button>
+      );
+    }
+
+    if (sync.state === "awaiting_group_signal") {
+      // B1 (2026-08-08) FAIL VISIBLE: the room had ready/checkout activity in
+      // the housekeeping group today but no check_in text was ever sent for
+      // it — the forensic 2026-08-07 pattern (9/10 stuck rooms). Deliberately
+      // NOT a button — there's no specific event to apply, so this only tells
+      // staff to go verify manually. Never auto-applies, never touches
+      // guests.status.
+      return (
+        <span
+          title="קבוצת הניקיון סימנה פעילות בחדר הזה היום (מוכן/יציאה), אך לא נשלח צ'ק-אין מפורש — ודאו מול הצוות בשטח"
+          style={{
+            fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10,
+            background: "#FEF2F2", color: "#B91C1C", whiteSpace: "nowrap",
+            border: "1px solid #FCA5A5",
+          }}
+        >
+          ⚠ ממתין לצ׳ק-אין מקבוצה
+        </span>
       );
     }
 

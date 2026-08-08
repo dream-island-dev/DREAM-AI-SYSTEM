@@ -1,12 +1,15 @@
 import {
   buildHousekeepingSyncMap,
   collectGuestSuiteRoomIds,
+  fetchHousekeepingActivityForDate,
   fetchHousekeepingCheckInsForDate,
+  indexHousekeepingActivityRoomIds,
   indexHousekeepingCheckInsByRoom,
   markHousekeepingEventSynced,
   reconcileHousekeepingCheckIns,
   resolveGuestHousekeepingSync,
 } from "./housekeepingCheckInReconcile";
+import { israelTodayStr, israelDateOffsetStr } from "./guestTiming";
 
 function makeMockSupabase(updateResponse) {
   return {
@@ -27,6 +30,7 @@ function makeMockSupabaseForSelect(selectResponse) {
   const builder = {
     select() { return builder; },
     eq() { return builder; },
+    in() { return builder; },
     gte() { return builder; },
     lte() { return builder; },
     order() { return Promise.resolve(selectResponse); },
@@ -75,6 +79,129 @@ describe("housekeepingCheckInReconcile", () => {
       hkByRoom,
     );
     expect(map[5].state).toBe("synced");
+  });
+
+  describe("resolveGuestHousekeepingSync — awaiting_group_signal (B1, 2026-08-08)", () => {
+    // Forensic-shaped: 2026-08-07 had 9 rooms with a ready (✅) signal but no
+    // check_in text was ever sent, while guests stayed stuck at "expected".
+    const yesterday = israelDateOffsetStr(-1);
+    const today = israelTodayStr();
+
+    test("ready activity, no check_in row, guest still pending past arrival → awaiting_group_signal", () => {
+      const hkByRoom = indexHousekeepingCheckInsByRoom([]); // no check_in events at all today
+      const activityRoomIds = indexHousekeepingActivityRoomIds([
+        { room_id: "אמטיסט 9", event_type: "ready", created_at: "2026-08-07T11:58:42Z" },
+      ]);
+      const guest = { id: 4966, status: "expected", arrival_date: yesterday, room: "אמטיסט 9" };
+      const sync = resolveGuestHousekeepingSync(guest, [], hkByRoom, activityRoomIds);
+      expect(sync.state).toBe("awaiting_group_signal");
+      expect(sync.roomId).toBe("אמטיסט 9");
+    });
+
+    test("check_in row present wins over activity — stays on the existing pending/synced path, not awaiting", () => {
+      const hkByRoom = indexHousekeepingCheckInsByRoom([
+        { id: 1, room_id: "ג׳ספר 6", created_at: "2026-08-07T09:51:00Z", sync_action: "no_guest" },
+      ]);
+      const activityRoomIds = indexHousekeepingActivityRoomIds([
+        { room_id: "ג׳ספר 6", event_type: "ready", created_at: "2026-08-07T09:00:00Z" },
+      ]);
+      const guest = { id: 10, status: "expected", arrival_date: yesterday, room: "ג׳ספר 6" };
+      const sync = resolveGuestHousekeepingSync(guest, [], hkByRoom, activityRoomIds);
+      expect(sync.state).toBe("pending"); // unchanged from pre-B1 behavior
+    });
+
+    test("no housekeeping activity at all for the room → none, not awaiting", () => {
+      const hkByRoom = indexHousekeepingCheckInsByRoom([]);
+      const activityRoomIds = indexHousekeepingActivityRoomIds([
+        { room_id: "אמרלד 20", event_type: "ready", created_at: "2026-08-07T13:46:08Z" },
+      ]);
+      const guest = { id: 4969, status: "expected", arrival_date: yesterday, room: "ג׳ספר 1" }; // different room
+      const sync = resolveGuestHousekeepingSync(guest, [], hkByRoom, activityRoomIds);
+      expect(sync.state).toBe("none");
+    });
+
+    test("checked_in guest never gets awaiting_group_signal, even with activity and no check_in row", () => {
+      const activityRoomIds = indexHousekeepingActivityRoomIds([
+        { room_id: "אמטיסט 9", event_type: "ready", created_at: "2026-08-07T11:58:42Z" },
+      ]);
+      const guest = { id: 1, status: "checked_in", arrival_date: yesterday, room: "אמטיסט 9" };
+      const sync = resolveGuestHousekeepingSync(guest, [], {}, activityRoomIds);
+      expect(sync.state).toBe("none");
+    });
+
+    test("future arrival never gets awaiting_group_signal, even with activity on the room", () => {
+      const tomorrow = israelDateOffsetStr(1);
+      const activityRoomIds = indexHousekeepingActivityRoomIds([
+        { room_id: "אמטיסט 9", event_type: "ready", created_at: `${today}T11:58:42Z` },
+      ]);
+      const guest = { id: 2, status: "expected", arrival_date: tomorrow, room: "אמטיסט 9" };
+      const sync = resolveGuestHousekeepingSync(guest, [], {}, activityRoomIds);
+      expect(sync.state).toBe("none");
+    });
+
+    test("checkout activity alone (no ready) also triggers awaiting_group_signal", () => {
+      const activityRoomIds = indexHousekeepingActivityRoomIds([
+        { room_id: "רובי 15", event_type: "check_out", created_at: "2026-08-07T12:10:38Z" },
+      ]);
+      const guest = { id: 4680, status: "expected", arrival_date: yesterday, room: "רובי 15" };
+      const sync = resolveGuestHousekeepingSync(guest, [], {}, activityRoomIds);
+      expect(sync.state).toBe("awaiting_group_signal");
+    });
+
+    test("no activityRoomIds arg at all (legacy callers) never crashes, behaves exactly as before B1", () => {
+      const guest = { id: 3, status: "expected", arrival_date: yesterday, room: "אמטיסט 9" };
+      const sync = resolveGuestHousekeepingSync(guest, [], {});
+      expect(sync.state).toBe("none");
+    });
+
+    test("buildHousekeepingSyncMap wires activityRoomIds through for multiple guests", () => {
+      const activityRoomIds = indexHousekeepingActivityRoomIds([
+        { room_id: "אמטיסט 9", event_type: "ready", created_at: "2026-08-07T11:58:42Z" },
+      ]);
+      const map = buildHousekeepingSyncMap(
+        [
+          { id: 100, status: "expected", arrival_date: yesterday, room: "אמטיסט 9" },
+          { id: 101, status: "expected", arrival_date: yesterday, room: "אמטיסט 11" },
+        ],
+        {},
+        {},
+        activityRoomIds,
+      );
+      expect(map[100].state).toBe("awaiting_group_signal");
+      expect(map[101].state).toBe("none");
+    });
+  });
+
+  describe("indexHousekeepingActivityRoomIds", () => {
+    test("collects unique room_ids from ready/check_out rows", () => {
+      const ids = indexHousekeepingActivityRoomIds([
+        { room_id: "אמטיסט 9", event_type: "ready" },
+        { room_id: "אמטיסט 9", event_type: "ready" },
+        { room_id: "ג׳ספר 6", event_type: "check_out" },
+      ]);
+      expect(ids).toEqual(new Set(["אמטיסט 9", "ג׳ספר 6"]));
+    });
+
+    test("empty/missing input never crashes", () => {
+      expect(indexHousekeepingActivityRoomIds([])).toEqual(new Set());
+      expect(indexHousekeepingActivityRoomIds(undefined)).toEqual(new Set());
+    });
+  });
+
+  describe("fetchHousekeepingActivityForDate — fail-visible errors (B1, 2026-08-08)", () => {
+    test("returns rows with error:null on success", async () => {
+      const supabase = makeMockSupabaseForSelect({ data: [{ id: 1, room_id: "אמטיסט 9", event_type: "ready" }], error: null });
+      const { rows, error } = await fetchHousekeepingActivityForDate(supabase, "2026-08-07");
+      expect(error).toBeNull();
+      expect(rows).toHaveLength(1);
+    });
+
+    test("surfaces the error instead of returning an empty array indistinguishable from 'no activity'", async () => {
+      const supabase = makeMockSupabaseForSelect({ data: null, error: { message: "network error" } });
+      const { rows, error } = await fetchHousekeepingActivityForDate(supabase, "2026-08-07");
+      expect(error).toBe("network error");
+      expect(rows).toEqual([]);
+    });
   });
 
   describe("fetchHousekeepingCheckInsForDate — fail-visible errors (P0 2026-08-05)", () => {

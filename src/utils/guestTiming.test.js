@@ -395,6 +395,51 @@ describe("getGuestArrivalRosterLabel — departed vs stale checked_in", () => {
   });
 });
 
+describe("getGuestTimingBadge — overdue check-in, never checked in (2026-08-08 FAIL VISIBLE fix)", () => {
+  const yesterday = israelDateOffsetStr(-1);
+  const today = israelTodayStr();
+
+  test("pending/expected/room_ready with arrival_date in the past is NOT mislabeled as departed", () => {
+    for (const status of ["pending", "expected", "room_ready"]) {
+      const guest = { arrival_date: yesterday, departure_date: today, status };
+      const badge = getGuestTimingBadge(guest);
+      expect(badge.label).not.toBe("⚪ אורח לאחר עזיבה");
+      expect(badge.label).toBe("🔴 הגעה עברה — טרם נקלט צ'ק-אין");
+    }
+  });
+
+  test("arrival_date === today still routes through the existing מגיעים היום / היום branches, not the new one", () => {
+    // Suite arriving today (pre check-in) — untouched, existing branch wins.
+    expect(
+      getGuestTimingBadge({
+        arrival_date: today,
+        status: "expected",
+        room_type: "suite",
+        room: "רובי 14",
+      }).label,
+    ).toBe("🌅 מגיעים היום");
+  });
+
+  test("checked_in with stale/mismatched data still falls to the old default — no regression", () => {
+    // status IS checked_in (not a pre-arrival status), so this must keep
+    // falling to the pre-existing default, not the new red label.
+    const guest = {
+      arrival_date: yesterday,
+      departure_date: yesterday,
+      status: "checked_in",
+      room_type: "day_guest",
+      room: "Premium Day 1",
+    };
+    expect(getGuestTimingBadge(guest).label).toBe("⚪ אורח לאחר עזיבה");
+  });
+
+  test("cancelled/checked_out never gets the new label — isGuestDeparted still wins", () => {
+    expect(
+      getGuestTimingBadge({ arrival_date: yesterday, status: "cancelled" }).label,
+    ).toBe("⚪ אורח לאחר עזיבה");
+  });
+});
+
 describe("syncInboxContactWithGuestMap — unified dual claim", () => {
   test("keeps Meta and Whapi claims separate on merged threads", () => {
     const contact = { inbox_channel: "unified", phone: "972500000001" };

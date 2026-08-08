@@ -5,7 +5,9 @@
 const MIN_ROOM = 1;
 const MAX_ROOM = 26;
 
-const ROOM_LIST_FRAGMENT = "[\\d\\s,/|&\\-]+";
+const MAX_RANGE_SPAN = 6;
+
+const ROOM_LIST_FRAGMENT = "[\\d\\s,/|&\\-ו]+";
 
 const HEBREW_TSADI_QOF_APOSTROPHE = "[''\\u2019\\u2018\\u05F3\\u02BC\\u0060\\u00B4\\u2032]";
 
@@ -21,7 +23,7 @@ const FORWARDED_PREFIX_RE = /^הועברה\s*/i;
 const HAS_CHECKMARK_RE = /✅/;
 
 const HK_ANCHOR_RE =
-  /✅|מוכן|\bready\b|\bco\b|check\s*[- ]?\s*(?:in|out)|צק\s*א(?:ין|אוט)/i;
+  /✅|מוכן|\bready\b|(?<![A-Za-zא-ת])ci\b|(?<![A-Za-zא-ת])co\b|check\s*[- ]?\s*(?:in|out)|צק\s*א(?:ין|אוט)/i;
 
 const READY_EXCLUDE_LINE_RE =
   /ממתין|\bcheck\s*[- ]?\s*out\b|\bco\b|\bout\b|יצאו|צ['׳']ק\s*אא?וט|צק\s*אא?וט/i;
@@ -29,16 +31,16 @@ const READY_EXCLUDE_LINE_RE =
 const CHECKIN_LINE_RE =
   /^(?:room\s*)?(\d{1,2})\s*(?:צ['׳']ק\s*אין|צק\s*אין|\bcheck\s*[- ]?\s*in\b)/i;
 
-const CHECKIN_TOKEN_PREFIX = "(?:ci\\b|check\\s*[- ]?\\s*in\\b|צ['׳']ק\\s*אין|צק\\s*אין)";
+const CHECKIN_TOKEN_PREFIX = "(?:ci(?=\\s|\\d|$)|check\\s*[- ]?\\s*in\\b|צ['׳']ק\\s*אין|צק\\s*אין)";
 const CHECKIN_TOKEN_SUFFIX = "(?:ci\\b|check\\s*[- ]?\\s*in\\b)";
 
 const CHECKIN_PREFIX_RE = new RegExp(
-  `^(?:room\\s*)?${CHECKIN_TOKEN_PREFIX}\\s+(\\d{1,2})$`,
+  `^(?:room\\s*)?${CHECKIN_TOKEN_PREFIX}\\s*(\\d{1,2})$`,
   "i",
 );
 
 const CHECKIN_SUFFIX_RE = new RegExp(
-  `^(?:room\\s*)?(\\d{1,2})\\s+${CHECKIN_TOKEN_SUFFIX}`,
+  `^(?:room\\s*)?(\\d{1,2})\\s*${CHECKIN_TOKEN_SUFFIX}`,
   "i",
 );
 
@@ -59,17 +61,17 @@ const CHECKOUT_TOKEN_SUFFIX =
   "(?:co\\b|check\\s*[- ]?\\s*out\\b|צ['׳']ק\\s*אא?וט|צק\\s*אא?וט)";
 
 const CHECKOUT_PREFIX_RE = new RegExp(
-  `^(?:room\\s*)?${CHECKOUT_TOKEN_PREFIX}\\s+(\\d{1,2})$`,
+  `^(?:room\\s*)?${CHECKOUT_TOKEN_PREFIX}\\s*(\\d{1,2})$`,
   "i",
 );
 
 const CHECKOUT_SUFFIX_RE = new RegExp(
-  `^(?:room\\s*)?(\\d{1,2})\\s+${CHECKOUT_TOKEN_SUFFIX}`,
+  `^(?:room\\s*)?(\\d{1,2})\\s*${CHECKOUT_TOKEN_SUFFIX}`,
   "i",
 );
 
 const CHECKOUT_INLINE_RE = new RegExp(
-  `(?:^|\\s)(?:room\\s*)?(\\d{1,2})\\s+${CHECKOUT_TOKEN_SUFFIX}`,
+  `(?:^|\\s)(?:room\\s*)?(\\d{1,2})\\s*${CHECKOUT_TOKEN_SUFFIX}`,
   "i",
 );
 
@@ -108,8 +110,28 @@ function addRoom(rooms, raw) {
   if (inSuiteRange(n)) rooms.add(n);
 }
 
+/** "4-6" → "4,5,6" — bounded (≤ MAX_RANGE_SPAN rooms), ascending, both ends
+ * valid suite numbers. Anything else (descending, oversized span, out-of-range
+ * end) is left untouched and falls back to "-" as a plain list separator, same
+ * as before this fix. */
+function expandRoomRanges(fragment) {
+  return fragment.replace(/(\d{1,2})-(\d{1,2})/g, (match, a, b) => {
+    const start = parseInt(a, 10);
+    const end = parseInt(b, 10);
+    if (
+      !inSuiteRange(start) || !inSuiteRange(end) ||
+      start >= end || end - start + 1 > MAX_RANGE_SPAN
+    ) {
+      return match;
+    }
+    const nums = [];
+    for (let n = start; n <= end; n++) nums.push(n);
+    return nums.join(",");
+  });
+}
+
 function addRoomsFromList(rooms, fragment) {
-  for (const part of fragment.split(/[\s,/|&\-]+/)) {
+  for (const part of expandRoomRanges(fragment).split(/[\s,/|&\-ו]+/)) {
     const t = part.trim();
     if (!t) continue;
     const n = parseInt(t, 10);
@@ -121,7 +143,7 @@ function extractBareRoomNumbers(line) {
   const m = line.match(new RegExp(`^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})$`, "i"));
   if (!m) return [];
   const out = [];
-  for (const part of m[1].split(/[\s,/|&\-]+/)) {
+  for (const part of expandRoomRanges(m[1]).split(/[\s,/|&\-ו]+/)) {
     const t = part.trim();
     if (!t) continue;
     const n = parseInt(t, 10);

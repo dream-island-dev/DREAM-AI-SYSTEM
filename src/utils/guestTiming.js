@@ -248,6 +248,19 @@ export function getGuestTimingBadge(guest) {
       bg: "#FFFBEB", color: "#B45309", border: "#FDE68A",
     };
   }
+
+  // FAIL VISIBLE (2026-08-08): arrival_date <= today but the guest never made
+  // it to checked_in (still pending/expected/room_ready) — e.g. the
+  // housekeeping WA check-in signal was missed or never sent. This used to
+  // fall through to the same label as a guest who genuinely departed, which
+  // is a false claim staff could act on (assuming there's nothing to do).
+  if (PRE_ARRIVAL_STATUSES.has(guest.status)) {
+    return {
+      label: "🔴 הגעה עברה — טרם נקלט צ'ק-אין",
+      bg: "#FEF2F2", color: "#B91C1C", border: "#FCA5A5",
+    };
+  }
+
   return { label: "⚪ אורח לאחר עזיבה", bg: "var(--ivory)", color: "var(--text-muted)", border: "var(--border)" };
 }
 

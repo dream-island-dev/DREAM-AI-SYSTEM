@@ -61,7 +61,14 @@ export function buildGuestContextForAi(
   } else if (arrDate) {
     if (arrDate > today) stage = "טרם הגעה";
     else if (arrDate === today) stage = "יום הגעה — האורח מגיע היום";
-    else stage = "בתוך השהות";
+    // FAIL VISIBLE (2026-08-08): arrival date has passed but the guest never
+    // actually reached checked_in (housekeeping check-in signal missed/never
+    // sent) — must not claim "בתוך השהות" (in-house) to the LLM, or it will
+    // talk to the guest as if they're already at the resort. Reuses the same
+    // isCheckedIn the room-number gate below already relies on, so the two
+    // can no longer disagree with each other.
+    else if (isCheckedIn) stage = "בתוך השהות";
+    else stage = "הגעה עברה — טרם נקלט צ'ק-אין בפועל (אל תניח שהאורח כבר בחדר או בריזורט)";
   }
 
   const hasStage2 = conversationHistory.some(

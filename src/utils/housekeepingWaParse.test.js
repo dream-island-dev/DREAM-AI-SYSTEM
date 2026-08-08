@@ -62,6 +62,31 @@ describe("housekeepingWaParse", () => {
     expect(parseHousekeepingCheckInRoomNumbers("8 check out")).toEqual([]);
   });
 
+  test("glued ci/co — no whitespace between room number and token (2026-08-08 fix)", () => {
+    // Live incident: "9ci" sent to the housekeeping group never parsed at all
+    // (CHECKIN_SUFFIX_RE required \s+) — guest stayed stuck at "expected" with
+    // zero trace in housekeeping_wa_events. Loosened \s+ → \s*, and the "ci"
+    // prefix token now uses a lookahead instead of \b (\b never fires between
+    // two word chars, so it silently blocked "CI9").
+    expect(parseHousekeepingCheckInRoomNumbers("9ci")).toEqual([9]);
+    expect(parseHousekeepingCheckInRoomNumbers("9CI")).toEqual([9]);
+    expect(parseHousekeepingCheckInRoomNumbers("CI9")).toEqual([9]);
+    expect(parseHousekeepingCheckInRoomNumbers("ci9")).toEqual([9]);
+    // Still must not steal a ready/checkout line once glued.
+    expect(parseHousekeepingReadyRoomNumbers("9ci")).toEqual([]);
+    expect(parseHousekeepingCheckOutRoomNumbers("9ci")).toEqual([]);
+
+    expect(parseHousekeepingCheckOutRoomNumbers("9co")).toEqual([9]);
+    expect(parseHousekeepingCheckOutRoomNumbers("9CO")).toEqual([9]);
+    expect(parseHousekeepingCheckOutRoomNumbers("CO9")).toEqual([9]);
+    expect(parseHousekeepingCheckOutRoomNumbers("co9")).toEqual([9]);
+    expect(parseHousekeepingCheckInRoomNumbers("9co")).toEqual([]);
+    expect(parseHousekeepingReadyRoomNumbers("9co")).toEqual([]);
+
+    // Parses cleanly now, so it's not a near-miss any more.
+    expect(looksLikeHousekeepingNearMiss("9ci")).toBe(false);
+  });
+
   test("parses check-out patterns from live group (Co 23 / 24 co)", () => {
     expect(parseHousekeepingCheckOutRoomNumbers("Co 23")).toEqual([23]);
     expect(parseHousekeepingCheckOutRoomNumbers("24 co")).toEqual([24]);
@@ -148,6 +173,35 @@ describe("housekeepingWaParse", () => {
     expect(parseHousekeepingCheckOutRoomNumbers("4,5 co")).toEqual([4, 5]);
   });
 
+  test("bounded true range — '4-6' expands to {4,5,6} (2026-08-08 fix)", () => {
+    // Previously "-" was read as a plain list separator, so "4-6" silently
+    // checked in {4,6} and room 5 vanished with no clarify — the more
+    // dangerous of the two known gaps, since nothing signaled anything was
+    // wrong. Now expandRoomRanges() expands a valid ascending in-range pair.
+    expect(parseHousekeepingCheckInRoomNumbers("4-6 צק אין")).toEqual([4, 5, 6]);
+    expect(looksLikeHousekeepingNearMiss("4-6 צק אין")).toBe(false);
+    expect(parseHousekeepingReadyRoomNumbers("4-6✅")).toEqual([4, 5, 6]);
+
+    // Guard rails — anything that isn't a clean, bounded, ascending, in-range
+    // pair falls back to "-" as a plain separator (old behavior), not a crash
+    // or a runaway expansion.
+    expect(parseHousekeepingCheckInRoomNumbers("6-4 צק אין")).toEqual([4, 6]); // descending, falls back to separator behavior
+    expect(parseHousekeepingCheckInRoomNumbers("1-20 צק אין")).toEqual([1, 20]); // span > 6, falls back
+    expect(parseHousekeepingCheckInRoomNumbers("20-30 צק אין")).toEqual([20]); // 30 out of suite range, falls back (30 dropped)
+  });
+
+  test("Hebrew 'ו' (and) between two rooms — now parses via the multi-room list path (2026-08-08 fix)", () => {
+    // "4 ו-5 צק אין" — real staff phrasing meaning "rooms 4 and 5, check in".
+    // ROOM_LIST_FRAGMENT + the split in addRoomsFromList/extractBareRoomNumbers
+    // now accept ו as a list separator alongside space/comma/slash/dash, so
+    // this resolves through the existing multi-room-list regexes instead of
+    // failing the whole line.
+    expect(parseHousekeepingCheckInRoomNumbers("4 ו-5 צק אין")).toEqual([4, 5]);
+    expect(looksLikeHousekeepingNearMiss("4 ו-5 צק אין")).toBe(false);
+    expect(parseHousekeepingReadyRoomNumbers("4 ו5 ✅")).toEqual([4, 5]);
+    expect(parseHousekeepingCheckOutRoomNumbers("4 ו-5 co")).toEqual([4, 5]);
+  });
+
   test("group ack message for fresh bell triggers", () => {
     expect(buildHousekeepingGroupAckMessage(["רובי 14"])).toBe(
       "✅ רובי 14 מוכן — ממתין לאישור מנהל לשליחת הודעה 🔔",
@@ -184,28 +238,6 @@ describe("housekeepingWaParse", () => {
       expect(parseHousekeepingReadyRoomNumbers("✔️ 14")).toEqual([]);
     });
 
-
-    test("Hebrew 'ו' (and) between two rooms — parse fails whole-line, but the near-miss safety net catches it", () => {
-      // "4 ו-5 צק אין" — real staff phrasing meaning "rooms 4 and 5, check in".
-      // The Hebrew ו breaks every regex's contiguous room-list match, so the
-      // WHOLE line fails to parse (not a partial 4-only capture, as it might look
-      // at a glance) — but looksLikeHousekeepingNearMiss (now unconditionally
-      // visible, this PR) still fires because the line keeps its housekeeping
-      // anchor + a suite-range digit, so staff get a "which room?" clarify rather
-      // than a silent drop. Still worth teaching the parser this phrasing
-      // properly (0 rooms recorded is still 0 rooms recorded) — flagged as a
-      // follow-up, but no longer a *silent* gap.
-      expect(parseHousekeepingCheckInRoomNumbers("4 ו-5 צק אין")).toEqual([]);
-      expect(looksLikeHousekeepingNearMiss("4 ו-5 צק אין")).toBe(true);
-    });
-
-    test("dash is read as a list separator, not a range — '4-6' silently checks in {4,6}, room 5 vanishes with NO clarify", () => {
-      // Unlike the ו case above, this one parses successfully (non-empty), so the
-      // near-miss gate never sees it — the more dangerous of the two gaps, since
-      // there's no signal anything is wrong at all. Flagged as a follow-up.
-      expect(parseHousekeepingCheckInRoomNumbers("4-6 צק אין")).toEqual([4, 6]);
-      expect(looksLikeHousekeepingNearMiss("4-6 צק אין")).toBe(false);
-    });
 
     test("suite name instead of room number never parses and never near-misses", () => {
       // Parser is 100% digit-based — a message using the suite's name ("רובי")

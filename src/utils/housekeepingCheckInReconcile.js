@@ -41,7 +41,18 @@ export function indexHousekeepingCheckInsByRoom(events = []) {
   return byRoom;
 }
 
-export function resolveGuestHousekeepingSync(guest, suiteRoomRows, hkByRoom) {
+/**
+ * B1 (2026-08-08): the room had SOME housekeeping activity today (ready/
+ * checkout) but no check_in row exists for it at all — e.g. the forensic
+ * 2026-08-07 case where 9 rooms got ✅/ready signals and staff said "everyone
+ * in", but the actual "N ci" text was never sent (or, before A1, silently
+ * failed to parse). `resolveGuestHousekeepingSync`'s existing "pending" state
+ * only covers a check_in row that failed to auto-apply — it can't see this
+ * case at all, since there's no check_in row to key off. FAIL VISIBLE only —
+ * never auto-applies (no specific event to apply), never mutates guests.status,
+ * never re-introduces 15:00-style auto-checkin.
+ */
+export function resolveGuestHousekeepingSync(guest, suiteRoomRows, hkByRoom, activityRoomIds) {
   const roomIds = collectGuestSuiteRoomIds(guest, suiteRoomRows);
   let evt = null;
   let roomId = null;
@@ -52,7 +63,20 @@ export function resolveGuestHousekeepingSync(guest, suiteRoomRows, hkByRoom) {
       break;
     }
   }
-  if (!evt) return { state: "none" };
+  if (!evt) {
+    if (
+      activityRoomIds?.size &&
+      HK_CHECKIN_ELIGIBLE_STATUSES.has(guest?.status) &&
+      guest?.arrival_date &&
+      guest.arrival_date <= israelTodayStr()
+    ) {
+      const activeRoomId = roomIds.find((rid) => activityRoomIds.has(rid));
+      if (activeRoomId) {
+        return { state: "awaiting_group_signal", roomId: activeRoomId };
+      }
+    }
+    return { state: "none" };
+  }
 
   const action = evt.sync_action ?? null;
   const eventAt = evt.created_at ?? null;
@@ -94,7 +118,7 @@ export function resolveGuestHousekeepingSync(guest, suiteRoomRows, hkByRoom) {
   };
 }
 
-export function buildHousekeepingSyncMap(guests, suiteRoomsByGuestId, hkByRoom) {
+export function buildHousekeepingSyncMap(guests, suiteRoomsByGuestId, hkByRoom, activityRoomIds) {
   const map = {};
   for (const guest of guests ?? []) {
     if (!guest?.id) continue;
@@ -102,9 +126,47 @@ export function buildHousekeepingSyncMap(guests, suiteRoomsByGuestId, hkByRoom) 
       guest,
       suiteRoomsByGuestId[guest.id] ?? [],
       hkByRoom,
+      activityRoomIds,
     );
   }
   return map;
+}
+
+/** Room_ids with a ready/check_out signal today — see resolveGuestHousekeepingSync. */
+export function indexHousekeepingActivityRoomIds(events = []) {
+  const ids = new Set();
+  for (const evt of events) {
+    const roomId = String(evt?.room_id ?? "").trim();
+    if (roomId) ids.add(roomId);
+  }
+  return ids;
+}
+
+/**
+ * ready/check_out housekeeping_wa_events for a calendar day — deliberately
+ * excludes check_in (that's fetchHousekeepingCheckInsForDate's job) so the two
+ * stay conceptually separate: this answers "did staff touch this room at all
+ * today", not "did the room check in". Same FAIL VISIBLE contract as
+ * fetchHousekeepingCheckInsForDate — a query failure returns `error`, not an
+ * empty array indistinguishable from "no activity".
+ * @returns {Promise<{ rows: Array, error: string|null }>}
+ */
+export async function fetchHousekeepingActivityForDate(supabase, dateYmd = israelTodayStr()) {
+  if (!supabase || !dateYmd) return { rows: [], error: null };
+  const dayStart = new Date(`${dateYmd}T00:00:00+03:00`).toISOString();
+  const dayEnd = new Date(`${dateYmd}T23:59:59.999+03:00`).toISOString();
+  const { data, error } = await supabase
+    .from("housekeeping_wa_events")
+    .select("id, room_id, room_number, event_type, created_at")
+    .in("event_type", ["ready", "check_out"])
+    .gte("created_at", dayStart)
+    .lte("created_at", dayEnd)
+    .order("created_at", { ascending: false });
+  if (error) {
+    console.warn("[housekeepingCheckInReconcile] activity fetch failed:", error.message);
+    return { rows: [], error: error.message };
+  }
+  return { rows: data ?? [], error: null };
 }
 
 /**

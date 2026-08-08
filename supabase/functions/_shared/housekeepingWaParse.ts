@@ -16,8 +16,13 @@
 const MIN_ROOM = 1;
 const MAX_ROOM = 26;
 
-/** Comma / space / slash lists: "4,5", "4 5", "4/5". */
-const ROOM_LIST_FRAGMENT = "[\\d\\s,/|&\\-]+";
+/** Bound on true range expansion ("4-6" → 4,5,6) — keeps a fat-fingered "4-26"
+ * from silently checking in the whole resort. */
+const MAX_RANGE_SPAN = 6;
+
+/** Comma / space / slash lists: "4,5", "4 5", "4/5". Hebrew ו ("and") is
+ * accepted here too — "4 ו-5" is real staff phrasing for "rooms 4 and 5". */
+const ROOM_LIST_FRAGMENT = "[\\d\\s,/|&\\-ו]+";
 
 /** iOS/WhatsApp often use U+2019 etc. instead of ASCII ' or Hebrew geresh. */
 const HEBREW_TSADI_QOF_APOSTROPHE = "[''\\u2019\\u2018\\u05F3\\u02BC\\u0060\\u00B4\\u2032]";
@@ -38,9 +43,12 @@ const HAS_CHECKMARK_RE = /✅/;
 /** Housekeeping anchor tokens — used for near-miss gate (not LLM). Deliberately
  * ✅-only, not ✔/☑/✓ — those plain tick glyphs are common casual "ok/got it"
  * chat in Hebrew ("✓ 5 דקות ומגיע") and would turn every such message with an
- * incidental 1-26 number nearby into a false-positive "which room?" clarify. */
+ * incidental 1-26 number nearby into a false-positive "which room?" clarify.
+ * ci/co use a negative lookbehind instead of \b — \b never fires between two
+ * word chars (e.g. "9ci"), which is exactly the glued form this anchor exists
+ * to catch; the lookbehind still blocks mid-word false positives like "specific". */
 const HK_ANCHOR_RE =
-  /✅|מוכן|\bready\b|\bco\b|check\s*[- ]?\s*(?:in|out)|צק\s*א(?:ין|אוט)/i;
+  /✅|מוכן|\bready\b|(?<![A-Za-zא-ת])ci\b|(?<![A-Za-zא-ת])co\b|check\s*[- ]?\s*(?:in|out)|צק\s*א(?:ין|אוט)/i;
 
 /** Per-line exclusions for READY parser only (check-in / check-out have their own parsers). */
 const READY_EXCLUDE_LINE_RE =
@@ -50,18 +58,21 @@ const READY_EXCLUDE_LINE_RE =
 const CHECKIN_LINE_RE =
   /^(?:room\s*)?(\d{1,2})\s*(?:צ['׳']ק\s*אין|צק\s*אין|\bcheck\s*[- ]?\s*in\b)/i;
 
-const CHECKIN_TOKEN_PREFIX = "(?:ci\\b|check\\s*[- ]?\\s*in\\b|צ['׳']ק\\s*אין|צק\\s*אין)";
+// "ci" uses a lookahead, not \b, before the digit — \b never fires between two
+// word chars, which would block the glued "CI9" form; check-in/Hebrew phrases
+// keep \b since they're not meant to glue directly onto a room number.
+const CHECKIN_TOKEN_PREFIX = "(?:ci(?=\\s|\\d|$)|check\\s*[- ]?\\s*in\\b|צ['׳']ק\\s*אין|צק\\s*אין)";
 const CHECKIN_TOKEN_SUFFIX = "(?:ci\\b|check\\s*[- ]?\\s*in\\b)";
 
-/** "CI 17" / "check in 16" / "צ'ק אין 24" */
+/** "CI 17" / "CI17" / "check in 16" / "צ'ק אין 24" */
 const CHECKIN_PREFIX_RE = new RegExp(
-  `^(?:room\\s*)?${CHECKIN_TOKEN_PREFIX}\\s+(\\d{1,2})$`,
+  `^(?:room\\s*)?${CHECKIN_TOKEN_PREFIX}\\s*(\\d{1,2})$`,
   "i",
 );
 
-/** "17 ci" / "16 check in" */
+/** "17 ci" / "17ci" / "16 check in" */
 const CHECKIN_SUFFIX_RE = new RegExp(
-  `^(?:room\\s*)?(\\d{1,2})\\s+${CHECKIN_TOKEN_SUFFIX}`,
+  `^(?:room\\s*)?(\\d{1,2})\\s*${CHECKIN_TOKEN_SUFFIX}`,
   "i",
 );
 
@@ -84,21 +95,21 @@ const CHECKOUT_TOKEN_PREFIX =
 const CHECKOUT_TOKEN_SUFFIX =
   "(?:co\\b|check\\s*[- ]?\\s*out\\b|צ['׳']ק\\s*אא?וט|צק\\s*אא?וט)";
 
-/** "Co 23" / "check out 16" / "צ'ק אאוט 24" */
+/** "Co 23" / "CO23" / "check out 16" / "צ'ק אאוט 24" */
 const CHECKOUT_PREFIX_RE = new RegExp(
-  `^(?:room\\s*)?${CHECKOUT_TOKEN_PREFIX}\\s+(\\d{1,2})$`,
+  `^(?:room\\s*)?${CHECKOUT_TOKEN_PREFIX}\\s*(\\d{1,2})$`,
   "i",
 );
 
-/** "24 co" / "16 check out" / "23 צ'ק אאוט" */
+/** "24 co" / "24co" / "16 check out" / "23 צ'ק אאוט" */
 const CHECKOUT_SUFFIX_RE = new RegExp(
-  `^(?:room\\s*)?(\\d{1,2})\\s+${CHECKOUT_TOKEN_SUFFIX}`,
+  `^(?:room\\s*)?(\\d{1,2})\\s*${CHECKOUT_TOKEN_SUFFIX}`,
   "i",
 );
 
-/** Inline anywhere in line: "שילמו בקבלה 7 co" */
+/** Inline anywhere in line: "שילמו בקבלה 7 co" / "...7co" */
 const CHECKOUT_INLINE_RE = new RegExp(
-  `(?:^|\\s)(?:room\\s*)?(\\d{1,2})\\s+${CHECKOUT_TOKEN_SUFFIX}`,
+  `(?:^|\\s)(?:room\\s*)?(\\d{1,2})\\s*${CHECKOUT_TOKEN_SUFFIX}`,
   "i",
 );
 
@@ -140,8 +151,28 @@ function addRoom(rooms: Set<number>, raw: string | undefined): void {
   if (inSuiteRange(n)) rooms.add(n);
 }
 
+/** "4-6" → "4,5,6" — bounded (≤ MAX_RANGE_SPAN rooms), ascending, both ends
+ * valid suite numbers. Anything else (descending, oversized span, out-of-range
+ * end) is left untouched and falls back to "-" as a plain list separator, same
+ * as before this fix. */
+function expandRoomRanges(fragment: string): string {
+  return fragment.replace(/(\d{1,2})-(\d{1,2})/g, (match, a, b) => {
+    const start = parseInt(a, 10);
+    const end = parseInt(b, 10);
+    if (
+      !inSuiteRange(start) || !inSuiteRange(end) ||
+      start >= end || end - start + 1 > MAX_RANGE_SPAN
+    ) {
+      return match;
+    }
+    const nums: number[] = [];
+    for (let n = start; n <= end; n++) nums.push(n);
+    return nums.join(",");
+  });
+}
+
 function addRoomsFromList(rooms: Set<number>, fragment: string): void {
-  for (const part of fragment.split(/[\s,/|&\-]+/)) {
+  for (const part of expandRoomRanges(fragment).split(/[\s,/|&\-ו]+/)) {
     const t = part.trim();
     if (!t) continue;
     const n = parseInt(t, 10);
@@ -149,12 +180,12 @@ function addRoomsFromList(rooms: Set<number>, fragment: string): void {
   }
 }
 
-/** Bare room list line: "4,5", "4 5", "4/5" — no action tokens. */
+/** Bare room list line: "4,5", "4 5", "4/5", "4-6", "4 ו-5" — no action tokens. */
 function extractBareRoomNumbers(line: string): number[] {
   const m = line.match(new RegExp(`^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})$`, "i"));
   if (!m) return [];
   const out: number[] = [];
-  for (const part of m[1].split(/[\s,/|&\-]+/)) {
+  for (const part of expandRoomRanges(m[1]).split(/[\s,/|&\-ו]+/)) {
     const t = part.trim();
     if (!t) continue;
     const n = parseInt(t, 10);
