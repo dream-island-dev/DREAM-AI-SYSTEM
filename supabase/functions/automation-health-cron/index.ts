@@ -30,6 +30,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
 import { probeWhapiDeviceHealth, persistWhapiHealthToBotConfig } from "../_shared/whapiHealth.ts";
+import { isMetaAuthFailure } from "../_shared/metaAuthFailure.ts";
 import { deliverExecutiveDmReply } from "../_shared/executiveAssistant.ts";
 import { ARCHITECT_PHONE_DIGITS } from "../_shared/executiveIdentity.ts";
 import {
@@ -106,6 +107,71 @@ async function checkWhapiDeviceHealth(
       `${snapshot.error ? `, ${snapshot.error}` : ""}) — אורחים יעברו אוטומטית ל-Dream Bot אם Failover מופעל.`,
     okMessage: `✅ בריאות אוטומציה: מכשיר Whapi פעיל (${snapshot.statusText}) — ניתן להחזיר ערוץ Whapi ב-ACC.`,
   };
+}
+
+const META_AUTH_PROBE_TIMEOUT_MS = 8000;
+
+// P0 2026-08-09: waiting for checkFailedRate's aggregate 30%-of-≥5 threshold
+// to trip on a dead Meta token means real guest sends have to fail first, in
+// volume — during the 2026-08-09 06:30-07:15 incident only 4 notifications
+// fired in that window (below the min-5 floor), so it would NOT have alerted
+// even if enabled. This probes the token directly against Meta, independent
+// of guest-send volume — the cheapest possible authenticated Graph call
+// (fetching the phone number resource's own id, no template/message payload).
+async function checkMetaAuthHealth(): Promise<CheckResult> {
+  const token = Deno.env.get("META_WHATSAPP_TOKEN") ?? Deno.env.get("WHATSAPP_TOKEN");
+  const phoneNumberId = Deno.env.get("META_PHONE_NUMBER_ID") ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
+
+  if (!token || !phoneNumberId) {
+    return {
+      checkKey: "meta_auth_health",
+      bad: true,
+      detail: { error: "missing_secret", hasToken: !!token, hasPhoneNumberId: !!phoneNumberId },
+      badMessage:
+        `🚨 בריאות אוטומציה: META_WHATSAPP_TOKEN או META_PHONE_NUMBER_ID לא מוגדרים ב-Secrets — ` +
+        `אוטומציית Meta לא יכולה לרוץ בכלל.`,
+      okMessage: `✅ בריאות אוטומציה: הגדרות טוקן Meta חזרו להיות מוגדרות.`,
+    };
+  }
+
+  try {
+    const res = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}?fields=id`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(META_AUTH_PROBE_TIMEOUT_MS),
+    });
+
+    if (res.ok) {
+      return {
+        checkKey: "meta_auth_health",
+        bad: false,
+        detail: { status: res.status },
+        badMessage: "",
+        okMessage: "✅ בריאות אוטומציה: טוקן Dream Bot (Meta) תקין.",
+      };
+    }
+
+    const bodyText = (await res.text()).slice(0, 400);
+    const isAuth = res.status === 401 || isMetaAuthFailure(bodyText);
+    return {
+      checkKey: "meta_auth_health",
+      bad: true,
+      detail: { status: res.status, body: bodyText },
+      badMessage: isAuth
+        ? `🚨 בריאות אוטומציה: טוקן Dream Bot (Meta) לא תקין (${res.status} — Authentication Error). ` +
+          `כל הודעות האוטומציה לאורחים דרך Meta נכשלות כרגע. עדכן META_WHATSAPP_TOKEN ב-Supabase Secrets ` +
+          `ואשר מול Meta Business Manager.`
+        : `🚨 בריאות אוטומציה: קריאה ל-Meta Graph API נכשלה (${res.status}): ${bodyText.slice(0, 200)}`,
+      okMessage: "✅ בריאות אוטומציה: טוקן Dream Bot (Meta) חזר לתקין.",
+    };
+  } catch (e) {
+    return {
+      checkKey: "meta_auth_health",
+      bad: true,
+      detail: { error: (e as Error).message },
+      badMessage: `⚠️ בריאות אוטומציה: לא ניתן היה לבדוק את טוקן Meta (${(e as Error).message}) — ייתכן בעיית רשת/timeout.`,
+      okMessage: "✅ בריאות אוטומציה: בדיקת טוקן Meta חזרה לתקין.",
+    };
+  }
 }
 
 // ── Individual checks ────────────────────────────────────────────────────────
@@ -538,6 +604,7 @@ Deno.serve(async (req: Request) => {
       await checkFailedRate(supabase),
       await checkFailoverRate(supabase),
       await checkWhapiDeviceHealth(supabase, { persist: !isPreview }),
+      await checkMetaAuthHealth(),
       await checkPendingApprovalSpike(supabase),
       await checkHumanRequestedSpike(supabase),
       ...(await checkTemplateApprovals(supabase)),

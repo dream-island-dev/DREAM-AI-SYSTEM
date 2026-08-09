@@ -2182,6 +2182,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     duplicate_lookup_failed: "חסימת כפילות שנכשלה בקריאה (lookup_failed)",
     notification_failed_rate: "קצב כשלים בהודעות אוטומציה",
     ai_failover_rate: "קצב failover בין מנועי AI",
+    meta_auth_health: "טוקן Dream Bot (Meta)",
     template_approval_lookup: "בדיקת תבניות מול Meta",
     automation_stages_read_error: "קריאת automation_stages",
   };

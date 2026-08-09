@@ -1,14 +1,63 @@
 // ⌘K / Ctrl+K — global guest + navigation search.
-import { useCallback, useEffect, useMemo, useState } from "react";
+//
+// P0 2026-08-09: this used to fetch the 400 most-recent-arrival guests ONCE on
+// open and filter client-side. Any guest outside that window (e.g. an older
+// stay once future-dated pending bookings crowd the top of the arrival_date
+// sort) was permanently invisible here — confirmed on שרית דהן (id 4358,
+// arrival 2026-08-04), who sat ~700 rows deep. Now every keystroke queries the
+// DB directly (debounced) across ALL guests, not a cache.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { getGuestTimingBadge } from "../utils/guestTiming";
 
+const SEARCH_DEBOUNCE_MS = 350;
+const MIN_SEARCH_LEN = 2;
+const DEFAULT_RESULT_LIMIT = 15;
+const SEARCH_RESULT_LIMIT = 30;
+const GUEST_SEARCH_FIELDS = "id, name, phone, room, arrival_date, departure_date, status, portal_token";
+
 function normalizeSearch(q) {
-  return (q ?? "").trim().toLowerCase();
+  return (q ?? "").trim();
 }
 
 function phoneDigits(p) {
   return (p ?? "").replace(/\D/g, "");
+}
+
+// PostgREST .or() filters split terms on "," and group on "()" — a name/room
+// typed with those characters would otherwise corrupt the filter string
+// instead of just failing to match, so strip them before building it.
+function sanitizeOrTerm(term) {
+  return term.replace(/[,()]/g, " ").trim();
+}
+
+// Active/upcoming first, then most-recent past stays, cancelled last (still
+// findable, just not competing with real guests for the top slots).
+function guestSortPriority(g, todayStr) {
+  if (g.status === "checked_in" || g.status === "room_ready") return 0;
+  if (g.status === "cancelled") return 4;
+  if (g.arrival_date && g.arrival_date >= todayStr) return 1;
+  if (g.status === "checked_out") return 2;
+  return 3;
+}
+
+function sortGuests(list) {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+  return [...list].sort((a, b) => {
+    const diff = guestSortPriority(a, today) - guestSortPriority(b, today);
+    if (diff !== 0) return diff;
+    return (b.arrival_date ?? "").localeCompare(a.arrival_date ?? "");
+  });
+}
+
+function dedupeGuestsById(lists) {
+  const byId = new Map();
+  for (const list of lists) {
+    for (const g of list) {
+      if (g?.id != null && !byId.has(g.id)) byId.set(g.id, g);
+    }
+  }
+  return [...byId.values()];
 }
 
 export default function GlobalCommandPalette({
@@ -22,21 +71,56 @@ export default function GlobalCommandPalette({
   const [guests, setGuests] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(0);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
-    if (!open || !isSupabaseConfigured || !supabase) return;
-    setLoading(true);
-    supabase
-      .from("guests")
-      .select("id, name, phone, room, arrival_date, departure_date, status, portal_token")
-      .neq("status", "cancelled")
-      .order("arrival_date", { ascending: false })
-      .limit(400)
-      .then(({ data, error }) => {
-        if (!error) setGuests(data ?? []);
-        setLoading(false);
-      });
-  }, [open]);
+    if (!open || !isSupabaseConfigured || !supabase) return undefined;
+    const q = normalizeSearch(query);
+    const delay = q.length < MIN_SEARCH_LEN ? 0 : SEARCH_DEBOUNCE_MS;
+
+    const timer = setTimeout(async () => {
+      const myRequestId = ++requestIdRef.current;
+      setLoading(true);
+      try {
+        let rows = [];
+        if (q.length < MIN_SEARCH_LEN) {
+          // Idle/short-query view — light recent-arrivals peek, not a search result.
+          const { data, error } = await supabase
+            .from("guests")
+            .select(GUEST_SEARCH_FIELDS)
+            .neq("status", "cancelled")
+            .order("arrival_date", { ascending: false })
+            .limit(60);
+          if (error) console.warn("[GlobalCommandPalette] recent list failed:", error.message);
+          rows = sortGuests(data ?? []).slice(0, DEFAULT_RESULT_LIMIT);
+        } else {
+          const term = sanitizeOrTerm(q);
+          const qDigits = phoneDigits(q);
+          const orParts = [`name.ilike.%${term}%`, `room.ilike.%${term}%`];
+          if (qDigits.length >= 3) orParts.push(`phone.ilike.%${qDigits}%`);
+
+          // ilike catches substring matches across all statuses (incl. cancelled —
+          // history must stay findable); match_guest_fuzzy (migration 207,
+          // pg_trgm) catches name variants ilike can't, e.g. "דהן" typed for a
+          // guest actually named "דאהן" — not a contiguous substring match.
+          const [ilikeRes, fuzzyRes] = await Promise.all([
+            supabase.from("guests").select(GUEST_SEARCH_FIELDS).or(orParts.join(",")).limit(SEARCH_RESULT_LIMIT),
+            supabase.rpc("match_guest_fuzzy", { p_name: q, p_arrival_date: null }),
+          ]);
+          if (ilikeRes.error) console.warn("[GlobalCommandPalette] guest search failed:", ilikeRes.error.message);
+          if (fuzzyRes.error) console.warn("[GlobalCommandPalette] fuzzy match failed:", fuzzyRes.error.message);
+
+          const merged = dedupeGuestsById([ilikeRes.data ?? [], fuzzyRes.data ?? []]);
+          rows = sortGuests(merged).slice(0, SEARCH_RESULT_LIMIT);
+        }
+        if (myRequestId === requestIdRef.current) setGuests(rows);
+      } finally {
+        if (myRequestId === requestIdRef.current) setLoading(false);
+      }
+    }, delay);
+
+    return () => clearTimeout(timer);
+  }, [open, query]);
 
   useEffect(() => {
     if (!open) {
@@ -59,22 +143,14 @@ export default function GlobalCommandPalette({
   // nav actions vanished entirely the moment you typed anything (guestMatches
   // was the only thing query filtered), so typing e.g. "אוטומציה" found nothing.
   const navMatches = useMemo(() => {
-    const q = normalizeSearch(query);
+    const q = normalizeSearch(query).toLowerCase();
     if (!q) return navActions;
     return navActions.filter((a) => a.label.toLowerCase().includes(q)).slice(0, 8);
   }, [navActions, query]);
 
-  const guestMatches = useMemo(() => {
-    const q = normalizeSearch(query);
-    if (!q) return guests.slice(0, 12);
-    const qDigits = phoneDigits(q);
-    return guests.filter((g) => {
-      const name = (g.name ?? "").toLowerCase();
-      const room = (g.room ?? "").toLowerCase();
-      const ph = phoneDigits(g.phone);
-      return name.includes(q) || room.includes(q) || (qDigits.length >= 3 && ph.includes(qDigits));
-    }).slice(0, 15);
-  }, [guests, query]);
+  // guests is already the server-filtered/sorted/limited result set (see the
+  // search effect above) — no client-side re-filtering needed here anymore.
+  const guestMatches = guests;
 
   const items = useMemo(() => {
     const list = [];
@@ -142,10 +218,16 @@ export default function GlobalCommandPalette({
           value={query}
           onChange={(e) => { setQuery(e.target.value); setSelected(0); }}
         />
-        {loading && <div className="cmd-palette__hint">טוען אורחים…</div>}
+        {loading && <div className="cmd-palette__hint">מחפש…</div>}
         <ul className="cmd-palette__list">
           {items.map((item, idx) => {
-            const badge = item.guest ? getGuestTimingBadge(item.guest) : null;
+            // Cancelled bookings stay findable for history/support (FAIL VISIBLE)
+            // but must never look like a live "after departure" guest.
+            const badge = item.guest
+              ? (item.guest.status === "cancelled"
+                  ? { label: "⚠ מבוטל", color: "#B91C1C" }
+                  : getGuestTimingBadge(item.guest))
+              : null;
             return (
               <li key={item.id}>
                 <button

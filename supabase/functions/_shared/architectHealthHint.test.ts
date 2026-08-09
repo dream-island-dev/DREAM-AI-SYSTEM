@@ -12,11 +12,12 @@ import {
   PENDING_APPROVAL_ALERT_THRESHOLD,
 } from "./architectHealthHint.ts";
 
-Deno.test("ARCHITECT_RELEVANT_CHECK_KEYS contains exactly the expected 3 keys", () => {
-  assertEquals(ARCHITECT_RELEVANT_CHECK_KEYS.size, 3);
+Deno.test("ARCHITECT_RELEVANT_CHECK_KEYS contains exactly the expected 4 keys", () => {
+  assertEquals(ARCHITECT_RELEVANT_CHECK_KEYS.size, 4);
   assertEquals(ARCHITECT_RELEVANT_CHECK_KEYS.has("whapi_device_health"), true);
   assertEquals(ARCHITECT_RELEVANT_CHECK_KEYS.has("pending_approval_spike"), true);
   assertEquals(ARCHITECT_RELEVANT_CHECK_KEYS.has("human_requested_spike"), true);
+  assertEquals(ARCHITECT_RELEVANT_CHECK_KEYS.has("meta_auth_health"), true);
   // No new whapi_sos_active check — Mike's DM rides on the existing whapi_device_health flip only.
   assertEquals(ARCHITECT_RELEVANT_CHECK_KEYS.has("whapi_sos_active"), false);
 });
@@ -59,6 +60,13 @@ Deno.test("composeArchitectHealthHint: human_requested_spike bad-flip includes c
   const msg = composeArchitectHealthHint("human_requested_spike", false, { count: 4, threshold: HUMAN_REQUESTED_ALERT_THRESHOLD });
   assertEquals(msg.includes("4"), true);
   assertEquals(msg.includes(String(HUMAN_REQUESTED_ALERT_THRESHOLD)), true);
+});
+
+Deno.test("composeArchitectHealthHint: meta_auth_health bad-flip includes the status/error detail", () => {
+  const msg = composeArchitectHealthHint("meta_auth_health", false, { status: "401", error: "OAuthException" });
+  assertEquals(msg.includes("מייק"), true);
+  assertEquals(msg.includes("טוקן Dream Bot (Meta)"), true);
+  assertEquals(msg.includes("401"), true);
 });
 
 Deno.test("composeArchitectHealthHint: unknown check key falls back to the raw key as label", () => {

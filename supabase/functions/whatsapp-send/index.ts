@@ -122,6 +122,7 @@ import {
   type GuestRoomFields,
 } from "../_shared/suiteNames.ts";
 import { assertMetaMessageAccepted } from "../_shared/metaWamid.ts";
+import { isMetaAuthFailure } from "../_shared/metaAuthFailure.ts";
 import {
   isSuiteRoomReadyAlreadySent,
   markSuiteRoomReadySent,
@@ -1040,6 +1041,62 @@ function maskPhoneForLog(phone: string): string {
 
 const ADMIN_ALERT_PHONE_FALLBACK = "972546294885";
 
+// P0 2026-08-09: a live Meta token failure (code 190/401) fires one
+// notifyAdminIfDispatchFailed per guest dispatch attempt — during the
+// 2026-08-09 06:30-07:15 outage that was one admin Whapi DM every ~15 min per
+// affected guest, all saying essentially the same thing ("token is dead").
+// Meta-auth failures specifically get throttled to one admin ping per window;
+// every other failure type (rate limit, template drift, phone data, etc.)
+// keeps the existing per-failure paging unchanged.
+const META_AUTH_ALERT_THROTTLE_MINUTES = 30;
+const META_AUTH_ALERT_CONFIG_KEY = "meta_auth_admin_alert_last_sent_at";
+
+// deno-lint-ignore no-explicit-any
+let _metaAuthAlertClient: any = null;
+// deno-lint-ignore no-explicit-any
+function getMetaAuthAlertClient(): any {
+  if (!_metaAuthAlertClient) {
+    _metaAuthAlertClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
+  }
+  return _metaAuthAlertClient;
+}
+
+async function shouldThrottleMetaAuthAlert(): Promise<boolean> {
+  try {
+    const { data, error } = await getMetaAuthAlertClient()
+      .from("bot_config")
+      .select("config_value")
+      .eq("config_key", META_AUTH_ALERT_CONFIG_KEY)
+      .maybeSingle();
+    if (error) throw error;
+    const lastSentMs = data?.config_value ? new Date(data.config_value as string).getTime() : 0;
+    if (!lastSentMs || Number.isNaN(lastSentMs)) return false;
+    return Date.now() - lastSentMs < META_AUTH_ALERT_THROTTLE_MINUTES * 60_000;
+  } catch (e) {
+    // FAIL VISIBLE: a throttle-state read failure must never silently
+    // swallow a real Meta-auth alert — default to sending, not suppressing.
+    console.warn("[whatsapp-send] meta-auth alert throttle read failed (alerting anyway):", (e as Error).message);
+    return false;
+  }
+}
+
+async function recordMetaAuthAlertSent(): Promise<void> {
+  try {
+    const { error } = await getMetaAuthAlertClient()
+      .from("bot_config")
+      .upsert(
+        { config_key: META_AUTH_ALERT_CONFIG_KEY, config_value: new Date().toISOString() },
+        { onConflict: "config_key" },
+      );
+    if (error) throw error;
+  } catch (e) {
+    console.warn("[whatsapp-send] meta-auth alert throttle write failed:", (e as Error).message);
+  }
+}
+
 /** Emergency Whapi DM to admin when a guest dispatch fails (bypasses Meta). */
 async function alertAdminDispatchFailure(params: {
   guestName?: string | null;
@@ -1061,13 +1118,27 @@ async function alertAdminDispatchFailure(params: {
     maskPhoneForLog(safeGuestPhone(params.guestPhone)) ||
     "לא ידוע";
   const errText = String(params.errorMessage ?? "שגיאה לא ידועה").slice(0, 500);
-  const alertBody =
-    `🚨 שגיאת מערכת: כשל בשליחת הודעה לאורח ${guestLabel}.\n` +
-    `סוג ההודעה: ${params.dispatchType}\n` +
-    `סיבת השגיאה: ${errText}`;
+
+  const isMetaAuth = isMetaAuthFailure(errText);
+  if (isMetaAuth && (await shouldThrottleMetaAuthAlert())) {
+    console.warn(
+      `[whatsapp-send] Meta-auth admin alert suppressed (throttle window, ${META_AUTH_ALERT_THROTTLE_MINUTES}min) — guest ${guestLabel}: ${errText}`,
+    );
+    return;
+  }
+
+  const alertBody = isMetaAuth
+    ? `🚨 טוקן Dream Bot (Meta) לא תקין — הודעות לאורחים נכשלות (Authentication Error, קוד 190).\n` +
+      `עדכן META_WHATSAPP_TOKEN ב-Supabase Secrets ואשר שוב מול Meta Business Manager.\n` +
+      `(דוגמה לאורח שנפגע: ${guestLabel} — ${params.dispatchType}. הודעה זו לא תחזור על עצמה ל-${META_AUTH_ALERT_THROTTLE_MINUTES} דק׳ הקרובות כדי לא להציף.)`
+    : `🚨 שגיאת מערכת: כשל בשליחת הודעה לאורח ${guestLabel}.\n` +
+      `סוג ההודעה: ${params.dispatchType}\n` +
+      `סיבת השגיאה: ${errText}`;
+
   try {
     await sendWhapiText(adminPhone, alertBody, { noLinkPreview: true });
     console.log(`[whatsapp-send] admin dispatch failure alert sent to ${maskPhoneForLog(adminPhone)}`);
+    if (isMetaAuth) await recordMetaAuthAlertSent();
   } catch (e) {
     console.error("[whatsapp-send] admin dispatch alert failed (non-blocking):", (e as Error).message);
   }

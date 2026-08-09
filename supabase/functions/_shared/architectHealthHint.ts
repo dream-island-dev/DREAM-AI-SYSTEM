@@ -12,6 +12,9 @@ export const ARCHITECT_RELEVANT_CHECK_KEYS: ReadonlySet<string> = new Set([
   "whapi_device_health",
   "pending_approval_spike",
   "human_requested_spike",
+  // 2026-08-09 P0: a dead Meta token silently stops ALL guest automation on
+  // that channel — at least as architect-relevant as the Whapi device flip.
+  "meta_auth_health",
 ]);
 
 export const PENDING_APPROVAL_ALERT_THRESHOLD = 5;
@@ -29,6 +32,7 @@ const CHECK_KEY_LABEL_HE: Record<string, string> = {
   whapi_device_health: "מכשיר Whapi",
   pending_approval_spike: "משימות ממתינות לאישור",
   human_requested_spike: "בקשות human_requested ב-Inbox",
+  meta_auth_health: "טוקן Dream Bot (Meta)",
 };
 
 function labelFor(checkKey: string): string {
@@ -43,6 +47,8 @@ function detailSummary(checkKey: string, detail: Record<string, unknown>): strin
       return `${detail.count ?? "?"} משימות (סף: ${detail.threshold ?? PENDING_APPROVAL_ALERT_THRESHOLD})`;
     case "human_requested_spike":
       return `${detail.count ?? "?"} שיחות (סף: ${detail.threshold ?? HUMAN_REQUESTED_ALERT_THRESHOLD})`;
+    case "meta_auth_health":
+      return String(detail.status ?? detail.error ?? "");
     default:
       return "";
   }
