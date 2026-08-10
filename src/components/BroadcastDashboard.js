@@ -20,6 +20,11 @@ import {
   THREE_PARAM_TIMING_TEMPLATES,
   buildThreeParamTimingVarsFromGuest,
 } from "../utils/whatsapp.js";
+import {
+  isEffectiveSuiteGuest,
+  isEffectiveDayPassGuest,
+  isPremiumDayRoom,
+} from "../utils/pipelineSegment";
 
 // Friendly label suggestions for template variables {{1}}, {{2}}, …
 const VAR_LABELS = ["שם אורח", "שעת כניסה למתחם", "שעת קבלת חדר", "תאריך הגעה", "סוג חדר"];
@@ -239,24 +244,32 @@ export default function BroadcastDashboard({ user }) {
   const today = localISO(0);
   const tomorrow = localISO(1);
   const filteredGuests = allGuests.filter((g) => {
-    if (filterWindow !== "all" && g.status !== "checked_in") {
+    // Exact date / range are precision filters — "arriving on this date" means
+    // exactly that, so (unlike the legacy relative windows below) a guest who
+    // already checked in does NOT get a free pass through this check just
+    // because their arrival_date happens to sit outside the window.
+    if (filterWindow === "exact") {
+      if (!filterExactDate || g.arrival_date !== filterExactDate) return false;
+    } else if (filterWindow === "range") {
+      if (!filterRangeFrom || !filterRangeTo) return false;
+      if (!g.arrival_date || g.arrival_date < filterRangeFrom || g.arrival_date > filterRangeTo) return false;
+    } else if (filterWindow !== "all" && g.status !== "checked_in") {
       if (filterWindow === "today") {
         if (!g.arrival_date || g.arrival_date !== today) return false;
       } else if (filterWindow === "tomorrow") {
         if (!g.arrival_date || g.arrival_date !== tomorrow) return false;
-      } else if (filterWindow === "exact") {
-        if (!filterExactDate || g.arrival_date !== filterExactDate) return false;
-      } else if (filterWindow === "range") {
-        if (!filterRangeFrom || !filterRangeTo) return false;
-        if (!g.arrival_date || g.arrival_date < filterRangeFrom || g.arrival_date > filterRangeTo) return false;
       } else {
         const days = parseInt(filterWindow, 10);
         const cutoff = localISO(days);
         if (!g.arrival_date || g.arrival_date < today || g.arrival_date > cutoff) return false;
       }
     }
-    if (filterGuest === "suite"     && (g.room_type === "day_guest" || g.room_type === "premium_day_guest")) return false;
-    if (filterGuest === "day_guest" && g.room_type !== "day_guest" && g.room_type !== "premium_day_guest") return false;
+    // Canonical classification (mirrors _shared/suiteNames.ts / pipelineSegment.js)
+    // — room_type alone can be mistagged (known split-brain source), so suite
+    // vs day-pass is decided by the guest's actual `room` against the suite
+    // registry, not by trusting the room_type label.
+    if (filterGuest === "suite"     && !isEffectiveSuiteGuest(g)) return false;
+    if (filterGuest === "day_guest" && !isEffectiveDayPassGuest(g)) return false;
     if (filterStatus !== "all" && g.status !== filterStatus) return false;
     if (filterDept !== "all") {
       if (deptMap[g.manager_id] !== filterDept) return false;
@@ -1276,11 +1289,11 @@ export default function BroadcastDashboard({ user }) {
                     </td>
                     <td style={{ fontSize: 13 }}>{g.room || "—"}</td>
                     <td>
-                      {g.room_type === "suite"
+                      {isEffectiveSuiteGuest(g)
                         ? <span style={{ color: "var(--gold-dark)", fontWeight: 700, fontSize: 12 }}>👑 סוויטה</span>
-                        : g.room_type === "premium_day_guest"
+                        : isPremiumDayRoom(g.room)
                         ? <span style={{ color: "#92400E", fontWeight: 700, fontSize: 12 }}>⭐ פרימיום יומי</span>
-                        : g.room_type === "day_guest"
+                        : isEffectiveDayPassGuest(g)
                         ? <span style={{ color: "#1D4ED8", fontSize: 12 }}>🏊 יומי</span>
                         : <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{g.room_type || "standard"}</span>
                       }
