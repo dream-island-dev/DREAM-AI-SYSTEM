@@ -25,6 +25,7 @@ import {
   INBOX_ROSTER_SEGMENT_ORDER,
   isDayPassRoomType,
   isGuestDeparted,
+  isGuestInResortToday,
   isPremiumDayRoom,
   isSuiteGuestProfile,
   rosterGuestFields,
@@ -358,6 +359,11 @@ const T = {
     routeTitle: "ניתוב בקשת אורח",
     routeMaint: "🔧 תחזוקה", routeHouse: "🛏️ משק בית",
     routeRequests: "🛎️ ללוח בקשות",
+    routeOpsCallsCta: "📋 צור משימה לקבוצת קריאות",
+    routeOpsCallsHint: "מים · מגבות · נוחות — נציג מאשר לפני שליחה לשטח",
+    routeOpsCallsDisabledNoGuest: "אין פרופיל אורח מקושר — לא ניתן לפתוח משימת שטח",
+    routeOpsCallsDisabledNotInResort: "האורח לא בסטטוס צ'ק-אין / בריזורט — סנכרן צ'ק-אין ואז פתח משימה",
+    routeOpsCallsDisabledNoRoom: "חסר שיוך חדר — בחר חדר בפרופיל לפני שליחה לקבוצת קריאות",
     routeRequestsToast: "✅ הבקשה נפתחה בלוח בקשות + נשלחה לקבוצת וואטסאפ",
     inputPh: "כתוב הודעה ידנית... (Enter לשליחה)",
     archive: "ארכיון", resolve: "טופל",
@@ -397,6 +403,8 @@ const T = {
     dbSearching: "🔎 מחפש גם בהיסטוריה המלאה…",
     filterAll: "הכל",
     filterAlerts: "🔴 התראות",
+    filterAlertsSuite: (n) => `🔴 סוויטות ${n}`,
+    filterAlertsDaypass: (n) => `🔴 בילוי יומי ${n}`,
     filterInResort: "🟢 בריזורט",
     filterArrivingToday: "🌅 מגיעים היום",
     filterDeparted: "⚪ אחרי עזיבה",
@@ -459,6 +467,11 @@ const T = {
     routeTitle: "Route guest request",
     routeMaint: "🔧 Maintenance", routeHouse: "🛏️ Housekeeping",
     routeRequests: "🛎️ Requests Board",
+    routeOpsCallsCta: "📋 Create ops-group task",
+    routeOpsCallsHint: "Water · towels · amenities — staff confirms before field dispatch",
+    routeOpsCallsDisabledNoGuest: "No linked guest profile — cannot open a field task",
+    routeOpsCallsDisabledNotInResort: "Guest is not checked-in / in-resort — sync check-in first",
+    routeOpsCallsDisabledNoRoom: "Missing room assignment — pick a room on the profile first",
     routeRequestsToast: "✅ Request opened on Requests Board + sent to WhatsApp group",
     inputPh: "Type a manual message... (Enter to send)",
     archive: "Archive", resolve: "Resolved",
@@ -498,6 +511,8 @@ const T = {
     dbSearching: "🔎 Searching full history too…",
     filterAll: "All",
     filterAlerts: "🔴 Alerts",
+    filterAlertsSuite: (n) => `🔴 Suites ${n}`,
+    filterAlertsDaypass: (n) => `🔴 Day-pass ${n}`,
     filterInResort: "🟢 In resort",
     filterArrivingToday: "🌅 Arriving today",
     filterDeparted: "⚪ After stay",
@@ -553,6 +568,8 @@ const TASK_SUBCATEGORIES = {
   ],
   housekeeping: [
     { id: "towels",      label: "🧺 מגבות" },
+    { id: "water",       label: "💧 מים" },
+    { id: "ice",         label: "🧊 קרח" },
     { id: "room_makeup", label: "🛏️ סידור חדר" },
     { id: "amenities",   label: "🧴 שירותי נוחות" },
   ],
@@ -563,6 +580,51 @@ const TASK_SUBCATEGORIES = {
     { id: "general",   label: "📝 בקשה כללית" },
   ],
 };
+
+/** Last inbound guest text — used to prefill ops-task note (HITL, not auto-dispatch). */
+function lastInboundGuestText(contact) {
+  if (!contact?.messages?.length) return "";
+  const lastInbound = [...contact.messages].reverse().find((m) => m.direction === "inbound");
+  const raw = String(lastInbound?.message ?? "").trim();
+  if (!raw) return "";
+  return parseOutboundDispatch(raw).body?.trim() || raw;
+}
+
+/** Guess housekeeping sub-category id from Hebrew amenity shorthand. */
+function guessHousekeepingSubCategory(text) {
+  const t = String(text ?? "");
+  if (/מגב|towel/i.test(t)) return "towels";
+  if (/קרח|ice/i.test(t)) return "ice";
+  if (/מים|water|בקבוק|זירו|קולה/i.test(t)) return "water";
+  if (/ניקיון|סידור|clean/i.test(t)) return "room_makeup";
+  if (/כוס|צלח|סבון|שמפו|כריך|נוחות|amenit/i.test(t)) return "amenities";
+  return null;
+}
+
+/** In-resort = checked_in within stay window (same gate as Inbox «בריזורט»). */
+function contactIsInResortForOps(contact) {
+  if (!contact?.guestId) return false;
+  return isGuestInResortToday({
+    status: contact.status,
+    arrival_date: contact.arrivalDate,
+    departure_date: contact.departureDate,
+    room_type: contact.roomType,
+  });
+}
+
+function resolveOpsCallsTaskEligibility(contact) {
+  if (!contact?.guestId) {
+    return { ok: false, reasonKey: "routeOpsCallsDisabledNoGuest" };
+  }
+  if (!contactIsInResortForOps(contact)) {
+    return { ok: false, reasonKey: "routeOpsCallsDisabledNotInResort" };
+  }
+  const room = inboxActiveSuiteRoom(contact) || contact.room;
+  if (!String(room ?? "").trim()) {
+    return { ok: false, reasonKey: "routeOpsCallsDisabledNoRoom" };
+  }
+  return { ok: true, reasonKey: null };
+}
 
 // Per-message `intent` (already written by whatsapp-webhook on every inbound
 // row) is the real, already-stored signal behind the AI log drawer — no new
@@ -874,6 +936,23 @@ export function contactMatchesAudienceFilter(contact, audienceFilter) {
   if (audienceFilter === "suite") return contactIsSuiteAudience(contact);
   if (audienceFilter === "daypass") return contactIsDaypassAudience(contact);
   return true;
+}
+
+/**
+ * Audience scoping for the dedicated «🔴 התראות» (alerts) tab specifically —
+ * stricter than normal roster browsing used to be: mixing suite + daypass
+ * reds into one undifferentiated list caused wrong triage (Mike, 2026-08-09),
+ * so the alerts tab is now always scoped to the current audience like every
+ * other tab. The one deliberate exception: a contact matching NEITHER
+ * audience (unlinked phone / deleted guest profile) stays visible regardless
+ * of which audience is selected — FAIL VISIBLE, an unrecognized red alert
+ * must never quietly vanish just because it can't be filed under "suite" or
+ * "daypass". Ordinary (non-alert) browsing keeps the strict
+ * contactMatchesAudienceFilter scoping unchanged.
+ */
+export function contactMatchesAlertsAudienceFilter(contact, audienceFilter) {
+  if (contactMatchesAudienceFilter(contact, audienceFilter)) return true;
+  return !contactIsSuiteAudience(contact) && !contactIsDaypassAudience(contact);
 }
 
 const INBOX_AUDIENCE_STORAGE_KEY = "xos_inbox_audience_filter";
@@ -1297,7 +1376,9 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
       ? "🔴 בקשה חדשה בלוח הבקשות"
       : contact.humanRequestType === "manual"
         ? "🚩 סומן ידנית לתשומת לב"
-        : "🔴 מבקש מענה אנושי";
+        : contact.humanRequestType === "operational_request"
+          ? "🔴 בקשת שירות בחדר"
+          : "🔴 מבקש מענה אנושי";
   const identity = identityMeta(contact, lang);
   const roomChip = roomChipMeta(contact);
   const active   = recentlyActive(contact);
@@ -3121,6 +3202,7 @@ export default function WhatsAppInbox({
   returnPageLabel,
   onReturnToSource,
   initialRosterFilter,
+  initialAudienceFilter,
   onRosterFilterConsumed,
 }) {
   const {
@@ -4365,9 +4447,10 @@ export default function WhatsAppInbox({
   useEffect(() => {
     if (!initialRosterFilter) return;
     setRosterFilter(initialRosterFilter);
+    if (initialAudienceFilter) setAudienceFilter(initialAudienceFilter);
     setMobileScreen("list");
     onRosterFilterConsumed?.();
-  }, [initialRosterFilter, onRosterFilterConsumed, setRosterFilter]);
+  }, [initialRosterFilter, initialAudienceFilter, onRosterFilterConsumed, setRosterFilter, setAudienceFilter]);
 
   useEffect(() => {
     const pending = pendingFocusRef.current;
@@ -4431,6 +4514,24 @@ export default function WhatsAppInbox({
   // fires — `description` falls back to the raw message only if the picker
   // produced neither (shouldn't happen since dispatch is disabled until one
   // of the two is filled, but keeps this function safe to call directly).
+  function openCreateOpsCallsTask(contact) {
+    if (!contact) return;
+    const eligibility = resolveOpsCallsTaskEligibility(contact);
+    if (!eligibility.ok) {
+      setRouteToast(`⚠️ ${t[eligibility.reasonKey] || eligibility.reasonKey}`);
+      setTimeout(() => setRouteToast(null), 4000);
+      return;
+    }
+    const note = lastInboundGuestText(contact).slice(0, 280);
+    const sub = guessHousekeepingSubCategory(note);
+    setRouteDraft({
+      category: "housekeeping",
+      subCategory: sub,
+      note,
+    });
+    setQuickOpen(true);
+  }
+
   async function routeTask(category, contact, subCategoryLabel, note) {
     if (!contact) return;
     const isMaint     = category === "maintenance";
@@ -5452,6 +5553,8 @@ export default function WhatsAppInbox({
     daypassAudienceContacts,
     suiteAudienceContacts,
     alertContacts,
+    alertContactsSuite,
+    alertContactsDaypass,
     rosterSource,
     audienceScopedRosterSource,
     departedContactsForChannel,
@@ -5488,8 +5591,17 @@ export default function WhatsAppInbox({
       contactIsSuiteAudience(c)
       && (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c)),
     );
-    // Alerts span EVERY audience — bot reply must never hide a human-waiting guest.
+    // Alerts computed across every audience first (a bot reply must never hide
+    // a human-waiting guest from the underlying pool) — but the SUITE/DAYPASS
+    // split below is what the dedicated «🔴 התראות» tab and its badge count
+    // actually use. Mixing suite + daypass reds in one undifferentiated list
+    // caused wrong triage (Mike, 2026-08-09) — the tab is now always
+    // audience-scoped via the audienceScoped filter below, same as every
+    // other roster filter; a guest waiting in the OTHER audience only ever
+    // surfaces via the otherAudienceWaiting banner, never mixed into this list.
     const alerts = visible.filter((c) => c.humanRequested && !archivedPhones.has(c.threadKey ?? c.phone));
+    const alertsSuite = alerts.filter((c) => contactIsSuiteAudience(c));
+    const alertsDaypass = alerts.filter((c) => contactIsDaypassAudience(c));
     const source =
       rosterFilter === "departed" ? departed :
       rosterFilter === "spa_daypass" ? spaDaypass :
@@ -5500,11 +5612,17 @@ export default function WhatsAppInbox({
     const channelScoped = source.filter((c) =>
       channelFilter === "all" ? true : contactMatchesChannelFilter(c, channelFilter),
     );
-    // Audience filter AFTER channel; alerts / spa tab already span or isolate.
+    // Audience filter AFTER channel — applied to "alerts" too now (a no-op
+    // when audienceFilter === "all", same as every other tab); spa/departed
+    // tabs still isolate their own cohort deliberately. The alerts tab uses
+    // contactMatchesAlertsAudienceFilter, not the plain filter — see its
+    // docblock (FAIL VISIBLE exception for unlinked-phone contacts).
     const audienceScoped =
-      rosterFilter === "alerts" || rosterFilter === "spa_daypass" || rosterFilter === "departed"
+      rosterFilter === "spa_daypass" || rosterFilter === "departed"
         ? channelScoped
-        : channelScoped.filter((c) => contactMatchesAudienceFilter(c, audienceFilter));
+        : rosterFilter === "alerts"
+          ? channelScoped.filter((c) => contactMatchesAlertsAudienceFilter(c, audienceFilter))
+          : channelScoped.filter((c) => contactMatchesAudienceFilter(c, audienceFilter));
     // Departed contacts hidden by the current channel filter — surfaced as a
     // count hint (not silently invisible) so staff filtering to "מכשיר
     // הסוויטות" know older Whapi conversations exist under "אחרי עזיבה"
@@ -5521,6 +5639,8 @@ export default function WhatsAppInbox({
       daypassAudienceContacts: daypassAudience,
       suiteAudienceContacts: suiteAudience,
       alertContacts: alerts,
+      alertContactsSuite: alertsSuite,
+      alertContactsDaypass: alertsDaypass,
       rosterSource: source,
       audienceScopedRosterSource: audienceScoped,
       departedContactsForChannel: departedForChannel,
@@ -5577,9 +5697,38 @@ export default function WhatsAppInbox({
     });
   }, [displayContacts, rosterFilter, rosterSearch, rosterSort, lang]);
 
+  // «🔴 התראות» — audience=suite/daypass: single chip, scoped count+list (the
+  // OTHER audience's reds surface only via the otherAudienceWaiting banner).
+  // audience=all: two chips with their own counts, never one ambiguous mixed
+  // number — clicking either jumps straight into that audience's alerts so
+  // the resulting list is always unambiguous (Mike, 2026-08-09 — mixing
+  // suite/daypass reds in one pile caused wrong triage).
+  const alertsFilterChips = useMemo(() => {
+    if (audienceFilter === "all") {
+      return [
+        {
+          id: "alerts_suite",
+          label: t.filterAlertsSuite(alertContactsSuite.length),
+          badge: 0,
+          onClick: () => { setAudienceFilter("suite"); setRosterFilter("alerts"); },
+          isActive: () => rosterFilter === "alerts" && audienceFilter === "suite",
+        },
+        {
+          id: "alerts_daypass",
+          label: t.filterAlertsDaypass(alertContactsDaypass.length),
+          badge: 0,
+          onClick: () => { setAudienceFilter("daypass"); setRosterFilter("alerts"); },
+          isActive: () => rosterFilter === "alerts" && audienceFilter === "daypass",
+        },
+      ];
+    }
+    const scopedCount = audienceFilter === "suite" ? alertContactsSuite.length : alertContactsDaypass.length;
+    return [{ id: "alerts", label: t.filterAlerts, badge: scopedCount }];
+  }, [t, audienceFilter, alertContactsSuite.length, alertContactsDaypass.length, setAudienceFilter, setRosterFilter, rosterFilter]);
+
   const rosterFilterChips = useMemo(() => [
     { id: "all", label: t.filterAll },
-    { id: "alerts", label: t.filterAlerts, badge: alertContacts.length },
+    ...alertsFilterChips,
     { id: "in_resort", label: t.filterInResort },
     { id: "arriving_today", label: t.filterArrivingToday },
     { id: "tomorrow", label: t.filterTomorrow },
@@ -5597,7 +5746,7 @@ export default function WhatsAppInbox({
       id: "departed",
       label: `${t.filterDeparted}${departedContacts.length ? ` (${departedContacts.length})` : ""}`,
     },
-  ], [t, alertContacts.length, departedContacts.length, spaDaypassContacts, readCursorsByPhone]);
+  ], [t, alertsFilterChips, departedContacts.length, spaDaypassContacts, readCursorsByPhone]);
 
   const rosterSortChips = useMemo(() => [
     { id: "activity", label: t.sortActivity },
@@ -5616,6 +5765,15 @@ export default function WhatsAppInbox({
   const aiLogEvents = thread.filter(
     (m) => m.direction === "inbound" && m.intent && INTENT_LABELS[lang][m.intent]
   );
+
+  // "✓ Dismiss all" must only clear what staff can actually SEE right now —
+  // scoped to the current audience tab. Dismissing the combined cross-audience
+  // alertContacts here would silently clear the OTHER audience's still-waiting
+  // guests too (same wrong-triage bug as the chip badge/list — Mike, 2026-08-09).
+  const dismissScopedAlertContacts =
+    audienceFilter === "suite" ? alertContactsSuite
+    : audienceFilter === "daypass" ? alertContactsDaypass
+    : alertContacts;
 
   // ── Contact list pane — shared between the desktop two-pane layout and the
   // mobile "list" screen. ───────────────────────────────────────────────────
@@ -5670,18 +5828,18 @@ export default function WhatsAppInbox({
           </button>
           <button
             type="button"
-            onClick={() => dismissAllAlerts(alertContacts)}
-            disabled={dismissAllBusy || alertContacts.length === 0}
-            title={alertContacts.length === 0 ? t.dismissAllNone : t.dismissAllAlerts}
+            onClick={() => dismissAllAlerts(dismissScopedAlertContacts)}
+            disabled={dismissAllBusy || dismissScopedAlertContacts.length === 0}
+            title={dismissScopedAlertContacts.length === 0 ? t.dismissAllNone : t.dismissAllAlerts}
             className={isMobile ? "u-touch-staff" : "u-badge-nowrap"}
             style={{
               display: "inline-flex", alignItems: "center", gap: 5,
               padding: "5px 10px", borderRadius: "var(--radius-pill)", fontSize: 11, fontWeight: 700,
               fontFamily: "Heebo, sans-serif",
-              background: alertContacts.length === 0 ? "var(--ivory)" : "var(--ivory)",
-              color: alertContacts.length === 0 ? "var(--text-muted)" : "var(--gold-dark)",
-              border: `1px solid ${alertContacts.length === 0 ? "var(--border)" : "var(--border)"}`,
-              cursor: dismissAllBusy || alertContacts.length === 0 ? "not-allowed" : "pointer",
+              background: dismissScopedAlertContacts.length === 0 ? "var(--ivory)" : "var(--ivory)",
+              color: dismissScopedAlertContacts.length === 0 ? "var(--text-muted)" : "var(--gold-dark)",
+              border: `1px solid ${dismissScopedAlertContacts.length === 0 ? "var(--border)" : "var(--border)"}`,
+              cursor: dismissAllBusy || dismissScopedAlertContacts.length === 0 ? "not-allowed" : "pointer",
               opacity: dismissAllBusy ? 0.7 : 1,
               whiteSpace: "nowrap",
               minHeight: isMobile ? HIT_STAFF : "auto",
@@ -5689,12 +5847,12 @@ export default function WhatsAppInbox({
           >
             {dismissAllBusy ? "⏳" : "✓"}
             {!isMobile && t.dismissAllAlerts}
-            {alertContacts.length > 0 && !dismissAllBusy && (
+            {dismissScopedAlertContacts.length > 0 && !dismissAllBusy && (
               <span style={{
                 background: "var(--gold, #C9A96E)", color: "#1A1A1A",
                 borderRadius: 10, padding: "0 6px", fontSize: 10, fontWeight: 800,
               }}>
-                {alertContacts.length}
+                {dismissScopedAlertContacts.length}
               </span>
             )}
           </button>
@@ -5733,24 +5891,27 @@ export default function WhatsAppInbox({
             <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>{t.dbSearching}</div>
           )}
           <div style={{ display: "flex", gap: 6, marginTop: 8, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-            {rosterFilterChips.map((chip) => (
-              <button
-                key={chip.id}
-                type="button"
-                onClick={() => setRosterFilter(chip.id)}
-                className={`wa-filter-chip${rosterFilter === chip.id ? " wa-filter-chip--active" : ""}`}
-              >
-                {chip.label}
-                {chip.badge > 0 && rosterFilter !== chip.id && (
-                  <span style={{
-                    marginInlineStart: 4, background: "var(--gold)", color: "#1A1A1A",
-                    borderRadius: 8, padding: "0 5px", fontSize: 9, fontWeight: 800,
-                  }}>
-                    {chip.badge}
-                  </span>
-                )}
-              </button>
-            ))}
+            {rosterFilterChips.map((chip) => {
+              const isActive = chip.isActive ? chip.isActive() : rosterFilter === chip.id;
+              return (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={chip.onClick ?? (() => setRosterFilter(chip.id))}
+                  className={`wa-filter-chip${isActive ? " wa-filter-chip--active" : ""}`}
+                >
+                  {chip.label}
+                  {chip.badge > 0 && !isActive && (
+                    <span style={{
+                      marginInlineStart: 4, background: "var(--gold)", color: "#1A1A1A",
+                      borderRadius: 8, padding: "0 5px", fontSize: 9, fontWeight: 800,
+                    }}>
+                      {chip.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
           {rosterFilterPanelOpen && (
             <>
@@ -5827,24 +5988,27 @@ export default function WhatsAppInbox({
             <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>{t.dbSearching}</div>
           )}
           <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-            {rosterFilterChips.map((chip) => (
-              <button
-                key={chip.id}
-                type="button"
-                onClick={() => setRosterFilter(chip.id)}
-                className={`wa-filter-chip wa-filter-chip--compact${rosterFilter === chip.id ? " wa-filter-chip--active" : ""}`}
-              >
-                {chip.label}
-                {chip.badge > 0 && rosterFilter !== chip.id && (
-                  <span style={{
-                    marginInlineStart: 4, background: "var(--gold)", color: "#1A1A1A",
-                    borderRadius: 8, padding: "0 5px", fontSize: 9, fontWeight: 800,
-                  }}>
-                    {chip.badge}
-                  </span>
-                )}
-              </button>
-            ))}
+            {rosterFilterChips.map((chip) => {
+              const isActive = chip.isActive ? chip.isActive() : rosterFilter === chip.id;
+              return (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={chip.onClick ?? (() => setRosterFilter(chip.id))}
+                  className={`wa-filter-chip wa-filter-chip--compact${isActive ? " wa-filter-chip--active" : ""}`}
+                >
+                  {chip.label}
+                  {chip.badge > 0 && !isActive && (
+                    <span style={{
+                      marginInlineStart: 4, background: "var(--gold)", color: "#1A1A1A",
+                      borderRadius: 8, padding: "0 5px", fontSize: 9, fontWeight: 800,
+                    }}>
+                      {chip.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 5, alignItems: "center", flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
             <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600, flexShrink: 0 }}>{t.audienceHint}</span>
@@ -6479,6 +6643,63 @@ export default function WhatsAppInbox({
         </div>
       )}
 
+      {activeContact && (() => {
+        const eligibility = resolveOpsCallsTaskEligibility(activeContact);
+        const opsUrgent = activeContact.humanRequestType === "operational_request"
+          || activeContact.humanRequested;
+        const disabled = !eligibility.ok;
+        const title = disabled
+          ? (t[eligibility.reasonKey] || eligibility.reasonKey)
+          : t.routeOpsCallsHint;
+        return (
+          <div style={{
+            flexShrink: 0,
+            padding: "8px 12px",
+            borderTop: "1px solid var(--border)",
+            background: opsUrgent && !disabled
+              ? "linear-gradient(90deg, #FFF7ED, #FFFBEB)"
+              : "var(--ivory, #FAF7F2)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}>
+            <button
+              type="button"
+              onClick={() => openCreateOpsCallsTask(activeContact)}
+              disabled={disabled}
+              title={title}
+              className="u-touch-staff"
+              style={{
+                width: "100%",
+                padding: "10px 14px",
+                borderRadius: 10,
+                border: disabled
+                  ? "1.5px solid #D1D5DB"
+                  : opsUrgent
+                    ? "2px solid var(--gold,#C9A96E)"
+                    : "1.5px solid #E0D5C5",
+                background: disabled
+                  ? "#F3F4F6"
+                  : opsUrgent
+                    ? "linear-gradient(135deg, #FFF8E8, #FDF2D8)"
+                    : "#FAFAFA",
+                color: disabled ? "#9CA3AF" : "#3a2e10",
+                fontSize: 13,
+                fontWeight: 800,
+                cursor: disabled ? "not-allowed" : "pointer",
+                minHeight: isMobile ? HIT_STAFF : undefined,
+                textAlign: "center",
+              }}
+            >
+              {t.routeOpsCallsCta}
+            </button>
+            <div style={{ fontSize: 10, color: disabled ? "#9CA3AF" : "#78716C", textAlign: "center" }}>
+              {disabled ? title : t.routeOpsCallsHint}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Quick actions + reply input — pinned at bottom via flex column */}
       <div style={{
         position: "relative", flexShrink: 0,
@@ -6739,6 +6960,33 @@ export default function WhatsAppInbox({
                 <div style={{ fontSize: 11, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase" }}>
                   {t.routeTitle}
                 </div>
+                {(() => {
+                  const eligibility = resolveOpsCallsTaskEligibility(activeContact);
+                  const disabled = !eligibility.ok;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => openCreateOpsCallsTask(activeContact)}
+                      disabled={disabled}
+                      title={disabled ? (t[eligibility.reasonKey] || "") : t.routeOpsCallsHint}
+                      style={{
+                        width: "100%",
+                        marginBottom: 8,
+                        padding: "10px 12px",
+                        borderRadius: 10,
+                        border: disabled ? "1.5px solid #D1D5DB" : "2px solid var(--gold,#C9A96E)",
+                        background: disabled ? "#F3F4F6" : "linear-gradient(135deg, #FFF8E8, #FDF2D8)",
+                        color: disabled ? "#9CA3AF" : "#3a2e10",
+                        fontSize: 13,
+                        fontWeight: 800,
+                        cursor: disabled ? "not-allowed" : "pointer",
+                        minHeight: isMobile ? HIT_STAFF : "auto",
+                      }}
+                    >
+                      {t.routeOpsCallsCta}
+                    </button>
+                  );
+                })()}
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <button
                     type="button"
@@ -6769,7 +7017,7 @@ export default function WhatsAppInbox({
                     }}
                   >{t.routeMaint}</button>
                   <button
-                    onClick={() => setRouteDraft({ category: "housekeeping", subCategory: null, note: "" })}
+                    onClick={() => setRouteDraft({ category: "housekeeping", subCategory: null, note: lastInboundGuestText(activeContact).slice(0, 280) })}
                     style={{
                       flex: "1 1 30%", padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
                       background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,

@@ -5,7 +5,7 @@
 // (2) groupByPhone: strict latest-message-desc (Mike: «פעילות») — no unread/
 //     alert reordering in the base roster order.
 
-import { mergeThreadRows, groupByPhone, groupByPhoneUnified, resolveContactInboxChannels, contactMatchesChannelFilter, contactMatchesAudienceFilter, contactIsDaypassAudience, contactIsSuiteAudience, inferDefaultReplyChannel, resolveClaimChannel, buildChannelClaimsState } from "./WhatsAppInbox";
+import { mergeThreadRows, groupByPhone, groupByPhoneUnified, resolveContactInboxChannels, contactMatchesChannelFilter, contactMatchesAudienceFilter, contactMatchesAlertsAudienceFilter, contactIsDaypassAudience, contactIsSuiteAudience, inferDefaultReplyChannel, resolveClaimChannel, buildChannelClaimsState } from "./WhatsAppInbox";
 
 function msg(id, createdAt, extra = {}) {
   return {
@@ -247,5 +247,39 @@ describe("contactMatchesAudienceFilter — strict audience cohort", () => {
     const waiting = { room: "Premium Day 1", roomType: "day_guest", humanRequested: true };
     expect(contactMatchesAudienceFilter(waiting, "suite")).toBe(false);
     expect(contactMatchesAudienceFilter(waiting, "daypass")).toBe(true);
+  });
+});
+
+describe("contactMatchesAlertsAudienceFilter — «🔴 התראות» tab scoping", () => {
+  // Mixing suite + daypass reds into one undifferentiated list caused wrong
+  // triage (Mike, 2026-08-09) — the alerts tab must be scoped by audience
+  // exactly like every other tab, with one FAIL VISIBLE exception below.
+  test("suite audience: daypass alert excluded (surfaces via otherAudienceWaiting banner instead)", () => {
+    const day = { room: "Premium Day 1", roomType: "day_guest", humanRequested: true };
+    expect(contactMatchesAlertsAudienceFilter(day, "suite")).toBe(false);
+  });
+
+  test("daypass audience: suite alert excluded", () => {
+    const suite = { room: "אמטיסט 8", roomType: "suite", humanRequested: true };
+    expect(contactMatchesAlertsAudienceFilter(suite, "daypass")).toBe(false);
+  });
+
+  test("matching audience: alert included", () => {
+    const suite = { room: "אמטיסט 8", roomType: "suite", humanRequested: true };
+    expect(contactMatchesAlertsAudienceFilter(suite, "suite")).toBe(true);
+  });
+
+  test("audience=all: both cohorts included (dual chips handle the split visually)", () => {
+    const suite = { room: "אמטיסט 8", roomType: "suite", humanRequested: true };
+    const day = { room: "Premium Day 1", roomType: "day_guest", humanRequested: true };
+    expect(contactMatchesAlertsAudienceFilter(suite, "all")).toBe(true);
+    expect(contactMatchesAlertsAudienceFilter(day, "all")).toBe(true);
+  });
+
+  test("FAIL VISIBLE — unlinked phone / deleted guest profile stays visible in EVERY audience", () => {
+    const unlinked = { room: null, roomType: null, humanRequested: true };
+    expect(contactMatchesAlertsAudienceFilter(unlinked, "suite")).toBe(true);
+    expect(contactMatchesAlertsAudienceFilter(unlinked, "daypass")).toBe(true);
+    expect(contactMatchesAlertsAudienceFilter(unlinked, "all")).toBe(true);
   });
 });
