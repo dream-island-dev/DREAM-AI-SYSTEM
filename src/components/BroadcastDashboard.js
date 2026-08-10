@@ -32,11 +32,17 @@ const TIME_AWARE_TEMPLATES = THREE_PARAM_TIMING_TEMPLATES;
 const ARRIVAL_WINDOWS = [
   { value: "today",    label: "היום" },
   { value: "tomorrow", label: "מחר" },
+  { value: "exact",    label: "📅 תאריך מדויק..." },
+  { value: "range",    label: "📅 טווח תאריכים..." },
   { value: "7",        label: "7 ימים קדימה" },
   { value: "30",       label: "30 יום קדימה" },
   { value: "90",       label: "90 יום קדימה" },
   { value: "all",      label: "כל האורחים" },
 ];
+
+// PostgREST caps a single .select() at 1000 rows — paginate past it so a large
+// guest table never silently truncates the audience (FAIL VISIBLE).
+const GUEST_PAGE_SIZE = 1000;
 
 function localISO(offsetDays = 0) {
   const d = new Date();
@@ -72,6 +78,22 @@ export default function BroadcastDashboard({ user }) {
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterDept,   setFilterDept]   = useState("all");
   const [filterWindow, setFilterWindow] = useState("all");
+  const [filterExactDate, setFilterExactDate] = useState("");
+  const [filterRangeFrom, setFilterRangeFrom] = useState("");
+  const [filterRangeTo,   setFilterRangeTo]   = useState("");
+  const [filterSpa,    setFilterSpa]    = useState("all"); // all | has_spa | no_spa
+
+  // ── Manual per-guest overrides — checkboxes in the preview table let a
+  // manager surgically remove individuals from an otherwise filter-built
+  // audience without changing the filters themselves (Disable-Don't-Hide).
+  const [excludedIds, setExcludedIds] = useState(() => new Set());
+  const toggleExcluded = useCallback((id) => {
+    setExcludedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
 
   // ── Send state ────────────────────────────────────────────────────────────
   const [isSending,    setIsSending]    = useState(false);
@@ -89,6 +111,7 @@ export default function BroadcastDashboard({ user }) {
 
   // ── DB templates (from message_templates table, linked to Meta templates) ─
   const [dbTemplates,   setDbTemplates]   = useState([]);
+  const [templateSearch, setTemplateSearch] = useState("");
 
   // ── Toast helper ──────────────────────────────────────────────────────────
   const showToast = useCallback((type, msg) => {
@@ -101,13 +124,21 @@ export default function BroadcastDashboard({ user }) {
     if (!isSupabaseConfigured || !supabase) { setDataLoading(false); return; }
     setDataLoading(true);
     try {
-      const { data: guests, error } = await supabase
-        .from("guests")
-        .select("id, name, phone, room, room_type, arrival_date, status, manager_id, arrival_confirmed")
-        .order("arrival_date", { ascending: true });
-
-      if (error) throw new Error(error.message);
-      const rows = guests ?? [];
+      // Zero-Spam Policy: cancelled guests are never a broadcast target —
+      // excluded at the query level, not left to filter UI to catch.
+      const rows = [];
+      for (let from = 0; ; from += GUEST_PAGE_SIZE) {
+        const { data, error } = await supabase
+          .from("guests")
+          .select("id, name, phone, room, room_type, arrival_date, spa_date, spa_time, status, manager_id, arrival_confirmed")
+          .neq("status", "cancelled")
+          .order("arrival_date", { ascending: true })
+          .range(from, from + GUEST_PAGE_SIZE - 1);
+        if (error) throw new Error(error.message);
+        const batch = data ?? [];
+        rows.push(...batch);
+        if (batch.length < GUEST_PAGE_SIZE) break;
+      }
       setAllGuests(rows);
 
       const managerIds = [...new Set(rows.map((g) => g.manager_id).filter(Boolean))];
@@ -169,10 +200,17 @@ export default function BroadcastDashboard({ user }) {
       .channel("broadcast-guests-sync")
       .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, (payload) => {
         if (payload.eventType === "UPDATE") {
+          // A guest cancelled mid-session must drop out of the audience
+          // immediately, not just get skipped by a filter (Zero-Spam Policy).
+          if (payload.new.status === "cancelled") {
+            setAllGuests((prev) => prev.filter((g) => String(g.id) !== String(payload.new.id)));
+            return;
+          }
           setAllGuests((prev) =>
             prev.map((g) => String(g.id) === String(payload.new.id) ? { ...g, ...payload.new } : g)
           );
         } else if (payload.eventType === "INSERT") {
+          if (payload.new.status === "cancelled") return;
           setAllGuests((prev) => {
             if (prev.some((g) => String(g.id) === String(payload.new.id))) return prev;
             return [...prev, payload.new].sort((a, b) =>
@@ -206,6 +244,11 @@ export default function BroadcastDashboard({ user }) {
         if (!g.arrival_date || g.arrival_date !== today) return false;
       } else if (filterWindow === "tomorrow") {
         if (!g.arrival_date || g.arrival_date !== tomorrow) return false;
+      } else if (filterWindow === "exact") {
+        if (!filterExactDate || g.arrival_date !== filterExactDate) return false;
+      } else if (filterWindow === "range") {
+        if (!filterRangeFrom || !filterRangeTo) return false;
+        if (!g.arrival_date || g.arrival_date < filterRangeFrom || g.arrival_date > filterRangeTo) return false;
       } else {
         const days = parseInt(filterWindow, 10);
         const cutoff = localISO(days);
@@ -218,12 +261,31 @@ export default function BroadcastDashboard({ user }) {
     if (filterDept !== "all") {
       if (deptMap[g.manager_id] !== filterDept) return false;
     }
+    const hasSpa = Boolean(g.spa_date || g.spa_time);
+    if (filterSpa === "has_spa" && !hasSpa) return false;
+    if (filterSpa === "no_spa" && hasSpa) return false;
     return true;
   });
 
   const checkedInInAudience = filteredGuests.filter((g) => g.status === "checked_in").length;
-  const sendableGuests = filteredGuests.filter((g) => g.phone);
-  const noPhoneCount   = filteredGuests.length - sendableGuests.length;
+  const sendableGuests = filteredGuests.filter((g) => g.phone && !excludedIds.has(g.id));
+  const manuallyExcludedInAudience = filteredGuests.filter((g) => g.phone && excludedIds.has(g.id)).length;
+  const noPhoneCount   = filteredGuests.filter((g) => !g.phone).length;
+
+  function selectAllFiltered() {
+    setExcludedIds((prev) => {
+      const next = new Set(prev);
+      filteredGuests.forEach((g) => next.delete(g.id));
+      return next;
+    });
+  }
+  function clearAllFiltered() {
+    setExcludedIds((prev) => {
+      const next = new Set(prev);
+      filteredGuests.forEach((g) => next.add(g.id));
+      return next;
+    });
+  }
   const availableDepts = [...new Set(
     allGuests.map((g) => deptMap[g.manager_id]).filter(Boolean)
   )].sort();
@@ -423,6 +485,14 @@ export default function BroadcastDashboard({ user }) {
         return v.trim().length > 0;
       });
 
+  const templateSearchNorm = templateSearch.trim().toLowerCase();
+  const visibleTemplates = !templateSearchNorm ? waTemplates : waTemplates.filter((t) => {
+    const dbMatch = dbTemplates.find((d) => d.wa_template_name === t.name);
+    return t.name.toLowerCase().includes(templateSearchNorm)
+      || (dbMatch?.label ?? "").toLowerCase().includes(templateSearchNorm)
+      || (t.bodyText ?? "").toLowerCase().includes(templateSearchNorm);
+  });
+
   const sendReady = sendableGuests.length > 0 && (
     sendMode === "template"
       ? !!selectedTemplate && allManualVarsFilled
@@ -569,6 +639,37 @@ export default function BroadcastDashboard({ user }) {
                 </select>
               </div>
 
+              {filterWindow === "exact" && (
+                <div className="form-field" style={{ marginBottom: 0 }}>
+                  <label>תאריך הגעה</label>
+                  <input
+                    type="date"
+                    value={filterExactDate}
+                    onChange={(e) => setFilterExactDate(e.target.value)}
+                  />
+                </div>
+              )}
+
+              {filterWindow === "range" && (
+                <div className="form-field" style={{ marginBottom: 0 }}>
+                  <label>מתאריך — עד תאריך</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      type="date"
+                      value={filterRangeFrom}
+                      onChange={(e) => setFilterRangeFrom(e.target.value)}
+                      style={{ flex: 1 }}
+                    />
+                    <input
+                      type="date"
+                      value={filterRangeTo}
+                      onChange={(e) => setFilterRangeTo(e.target.value)}
+                      style={{ flex: 1 }}
+                    />
+                  </div>
+                </div>
+              )}
+
               <div className="form-field" style={{ marginBottom: 0 }}>
                 <label>סוג אורח</label>
                 <select value={filterGuest} onChange={(e) => setFilterGuest(e.target.value)}>
@@ -584,6 +685,15 @@ export default function BroadcastDashboard({ user }) {
                   <option value="all">כל הסטטוסים</option>
                   <option value="expected">ממתין (טרם הגיע)</option>
                   <option value="checked_in">✅ צ׳ק-אין בוצע</option>
+                </select>
+              </div>
+
+              <div className="form-field" style={{ marginBottom: 0 }}>
+                <label>טיפול ספא מתואם</label>
+                <select value={filterSpa} onChange={(e) => setFilterSpa(e.target.value)}>
+                  <option value="all">הכל</option>
+                  <option value="has_spa">💆 יש טיפול ספא מתואם</option>
+                  <option value="no_spa">🚫 אין טיפול ספא מתואם</option>
                 </select>
               </div>
 
@@ -617,6 +727,15 @@ export default function BroadcastDashboard({ user }) {
               {noPhoneCount > 0 && (
                 <div style={{ fontSize: 11, color: "#B5600A", marginTop: 4 }}>
                   ⚠️ {noPhoneCount} אורחים ללא מספר טלפון (יוחסרו)
+                </div>
+              )}
+              {manuallyExcludedInAudience > 0 && (
+                <div style={{ fontSize: 11, color: "#B5600A", marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                  ✋ {manuallyExcludedInAudience} הוסרו ידנית מהקהל
+                  <button
+                    onClick={selectAllFiltered}
+                    style={{ background: "none", border: "none", color: "#D97706", fontWeight: 700, cursor: "pointer", fontSize: 11, padding: 0, fontFamily: "Heebo, sans-serif" }}
+                  >החזר את כולם ←</button>
                 </div>
               )}
               {checkedInInAudience > 0 && filterStatus === "all" && (
@@ -740,6 +859,19 @@ export default function BroadcastDashboard({ user }) {
                         {loadingTemplates ? "⏳ מסנכרן..." : "🔄 סנכרן תבניות"}
                       </button>
                     </div>
+                    {waTemplates.length > 5 && (
+                      <input
+                        type="text"
+                        value={templateSearch}
+                        onChange={(e) => setTemplateSearch(e.target.value)}
+                        placeholder="🔍 חיפוש תבנית לפי שם או תוכן..."
+                        style={{
+                          width: "100%", boxSizing: "border-box", padding: "7px 10px", borderRadius: 8,
+                          border: "1px solid var(--border)", background: "var(--card-bg)", color: "var(--black)",
+                          fontSize: 12.5, fontFamily: "inherit", marginBottom: 8,
+                        }}
+                      />
+                    )}
                     {!loadingTemplates && waTemplates.length === 0 ? (
                       <div style={{ fontSize: 12, color: "#C0392B", padding: "10px 12px", borderRadius: 8, background: "#FFF0EE", border: "1px solid #C0392B" }}>
                         {templateFetchError
@@ -749,7 +881,12 @@ export default function BroadcastDashboard({ user }) {
                       </div>
                     ) : (
                       <div style={{ display: "flex", flexDirection: "column", gap: 7, maxHeight: 240, overflowY: "auto", paddingLeft: 2 }}>
-                        {waTemplates.map((t) => {
+                        {visibleTemplates.length === 0 && (
+                          <div style={{ fontSize: 12, color: "var(--text-muted)", textAlign: "center", padding: "10px 0" }}>
+                            אין תבניות התואמות "{templateSearch}"
+                          </div>
+                        )}
+                        {visibleTemplates.map((t) => {
                           const isSelected = selectedTemplate?.name === t.name;
                           return (
                             <div
@@ -1089,25 +1226,40 @@ export default function BroadcastDashboard({ user }) {
         <div className="card" style={{ marginTop: 20 }}>
           <div className="card-header">
             <div className="card-title">
-              תצוגה מקדימה של קהל ({filteredGuests.length} אורחים)
+              תצוגה מקדימה של קהל ({filteredGuests.length} אורחים
+              {manuallyExcludedInAudience > 0 && ` · ${sendableGuests.length} נשלחים בפועל`})
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={selectAllFiltered} className="btn btn-ghost btn-sm">☑ בחר הכל</button>
+              <button onClick={clearAllFiltered} className="btn btn-ghost btn-sm">☐ נקה בחירה</button>
             </div>
           </div>
           <div style={{ overflowX: "auto" }}>
-            <table className="table" style={{ minWidth: 540 }}>
+            <table className="table" style={{ minWidth: 600 }}>
               <thead>
                 <tr>
+                  <th></th>
                   <th>שם</th>
                   <th>טלפון</th>
                   <th>חדר</th>
                   <th>סוג</th>
                   <th>הגעה</th>
+                  <th>ספא</th>
                   <th>סטטוס</th>
                   <th>שלח</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredGuests.slice(0, 50).map((g) => (
-                  <tr key={g.id}>
+                  <tr key={g.id} style={{ opacity: excludedIds.has(g.id) ? 0.45 : 1 }}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={!excludedIds.has(g.id)}
+                        onChange={() => toggleExcluded(g.id)}
+                        title={excludedIds.has(g.id) ? "הוסר ידנית — לחץ להחזיר" : "כלול בשליחה — לחץ להסיר"}
+                      />
+                    </td>
                     <td style={{ fontWeight: 700 }}>
                       {g.name}
                       {g.arrival_confirmed && selectedTemplate?.name === "dream_arrival_confirmation" && (
@@ -1134,6 +1286,9 @@ export default function BroadcastDashboard({ user }) {
                       }
                     </td>
                     <td style={{ direction: "ltr", fontSize: 13 }}>{g.arrival_date || "—"}</td>
+                    <td style={{ textAlign: "center", fontSize: 13 }}>
+                      {(g.spa_date || g.spa_time) ? "💆" : "—"}
+                    </td>
                     <td>
                       <span className={`badge ${
                         g.status === "checked_in" ? "badge-green"
@@ -1174,8 +1329,8 @@ export default function BroadcastDashboard({ user }) {
                 ))}
                 {filteredGuests.length > 50 && (
                   <tr>
-                    <td colSpan={7} style={{ textAlign: "center", color: "var(--text-muted)", fontSize: 12, padding: 10 }}>
-                      מוצגים 50 מתוך {filteredGuests.length} — הודעה תישלח לכולם
+                    <td colSpan={9} style={{ textAlign: "center", color: "var(--text-muted)", fontSize: 12, padding: 10 }}>
+                      מוצגים 50 מתוך {filteredGuests.length} — הודעה תישלח לכל הקהל שנבחר (גם מי שלא מוצג כאן)
                     </td>
                   </tr>
                 )}
