@@ -4,13 +4,7 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { usePageVisibility } from "../hooks/usePageVisibility";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { computeResortPulse, buildGuestsByPhoneKey, countActiveInboxAlerts } from "../utils/resortPulseStats";
-import { israelDateOffsetStr } from "../utils/guestTiming";
-
-const GUEST_SELECT =
-  "phone, status, arrival_date, departure_date, room, room_type";
-
-// Scalability guard — see the matching comment in OperationalDashboard.js.
-const GUEST_SCAN_LOOKBACK_DAYS = 45;
+import { fetchGuestsForResortPulse } from "../utils/resortPulseFetch";
 
 const PULSE_CACHE_TTL_MS = 5 * 60_000;
 const pulseMemoryCache = { stats: null, blockedAutomation: 0, at: 0 };
@@ -34,22 +28,21 @@ export default function ResortPulseBar({ onAction, className = "" }) {
       return;
     }
     try {
-      const [guestsRes, alertsRes] = await Promise.all([
-        supabase
-          .from("guests")
-          .select(GUEST_SELECT)
-          .gte("arrival_date", israelDateOffsetStr(-GUEST_SCAN_LOOKBACK_DAYS)),
+      const [guestsPack, alertsRes] = await Promise.all([
+        fetchGuestsForResortPulse(supabase, {
+          // Pulse chips don't need arrival_time / name — keep payload lean.
+          select: "phone, status, arrival_date, departure_date, room, room_type",
+        }),
         supabase
           .from("whatsapp_conversations")
           .select("phone")
           .eq("human_requested", true)
           .eq("direction", "inbound"),
       ]);
-      if (guestsRes.error) throw guestsRes.error;
       if (alertsRes.error) throw alertsRes.error;
 
-      const guests = guestsRes.data ?? [];
-      const inboxAlertsCount = countActiveInboxAlerts(
+      const guests = guestsPack.guests ?? [];
+      const inboxAlerts = countActiveInboxAlerts(
         (alertsRes.data ?? []).map((r) => r.phone),
         buildGuestsByPhoneKey(guests),
       );
@@ -69,7 +62,13 @@ export default function ResortPulseBar({ onAction, className = "" }) {
         blocked = pulseMemoryCache.blockedAutomation;
       }
 
-      const nextStats = computeResortPulse(guests, { blockedAutomation: blocked, inboxAlertsCount });
+      const nextStats = computeResortPulse(guests, {
+        blockedAutomation: blocked,
+        inboxAlertsCount: inboxAlerts.total,
+        inboxAlertsCountSuite: inboxAlerts.suite,
+        inboxAlertsCountDaypass: inboxAlerts.daypass,
+        inboxAlertsCountUnmatched: inboxAlerts.unmatched,
+      });
       pulseMemoryCache.stats = nextStats;
       pulseMemoryCache.blockedAutomation = blocked;
       pulseMemoryCache.at = Date.now();
@@ -81,9 +80,6 @@ export default function ResortPulseBar({ onAction, className = "" }) {
     }
   }, []);
 
-  // Trailing debounce so a burst of guest/message activity collapses into one
-  // forced (cache-bypassing) refresh instead of one per changed row — see the
-  // matching comment in OperationalDashboard.js.
   const debouncedForceRefresh = useDebouncedCallback(() => refresh({ force: true }), 2500);
 
   useEffect(() => {
@@ -130,11 +126,18 @@ export default function ResortPulseBar({ onAction, className = "" }) {
       emoji: "🚪",
     },
     {
-      id: "attention",
-      label: "דורש טיפול",
-      value: stats?.needsAttention ?? "—",
+      id: "attention_suite",
+      label: "טיפול · סוויטות",
+      value: stats?.needsAttentionSuite ?? "—",
       emoji: "🔴",
-      highlight: (stats?.needsAttention ?? 0) > 0,
+      highlight: (stats?.needsAttentionSuite ?? 0) > 0,
+    },
+    {
+      id: "attention_daypass",
+      label: "טיפול · בילוי יומי",
+      value: stats?.needsAttentionDaypass ?? "—",
+      emoji: "🔴",
+      highlight: (stats?.needsAttentionDaypass ?? 0) > 0,
     },
     {
       id: "automation",

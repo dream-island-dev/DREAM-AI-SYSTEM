@@ -7,7 +7,8 @@ import { useIntervalWhenVisible } from "../hooks/usePageVisibility";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { Toast, useToast } from "./Toast";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
-import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict, describeArrivalConfirmedSource, israelTodayStr } from "../utils/guestTiming";
+import { OCCASION_TYPES } from "../data/guestProfileSchema";
+import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict, describeArrivalConfirmedSource, israelTodayStr, isSuiteArrivingToday } from "../utils/guestTiming";
 import { loadCheckinFilter } from "../utils/checkinFilterStorage";
 import {
   fetchCheckinGuestsForScope,
@@ -68,9 +69,17 @@ function isTodayCheckinScope(scope, customDate) {
   return scope === CHECKIN_TIMELINE_TODAY;
 }
 
+/** Occasion chip label for a check-in row (bot-detected or staff-set — same guest_profile.occasion field). */
+function occasionChipLabel(guest) {
+  const type = guest?.guest_profile?.occasion?.type;
+  if (!type || type === "none") return null;
+  return OCCASION_TYPES.find((x) => x.id === type)?.label ?? null;
+}
+
 export default function GuestsPage({
   initialTimelineScope = null,
   initialCustomArrivalDate = null,
+  initialRosterMode = null,
   onTimelineScopeConsumed,
   onOpenDreamBotChat,
   onOpenCheckin,
@@ -99,8 +108,12 @@ export default function GuestsPage({
   const [profileGuest, setProfileGuest] = useState(null); // guest object or null — GuestContextDrawer
   const [profileEditOnOpen, setProfileEditOnOpen] = useState(false);
   const [etaBoardOpen, setEtaBoardOpen] = useState(() => {
+    if (initialRosterMode === "arriving_today") return true;
     try { return sessionStorage.getItem("checkin_eta_board_open") === "1"; } catch { return false; }
   });
+  const [arrivingOnlyFocus, setArrivingOnlyFocus] = useState(
+    () => initialRosterMode === "arriving_today",
+  );
   const [badgeHover, setBadgeHover] = useState(null);
   const [paymentModal, setPaymentModal] = useState(null); // { id, name, phone, amount, link }
   const [paymentBusy, setPaymentBusy]   = useState(null); // guestId being sent
@@ -123,6 +136,19 @@ export default function GuestsPage({
     initialCustomDate: initialCustomArrivalDate,
     onInitialConsumed: onTimelineScopeConsumed,
   });
+
+  useEffect(() => {
+    if (initialRosterMode !== "arriving_today") return;
+    setArrivingOnlyFocus(true);
+    setEtaBoardOpen(true);
+    try { sessionStorage.setItem("checkin_eta_board_open", "1"); } catch { /* ignore */ }
+  }, [initialRosterMode]);
+
+  useEffect(() => {
+    if (timelineScope !== CHECKIN_TIMELINE_TODAY || customArrivalDate) {
+      setArrivingOnlyFocus(false);
+    }
+  }, [timelineScope, customArrivalDate]);
 
   const persistScopeCache = useCallback((rows, suiteMap) => {
     writeCachedCheckinScope(timelineScope, customArrivalDate, {
@@ -603,11 +629,15 @@ export default function GuestsPage({
 
   // ── Reception matrix filters — PMS timeline scopes ─────────────────────
   const suiteGuests = guests.filter((g) => isSuite(g));
+  const scopedGuests = applyCheckinRosterFilter(suiteGuests, { scope: timelineScope, customArrivalDate });
+  const rosterForDisplay = arrivingOnlyFocus
+    ? scopedGuests.filter((g) => isSuiteArrivingToday(g))
+    : scopedGuests;
   const displayGuests = sortCheckinRosterGuests(
-    applyCheckinRosterFilter(suiteGuests, { scope: timelineScope, customArrivalDate }),
+    rosterForDisplay,
     new Date(),
     roomNameFor,
-    { prioritizeEta: timelineScope === CHECKIN_TIMELINE_TODAY },
+    { prioritizeEta: timelineScope === CHECKIN_TIMELINE_TODAY || arrivingOnlyFocus },
   );
 
   // ── Arrival ETA board — today's pre-arrival roster, ETA-sorted, FAIL VISIBLE ──
@@ -1064,6 +1094,34 @@ export default function GuestsPage({
         </div>
       </div>
 
+      {arrivingOnlyFocus && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+            marginBottom: 12,
+            padding: "10px 14px",
+            borderRadius: 10,
+            background: "#FFFBEB",
+            border: "1px solid #FDE68A",
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E" }}>
+            מציג רק מי שמגיע היום ועדיין לא נכנס ({displayGuests.length})
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => setArrivingOnlyFocus(false)}
+          >
+            הצג את כל לוח היום
+          </button>
+        </div>
+      )}
+
       {timelineScope === CHECKIN_TIMELINE_TODAY && (
         <div className="card" style={{ padding: "16px 18px", marginBottom: 16 }}>
           <button
@@ -1229,6 +1287,9 @@ export default function GuestsPage({
                         {g.automation_muted && (
                           <span title="אוטומציה מושתקת — הבוט לא ישלח הודעות אוטומטיות לאורח זה. לחץ ✏️ לביטול." style={{ fontSize: 10, marginRight: 6, background: "#F3F4F6", color: "#6B7280", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>🔇 מושתק</span>
                         )}
+                        {occasionChipLabel(g) && (
+                          <span title="אירוע מיוחד — לחץ לפרטים בפרופיל" style={{ fontSize: 10, marginRight: 6, background: "#FFF4E5", color: "#B45309", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>{occasionChipLabel(g)}</span>
+                        )}
                         <GuestAttentionBadge
                           guest={g}
                           showToast={showToast}
@@ -1349,6 +1410,9 @@ export default function GuestsPage({
                         )}
                         {g.automation_muted && (
                           <span title="אוטומציה מושתקת — הבוט לא ישלח הודעות אוטומטיות לאורח זה." style={{ fontSize: 10, background: "#F3F4F6", color: "#6B7280", padding: "2px 6px", borderRadius: 8, fontWeight: 700 }}>🔇 מושתק</span>
+                        )}
+                        {occasionChipLabel(g) && (
+                          <span title="אירוע מיוחד — לחץ לפרטים בפרופיל" style={{ fontSize: 10, background: "#FFF4E5", color: "#B45309", padding: "2px 6px", borderRadius: 8, fontWeight: 700 }}>{occasionChipLabel(g)}</span>
                         )}
                         {renderGuestStatusBadge(g, sm, rowStatus)}
                         {renderHousekeepingSyncChip(g, rowStatus)}

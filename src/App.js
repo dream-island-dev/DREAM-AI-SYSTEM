@@ -1933,7 +1933,8 @@ export default function App({ initialPage = "dashboard" }) {
   const [oritFocus, setOritFocus] = useState(null); // { threadId } | null
   const [feedbackDeepLink, setFeedbackDeepLink] = useState(null); // { focus, tab } | null
   const [inboxRosterFocus, setInboxRosterFocus] = useState(null); // roster filter chip id | null
-  const [checkinFocus, setCheckinFocus] = useState(null); // { timelineScope, customArrivalDate? } | null
+  const [inboxAudienceFocus, setInboxAudienceFocus] = useState(null); // "suite" | "daypass" | null — paired with inboxRosterFocus
+  const [checkinFocus, setCheckinFocus] = useState(null); // { timelineScope, customArrivalDate?, rosterMode? } | null
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const openDreamBotChat = useCallback(({ phone, guestName, inboxChannel, returnPage, returnGuestId, returnPageLabel } = {}) => {
     if (phone) {
@@ -1968,9 +1969,9 @@ export default function App({ initialPage = "dashboard" }) {
       setMobileMenuOpen(false);
     }
   }, [inboxReturn]);
-  const openCheckinTab = useCallback(({ timelineScope = "today", customArrivalDate = null } = {}) => {
+  const openCheckinTab = useCallback(({ timelineScope = "today", customArrivalDate = null, rosterMode = null } = {}) => {
     saveCheckinFilter({ scope: timelineScope, customDate: customArrivalDate });
-    setCheckinFocus({ timelineScope, customArrivalDate });
+    setCheckinFocus({ timelineScope, customArrivalDate, rosterMode });
     setActivePage("guests");
     setMobileMenuOpen(false);
   }, []);
@@ -1978,6 +1979,8 @@ export default function App({ initialPage = "dashboard" }) {
   const handlePulseAction = useCallback((action) => {
     switch (action) {
       case "arrivals_today":
+        openCheckinTab({ timelineScope: "today", rosterMode: "arriving_today" });
+        break;
       case "departing_today":
         openCheckinTab({ timelineScope: "today" });
         break;
@@ -1987,6 +1990,18 @@ export default function App({ initialPage = "dashboard" }) {
         setMobileMenuOpen(false);
         break;
       case "attention":
+        setInboxRosterFocus("alerts");
+        setActivePage("wa_inbox");
+        setMobileMenuOpen(false);
+        break;
+      case "attention_suite":
+        setInboxAudienceFocus("suite");
+        setInboxRosterFocus("alerts");
+        setActivePage("wa_inbox");
+        setMobileMenuOpen(false);
+        break;
+      case "attention_daypass":
+        setInboxAudienceFocus("daypass");
         setInboxRosterFocus("alerts");
         setActivePage("wa_inbox");
         setMobileMenuOpen(false);
@@ -2014,8 +2029,8 @@ export default function App({ initialPage = "dashboard" }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [user]);
   const [employees, setEmployees, empLoading, refetchEmployees] = usePersistentState("employees", initialEmployees);
-  const [shifts, setShifts, shiftLoading]       = usePersistentState("shifts", initialShifts);
-  const [checklist, setChecklist, checkLoading] = usePersistentState("checklist_items", initialChecklists);
+  const [, setShifts, shiftLoading]       = usePersistentState("shifts", initialShifts);
+  const [, setChecklist, checkLoading] = usePersistentState("checklist_items", initialChecklists);
   const [openOpsCount, setOpenOpsCount] = useState(0);
   const [spaLeadsCount, setSpaLeadsCount] = useState(0);
   const opsLoading = empLoading || shiftLoading || checkLoading;
@@ -2407,17 +2422,20 @@ export default function App({ initialPage = "dashboard" }) {
         return (
           <OperationalDashboard
             user={user}
-            shifts={shifts}
-            checklist={checklist}
-            employees={employees}
             onNavigate={setActivePage}
             onOpenDreamBotChat={openDreamBotChat}
-            onAttentionClick={() => {
+            onAttentionClick={(audience) => {
+              setInboxAudienceFocus(audience === "suite" || audience === "daypass" ? audience : null);
               setInboxRosterFocus("alerts");
               setActivePage("wa_inbox");
               setMobileMenuOpen(false);
             }}
-            onArrivalsClick={() => openCheckinTab({ timelineScope: "today" })}
+            onArrivalsClick={() => openCheckinTab({ timelineScope: "today", rosterMode: "arriving_today" })}
+            onInResortClick={() => {
+              setInboxRosterFocus("in_resort");
+              setActivePage("wa_inbox");
+              setMobileMenuOpen(false);
+            }}
             onAutomationClick={() => {
               if (canAccessRoute("automation_center", user)) {
                 setActivePage("automation_center");
@@ -2461,7 +2479,11 @@ export default function App({ initialPage = "dashboard" }) {
             returnPageLabel={inboxReturn?.label ?? null}
             onReturnToSource={inboxReturn?.page ? returnFromInbox : null}
             initialRosterFilter={inboxRosterFocus}
-            onRosterFilterConsumed={() => setInboxRosterFocus(null)}
+            initialAudienceFilter={inboxAudienceFocus}
+            onRosterFilterConsumed={() => {
+              setInboxRosterFocus(null);
+              setInboxAudienceFocus(null);
+            }}
           />
         );
       case "guests":
@@ -2469,6 +2491,7 @@ export default function App({ initialPage = "dashboard" }) {
           <GuestsPage
             initialTimelineScope={checkinFocus?.timelineScope ?? null}
             initialCustomArrivalDate={checkinFocus?.customArrivalDate ?? null}
+            initialRosterMode={checkinFocus?.rosterMode ?? null}
             onTimelineScopeConsumed={() => setCheckinFocus(null)}
             onOpenDreamBotChat={openDreamBotChat}
             onOpenCheckin={openCheckinTab}

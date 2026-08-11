@@ -9,24 +9,8 @@ import {
   buildGuestsByPhoneKey,
   countActiveInboxAlerts,
 } from "../utils/resortPulseStats";
-import {
-  isSuiteArrivingToday,
-  israelTodayStr,
-  israelDateOffsetStr,
-} from "../utils/guestTiming";
-
-const GUEST_SELECT =
-  "phone, status, arrival_date, departure_date, room, room_type, arrival_time, name";
-
-// Scalability guard (2026-08-04) — bounds the guests fetch below so it stops
-// growing with the guest table's full history. Wide enough to never exclude
-// a currently-relevant guest (arrivals/in-resort/departures) or a recently
-// departed one whose phone might still need isGuestDeparted() classification
-// for countActiveInboxAlerts (a guest missing from this fetch entirely reads
-// as "not departed", not "unknown" — so this can't be scoped down to
-// today-only without misclassifying older departed guests). Same window as
-// whatsapp-cron's GUEST_SCAN_LOOKBACK_DAYS for consistency.
-const GUEST_SCAN_LOOKBACK_DAYS = 45;
+import { fetchGuestsForResortPulse } from "../utils/resortPulseFetch";
+import { isSuiteArrivingToday, israelTodayStr } from "../utils/guestTiming";
 
 const ALERT_TYPE_META = {
   complaint: { label: "🔴 תקלה" },
@@ -49,6 +33,12 @@ function fmtTime(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtTodayLabel(ymd) {
+  if (!ymd) return "";
+  const [y, m, d] = ymd.split("-");
+  return `${d}/${m}/${y}`;
 }
 
 function taskStatusBadge(status) {
@@ -92,13 +82,11 @@ function CardLinkHeader({ title, onClick, linkLabel = "הצג הכל ←" }) {
 
 export default function OperationalDashboard({
   user,
-  shifts,
-  checklist,
-  employees,
   onNavigate,
   onOpenDreamBotChat,
   onAttentionClick,
   onArrivalsClick,
+  onInResortClick,
   onAutomationClick,
 }) {
   const pageVisible = usePageVisibility();
@@ -108,46 +96,16 @@ export default function OperationalDashboard({
   const [pulse, setPulse] = useState(null);
   const [missingEtaCount, setMissingEtaCount] = useState(0);
   const [blockedAutomation, setBlockedAutomation] = useState(0);
-
+  const [kpi, setKpi] = useState({
+    openTasks: 0,
+    pendingApproval: 0,
+    urgentTasks: 0,
+    openRequests: 0,
+    complaints: 0,
+  });
   const todayStr = israelTodayStr();
   const canCreate = canPerform("create_ops_task", user);
   const userDept = user?.department || "";
-
-  const onShift = useMemo(
-    () => shifts.filter((s) => s.status === "פעיל" && s.date === todayStr),
-    [shifts, todayStr],
-  );
-
-  const doneChecks = checklist.filter((c) => c.done).length;
-  const checkPct = checklist.length
-    ? Math.round((doneChecks / checklist.length) * 100)
-    : 0;
-
-  const openTasks = useMemo(
-    () => tasks.filter((t) => t.status === "open" || t.status === "in_progress"),
-    [tasks],
-  );
-  const pendingApproval = useMemo(
-    () => tasks.filter((t) => t.status === "pending_approval"),
-    [tasks],
-  );
-  const urgentTasks = useMemo(
-    () =>
-      tasks.filter(
-        (t) =>
-          t.priority === "urgent" &&
-          (t.status === "open" || t.status === "in_progress"),
-      ),
-    [tasks],
-  );
-  const openRequests = useMemo(
-    () => requests.filter((r) => !r.resolved),
-    [requests],
-  );
-  const complaintRequests = useMemo(
-    () => openRequests.filter((r) => r.alert_type === "complaint"),
-    [openRequests],
-  );
 
   const recentTasks = useMemo(() => {
     const actionable = tasks.filter((t) =>
@@ -159,6 +117,11 @@ export default function OperationalDashboard({
       .slice(0, 5);
   }, [tasks]);
 
+  const openRequests = useMemo(
+    () => requests.filter((r) => !r.resolved),
+    [requests],
+  );
+
   const recentRequests = useMemo(
     () =>
       [...openRequests]
@@ -169,24 +132,38 @@ export default function OperationalDashboard({
 
   const urgentItems = useMemo(() => {
     const items = [];
-    if (pendingApproval.length) {
+    if (kpi.pendingApproval > 0) {
       items.push({
         key: "pending",
-        text: `${pendingApproval.length} משימות ממתינות לאישור צוות`,
+        text: `${kpi.pendingApproval} משימות ממתינות לאישור צוות`,
         action: () => onNavigate?.("ops_board"),
       });
     }
-    if (complaintRequests.length) {
+    if (kpi.complaints > 0) {
       items.push({
         key: "complaints",
-        text: `${complaintRequests.length} תלונות אורח פתוחות`,
+        text: `${kpi.complaints} תלונות אורח פתוחות`,
         action: () => onNavigate?.("requests_board"),
       });
     }
-    if ((pulse?.needsAttention ?? 0) > 0) {
+    if ((pulse?.needsAttentionSuite ?? 0) > 0) {
       items.push({
-        key: "inbox",
-        text: `${pulse.needsAttention} שיחות Inbox דורשות טיפול`,
+        key: "inbox_suite",
+        text: `${pulse.needsAttentionSuite} שיחות Inbox דורשות טיפול (סוויטות)`,
+        action: () => onAttentionClick?.("suite"),
+      });
+    }
+    if ((pulse?.needsAttentionDaypass ?? 0) > 0) {
+      items.push({
+        key: "inbox_daypass",
+        text: `${pulse.needsAttentionDaypass} שיחות Inbox דורשות טיפול (בילוי יומי)`,
+        action: () => onAttentionClick?.("daypass"),
+      });
+    }
+    if ((pulse?.needsAttentionUnmatched ?? 0) > 0) {
+      items.push({
+        key: "inbox_unmatched",
+        text: `${pulse.needsAttentionUnmatched} שיחות Inbox דורשות טיפול (לא משויך לאורח)`,
         action: onAttentionClick,
       });
     }
@@ -206,9 +183,11 @@ export default function OperationalDashboard({
     }
     return items;
   }, [
-    pendingApproval.length,
-    complaintRequests.length,
-    pulse?.needsAttention,
+    kpi.pendingApproval,
+    kpi.complaints,
+    pulse?.needsAttentionSuite,
+    pulse?.needsAttentionDaypass,
+    pulse?.needsAttentionUnmatched,
     missingEtaCount,
     blockedAutomation,
     onNavigate,
@@ -233,32 +212,76 @@ export default function OperationalDashboard({
         taskQuery = taskQuery.eq("department", userDept);
       }
 
-      const [tasksRes, alertsRes, guestsRes, waRes] = await Promise.all([
+      const openTasksCountQ = (() => {
+        let q = supabase
+          .from("tasks")
+          .select("id", { count: "exact", head: true })
+          .in("status", ["open", "in_progress"]);
+        if (!canCreate && userDept) q = q.eq("department", userDept);
+        return q;
+      })();
+      const pendingCountQ = (() => {
+        let q = supabase
+          .from("tasks")
+          .select("id", { count: "exact", head: true })
+          .eq("status", "pending_approval");
+        if (!canCreate && userDept) q = q.eq("department", userDept);
+        return q;
+      })();
+      const urgentCountQ = (() => {
+        let q = supabase
+          .from("tasks")
+          .select("id", { count: "exact", head: true })
+          .eq("priority", "urgent")
+          .in("status", ["open", "in_progress"]);
+        if (!canCreate && userDept) q = q.eq("department", userDept);
+        return q;
+      })();
+
+      const [
+        tasksRes,
+        alertsRes,
+        guestsPack,
+        waRes,
+        openTasksRes,
+        pendingRes,
+        urgentRes,
+        openAlertsRes,
+        complaintRes,
+      ] = await Promise.all([
         taskQuery,
         supabase
           .from("guest_alerts")
           .select("*, guests(name, room, arrival_date, departure_date, status)")
           .order("created_at", { ascending: false })
           .limit(40),
-        supabase
-          .from("guests")
-          .select(GUEST_SELECT)
-          .gte("arrival_date", israelDateOffsetStr(-GUEST_SCAN_LOOKBACK_DAYS)),
+        fetchGuestsForResortPulse(supabase),
         supabase
           .from("whatsapp_conversations")
           .select("phone")
           .eq("human_requested", true)
           .eq("direction", "inbound"),
+        openTasksCountQ,
+        pendingCountQ,
+        urgentCountQ,
+        supabase
+          .from("guest_alerts")
+          .select("id", { count: "exact", head: true })
+          .eq("resolved", false),
+        supabase
+          .from("guest_alerts")
+          .select("id", { count: "exact", head: true })
+          .eq("resolved", false)
+          .eq("alert_type", "complaint"),
       ]);
 
       if (tasksRes.error) throw tasksRes.error;
       if (alertsRes.error) throw alertsRes.error;
-      if (guestsRes.error) throw guestsRes.error;
       if (waRes.error) throw waRes.error;
 
-      const guests = guestsRes.data ?? [];
+      const guests = guestsPack.guests ?? [];
       const guestsByPhone = buildGuestsByPhoneKey(guests);
-      const inboxAlertsCount = countActiveInboxAlerts(
+      const inboxAlerts = countActiveInboxAlerts(
         (waRes.data ?? []).map((r) => r.phone),
         guestsByPhone,
       );
@@ -276,20 +299,27 @@ export default function OperationalDashboard({
       }
 
       const missingEta = guests.filter(
-        (g) =>
-          isSuiteArrivingToday(g) &&
-          !(g.arrival_time ?? "").trim(),
+        (g) => isSuiteArrivingToday(g) && !(g.arrival_time ?? "").trim(),
       ).length;
 
+      const openTaskCount = openTasksRes.count ?? 0;
       setTasks(tasksRes.data ?? []);
       setRequests(alertsRes.data ?? []);
+      setKpi({
+        openTasks: openTaskCount,
+        pendingApproval: pendingRes.count ?? 0,
+        urgentTasks: urgentRes.count ?? 0,
+        openRequests: openAlertsRes.count ?? 0,
+        complaints: complaintRes.count ?? 0,
+      });
       setPulse(
         computeResortPulse(guests, {
-          inboxAlertsCount,
+          inboxAlertsCount: inboxAlerts.total,
+          inboxAlertsCountSuite: inboxAlerts.suite,
+          inboxAlertsCountDaypass: inboxAlerts.daypass,
+          inboxAlertsCountUnmatched: inboxAlerts.unmatched,
           blockedAutomation: blocked,
-          openOpsTasks: (tasksRes.data ?? []).filter((t) =>
-            ["open", "in_progress"].includes(t.status),
-          ).length,
+          openOpsTasks: openTaskCount,
         }),
       );
       setMissingEtaCount(missingEta);
@@ -301,10 +331,6 @@ export default function OperationalDashboard({
     }
   }, [canCreate, userDept]);
 
-  // Realtime fires once per changed row — a burst of guest/task/wa activity
-  // (exactly what a day-pass surge produces) must not trigger a full refetch
-  // per row, in every open staff tab. Trailing debounce collapses a burst
-  // into one refresh; the mount/visibility-change refresh above stays immediate.
   const debouncedRefresh = useDebouncedCallback(refresh, 2500);
 
   useEffect(() => {
@@ -353,7 +379,7 @@ export default function OperationalDashboard({
     };
   }, [refresh, debouncedRefresh, pageVisible]);
 
-  if (loading && !tasks.length && !requests.length) {
+  if (loading && !tasks.length && !requests.length && !pulse) {
     return (
       <div className="dash-empty-state" style={{ padding: 64 }}>
         טוען דאשבורד תפעולי...
@@ -361,32 +387,69 @@ export default function OperationalDashboard({
     );
   }
 
+  const cardBtn = {
+    cursor: "pointer",
+    textAlign: "right",
+    border: "1px solid var(--border)",
+  };
+
   return (
     <div className="dashboard-shell">
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          gap: 12,
+          marginBottom: 16,
+          flexWrap: "wrap",
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "var(--text-main)" }}>
+            היום בריזורט
+          </div>
+          <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
+            {fmtTodayLabel(todayStr)} · לחצו על מספר כדי לפתוח את הרשימה
+          </div>
+        </div>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => refresh()}
+          disabled={loading}
+          title="רענון"
+        >
+          {loading ? "..." : "↺ רענון"}
+        </button>
+      </div>
+
       <div className="stat-grid">
         <button
           type="button"
           className="stat-card stat-card--shifts"
           onClick={onArrivalsClick}
-          style={{ cursor: onArrivalsClick ? "pointer" : "default", textAlign: "right", border: "1px solid var(--border)" }}
+          style={cardBtn}
         >
           <div className="stat-card-header">
             <div className="stat-icon">📅</div>
           </div>
           <div className="stat-value">{pulse?.arrivalsToday ?? "—"}</div>
-          <div className="stat-label">מגיעים היום</div>
-          {missingEtaCount > 0 && (
+          <div className="stat-label">מגיעים היום · עדיין לא נכנסו</div>
+          {missingEtaCount > 0 ? (
             <div className="stat-sub stat-sub--danger">
-              {missingEtaCount} ללא שעת הגעה
+              {missingEtaCount} בלי שעת הגעה
             </div>
+          ) : (
+            <div className="stat-sub">פתחו את רשימת ההגעות</div>
           )}
         </button>
 
         <button
           type="button"
           className="stat-card stat-card--depts"
-          onClick={onAttentionClick}
-          style={{ cursor: onAttentionClick ? "pointer" : "default", textAlign: "right", border: "1px solid var(--border)" }}
+          onClick={onInResortClick}
+          style={cardBtn}
         >
           <div className="stat-card-header">
             <div className="stat-icon">🟢</div>
@@ -402,16 +465,16 @@ export default function OperationalDashboard({
           type="button"
           className="stat-card stat-card--requests"
           onClick={() => onNavigate?.("requests_board")}
-          style={{ cursor: "pointer", textAlign: "right", border: "1px solid var(--border)" }}
+          style={cardBtn}
         >
           <div className="stat-card-header">
             <div className="stat-icon">📋</div>
           </div>
-          <div className="stat-value">{openRequests.length}</div>
+          <div className="stat-value">{kpi.openRequests}</div>
           <div className="stat-label">בקשות פתוחות</div>
-          {complaintRequests.length > 0 && (
+          {kpi.complaints > 0 && (
             <div className="stat-sub stat-sub--danger">
-              {complaintRequests.length} תלונות
+              {kpi.complaints} תלונות
             </div>
           )}
         </button>
@@ -420,21 +483,21 @@ export default function OperationalDashboard({
           type="button"
           className="stat-card stat-card--tasks"
           onClick={() => onNavigate?.("ops_board")}
-          style={{ cursor: "pointer", textAlign: "right", border: "1px solid var(--border)" }}
+          style={cardBtn}
         >
           <div className="stat-card-header">
             <div className="stat-icon">🛠️</div>
           </div>
-          <div className="stat-value">{openTasks.length}</div>
-          <div className="stat-label">משימות פתוחות</div>
-          {pendingApproval.length > 0 && (
+          <div className="stat-value">{kpi.openTasks}</div>
+          <div className="stat-label">משימות לטיפול</div>
+          {kpi.pendingApproval > 0 && (
             <div className="stat-sub stat-sub--danger">
-              {pendingApproval.length} ממתינות לאישור
+              {kpi.pendingApproval} ממתינות לאישור
             </div>
           )}
-          {urgentTasks.length > 0 && (
+          {kpi.urgentTasks > 0 && (
             <div className="stat-sub stat-sub--danger">
-              {urgentTasks.length} דחופות
+              {kpi.urgentTasks} דחופות
             </div>
           )}
         </button>
@@ -444,7 +507,7 @@ export default function OperationalDashboard({
         <div className="dashboard-urgent">
           <span style={{ fontSize: 24, flexShrink: 0 }}>🚨</span>
           <div style={{ minWidth: 0, flex: 1 }}>
-            <div className="dashboard-urgent-title">דורש טיפול מיידי</div>
+            <div className="dashboard-urgent-title">דורש טיפול עכשיו</div>
             <div className="dashboard-urgent-body">
               {urgentItems.map((item) => (
                 <button
@@ -579,79 +642,6 @@ export default function OperationalDashboard({
                   </div>
                 );
               })
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="dash-grid" style={{ marginTop: "var(--space-lg)" }}>
-        <div className="card">
-          <CardLinkHeader title="🕐 עובדים במשמרת עכשיו" onClick={() => onNavigate?.("shifts")} />
-          <div className="card-body">
-            {onShift.length === 0 ? (
-              <div className="dash-empty-state">אין משמרות פעילות כרגע</div>
-            ) : (
-              onShift.map((s) => (
-                <div key={s.id} className="dash-list-row">
-                  <div
-                    className="avatar"
-                    style={{ width: 32, height: 32, fontSize: 11 }}
-                  >
-                    {s.employeeName
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")}
-                  </div>
-                  <div className="dash-row-main">
-                    <div className="dash-row-title">{s.employeeName}</div>
-                    <div className="dash-row-sub">
-                      {s.department} · {s.start}–{s.end}
-                    </div>
-                  </div>
-                  <span className="badge badge-green">פעיל</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="card">
-          <CardLinkHeader
-            title="✅ צ'קליסט יומי"
-            onClick={() => onNavigate?.("checklist")}
-            linkLabel={`${checkPct}% · הצג הכל ←`}
-          />
-          <div className="card-body">
-            {checklist.length === 0 ? (
-              <div className="dash-empty-state">אין פריטי צ'קליסט להיום</div>
-            ) : (
-              <>
-                <div style={{ padding: "12px 20px" }}>
-                  <div className="progress-bar">
-                    <div
-                      className="progress-fill"
-                      style={{ width: `${checkPct}%` }}
-                    />
-                  </div>
-                  <div className="dash-row-sub" style={{ marginTop: 8 }}>
-                    {doneChecks} מתוך {checklist.length} הושלמו ·{" "}
-                    {employees.length} עובדים במערכת
-                  </div>
-                </div>
-                {checklist.slice(0, 4).map((c) => (
-                  <div key={c.id} className="dash-list-row">
-                    <div className="dash-row-main">
-                      <div className="dash-row-title dash-row-title--clip">
-                        {c.task}
-                      </div>
-                      <div className="dash-row-sub">{c.department}</div>
-                    </div>
-                    <span className={`badge ${c.done ? "badge-green" : "badge-gray"}`}>
-                      {c.done ? "✓" : "ממתין"}
-                    </span>
-                  </div>
-                ))}
-              </>
             )}
           </div>
         </div>
