@@ -1683,14 +1683,19 @@ serve(async (req: Request) => {
     if (hkGroup) {
       const hkGroupReply = isHousekeepingGroupReplyEnabled();
       for (const msg of messages) {
-        if (msg.fromMe) continue;
+        // from_me IS processed here: staff often type "18 ci" / "✅19" from the
+        // Suites Whapi device itself (shows as «סוויטות דרים איילנד»). Skipping
+        // from_me dropped those CI/CO/ready signals silently. Outbound acks still
+        // skip from_me below (canAck) so enabling HOUSEKEEPING_WA_GROUP_REPLY
+        // cannot loop on our own Hebrew ack lines.
         if (!msg.chatId.endsWith("@g.us") || msg.chatId !== hkGroup) continue;
 
         if (!msg.text) {
-          results.push({ id: msg.id, channel: "housekeeping", ignored: "no_text" });
+          results.push({ id: msg.id, channel: "housekeeping", ignored: "no_text", from_me: msg.fromMe });
           continue;
         }
 
+        const canAck = hkGroupReply && !msg.fromMe;
         const hkSender = await resolveHousekeepingSender(supabase, msg.fromPhone, msg.fromName);
 
         const readyRooms = parseHousekeepingReadyRoomNumbers(msg.text);
@@ -1712,9 +1717,9 @@ serve(async (req: Request) => {
             });
           }
           // Mike, 2026-08-05 (P0): the group is receive-only — a near-miss clarify is
-          // still outbound to the group, so it stays behind hkGroupReply like every
+          // still outbound to the group, so it stays behind canAck like every
           // other reply. When silent, log it instead so ops still has a trail.
-          if (nearMiss && hkGroupReply) {
+          if (nearMiss && canAck) {
             const clarify = buildHousekeepingNearMissClarification(msg.text);
             try {
               await sendWhapiText(msg.chatId, clarify, { noLinkPreview: true });
@@ -1724,7 +1729,7 @@ serve(async (req: Request) => {
             }
           } else if (nearMiss) {
             console.warn(
-              `[housekeeping:near_miss:silent] msg=${msg.id} chat=${msg.chatId} text=${JSON.stringify(msg.text)}`,
+              `[housekeeping:near_miss:silent] msg=${msg.id} chat=${msg.chatId} from_me=${msg.fromMe} text=${JSON.stringify(msg.text)}`,
             );
           }
           await ingestStaffGroupMessage(supabase, {
@@ -1743,6 +1748,7 @@ serve(async (req: Request) => {
             channel: "housekeeping",
             ignored: nearMissAck ? "hk_near_miss_clarify" : nearMiss ? "hk_near_miss_silent" : "no_housekeeping_pattern",
             chat_id: msg.chatId,
+            from_me: msg.fromMe,
           });
           continue;
         }
@@ -1800,16 +1806,18 @@ serve(async (req: Request) => {
           }));
         }
 
-        // Mike, 2026-08-05 (P0): the group is receive-only — when hkGroupReply is
+        // Mike, 2026-08-05 (P0): the group is receive-only — when canAck is
         // false NOTHING posts back, including failure/ambiguous lines that used to
         // bypass the flag. Silent mode still gets a console.warn trail per problem
         // signal (Fail Visible in logs, not chat) — see warnHousekeepingProblemSignals.
+        // canAck also excludes from_me so Suites-device CI/CO never triggers a
+        // self-reply loop when HOUSEKEEPING_WA_GROUP_REPLY is on.
         let ackSent = false;
-        if (hkGroupReply) {
+        if (canAck) {
           const ackLines = [
-            ...selectHousekeepingAckLines(readySignals, buildHousekeepingReadyAckLine, hkGroupReply),
-            ...selectHousekeepingAckLines(checkInSignals, buildHousekeepingCheckInAckLine, hkGroupReply),
-            ...selectHousekeepingAckLines(checkOutSignals, buildHousekeepingCheckOutAckLine, hkGroupReply),
+            ...selectHousekeepingAckLines(readySignals, buildHousekeepingReadyAckLine, true),
+            ...selectHousekeepingAckLines(checkInSignals, buildHousekeepingCheckInAckLine, true),
+            ...selectHousekeepingAckLines(checkOutSignals, buildHousekeepingCheckOutAckLine, true),
           ];
           const ackText = ackLines.join("\n");
           if (ackText) {
@@ -1827,12 +1835,13 @@ serve(async (req: Request) => {
         }
 
         console.log(
-          `[whapi-webhook] housekeeping ${msg.id} chat=${msg.chatId} ready=${readyRooms.join(",")} checkin=${checkInRooms.join(",")} checkout=${checkOutRooms.join(",")} ack=${ackSent} reply=${hkGroupReply}`,
+          `[whapi-webhook] housekeeping ${msg.id} chat=${msg.chatId} from_me=${msg.fromMe} ready=${readyRooms.join(",")} checkin=${checkInRooms.join(",")} checkout=${checkOutRooms.join(",")} ack=${ackSent} reply=${hkGroupReply}`,
         );
         results.push({
           id: msg.id,
           channel: "housekeeping",
           chat_id: msg.chatId,
+          from_me: msg.fromMe,
           readyRooms,
           checkInRooms,
           checkOutRooms,
