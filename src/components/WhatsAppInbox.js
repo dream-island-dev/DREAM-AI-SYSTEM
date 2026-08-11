@@ -5697,34 +5697,26 @@ export default function WhatsAppInbox({
     });
   }, [displayContacts, rosterFilter, rosterSearch, rosterSort, lang]);
 
-  // «🔴 התראות» — audience=suite/daypass: single chip, scoped count+list (the
-  // OTHER audience's reds surface only via the otherAudienceWaiting banner).
-  // audience=all: two chips with their own counts, never one ambiguous mixed
-  // number — clicking either jumps straight into that audience's alerts so
-  // the resulting list is always unambiguous (Mike, 2026-08-09 — mixing
-  // suite/daypass reds in one pile caused wrong triage).
-  const alertsFilterChips = useMemo(() => {
-    if (audienceFilter === "all") {
-      return [
-        {
-          id: "alerts_suite",
-          label: t.filterAlertsSuite(alertContactsSuite.length),
-          badge: 0,
-          onClick: () => { setAudienceFilter("suite"); setRosterFilter("alerts"); },
-          isActive: () => rosterFilter === "alerts" && audienceFilter === "suite",
-        },
-        {
-          id: "alerts_daypass",
-          label: t.filterAlertsDaypass(alertContactsDaypass.length),
-          badge: 0,
-          onClick: () => { setAudienceFilter("daypass"); setRosterFilter("alerts"); },
-          isActive: () => rosterFilter === "alerts" && audienceFilter === "daypass",
-        },
-      ];
-    }
-    const scopedCount = audienceFilter === "suite" ? alertContactsSuite.length : alertContactsDaypass.length;
-    return [{ id: "alerts", label: t.filterAlerts, badge: scopedCount }];
-  }, [t, audienceFilter, alertContactsSuite.length, alertContactsDaypass.length, setAudienceFilter, setRosterFilter, rosterFilter]);
+  // Always show two separate alert chips (suite + daypass) regardless of the
+  // current audienceFilter — same split the mobile view always shows, and
+  // already live when audienceFilter==="all". Each chip jumps directly into
+  // that cohort's scoped alerts so triage is never ambiguous.
+  const alertsFilterChips = useMemo(() => [
+    {
+      id: "alerts_suite",
+      label: t.filterAlertsSuite(alertContactsSuite.length),
+      badge: 0,
+      onClick: () => { setAudienceFilter("suite"); setRosterFilter("alerts"); },
+      isActive: () => rosterFilter === "alerts" && audienceFilter === "suite",
+    },
+    {
+      id: "alerts_daypass",
+      label: t.filterAlertsDaypass(alertContactsDaypass.length),
+      badge: 0,
+      onClick: () => { setAudienceFilter("daypass"); setRosterFilter("alerts"); },
+      isActive: () => rosterFilter === "alerts" && audienceFilter === "daypass",
+    },
+  ], [t, audienceFilter, alertContactsSuite.length, alertContactsDaypass.length, setAudienceFilter, setRosterFilter, rosterFilter]);
 
   const rosterFilterChips = useMemo(() => [
     { id: "all", label: t.filterAll },
