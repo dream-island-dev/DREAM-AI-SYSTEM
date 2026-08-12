@@ -7,6 +7,7 @@
 // Does NOT set guests.room_ready — manager approval is the guest-profile step.
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { israelYmd } from "./automationSchedule.ts";
 import { resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";
 import { findArrivingTodayGuestForSuite, findActiveGuestForSuite } from "./housekeepingGuestLookup.ts";
 import { notifyRoomPendingApproval } from "./roomPendingApprovalPush.ts";
@@ -141,18 +142,40 @@ export async function applyHousekeepingReadySignal(
   }
 
   const inStayPick = await findActiveGuestForSuite(supabase, roomId);
-  if (inStayPick.guest?.status === "checked_in") {
+  const occupant = inStayPick.guest?.status === "checked_in" ? inStayPick.guest : null;
+
+  // Same-day turnover: an occupant due out today (or overdue) who hasn't had
+  // an explicit Co yet must not block today's arriving guest's ready bell —
+  // mirrors the outgoing-guest check in shouldHousekeepingTurnover
+  // (housekeepingLifecycle.ts), used by the check-in signal for the same gap.
+  const today = israelYmd(new Date());
+  const occupantLeavingToday = !!occupant?.departure_date && occupant.departure_date <= today;
+
+  if (occupant && !occupantLeavingToday) {
     return {
       ok: true,
       roomNumber,
       roomId,
-      guestId: inStayPick.guest.id,
-      guestName: inStayPick.guest.name,
+      guestId: occupant.id,
+      guestName: occupant.name,
       action: "skipped_occupied",
     };
   }
 
   const arrivingPick = await findArrivingTodayGuestForSuite(supabase, roomId);
+
+  if (occupant && !arrivingPick.guest) {
+    // Leaving today but nobody arriving into this room today — nothing to
+    // notify; same outcome as the old unconditional occupied-skip.
+    return {
+      ok: true,
+      roomNumber,
+      roomId,
+      guestId: occupant.id,
+      guestName: occupant.name,
+      action: "skipped_occupied",
+    };
+  }
   const guest = arrivingPick.guest;
   const guestId = guest?.id ?? null;
   const guestName = guest?.name ?? null;
