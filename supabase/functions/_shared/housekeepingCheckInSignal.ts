@@ -6,7 +6,6 @@ import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { israelYmd } from "./automationSchedule.ts";
 import { resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";
 import {
-  findActiveGuestForSuite,
   findIncomingGuestForSuiteCheckIn,
   findInHouseDepartingGuestForSuite,
   formatAmbiguousGuestHint,
@@ -89,7 +88,7 @@ export function buildHousekeepingCheckInAckLine(result: HousekeepingCheckInResul
     case "already_checked_in":
       return `ℹ️ חדר ${roomId} — כבר מסומן כצ'ק-אין${guestName ? ` (${guestName})` : ""}`;
     case "no_guest":
-      return `⚠️ חדר ${roomId} — צ'ק-אין: לא נמצא אורח פעיל בחדר`;
+      return `⚠️ חדר ${roomId} — צ'ק-אין: לא נמצא אורח עם הגעה היום בחדר`;
     case "ambiguous_guest":
       return `⚠️ חדר ${roomId} — כמה אורחים מתאימים (תאריכים חופפים). בדקו ב-XOS וסמנו ידנית.${guestName ? ` (${guestName})` : ""}`;
     case "guest_not_eligible":
@@ -235,22 +234,7 @@ export async function applyHousekeepingCheckInSignal(
     });
   }
 
-  const activePick = incoming
-    ? { guest: incoming, ambiguous: [] as typeof incomingPick.ambiguous }
-    : await findActiveGuestForSuite(supabase, roomId);
-
-  if (activePick.ambiguous.length) {
-    return finalize({
-      ok: false,
-      roomNumber,
-      roomId,
-      guestId: null,
-      guestName: formatAmbiguousGuestHint(activePick.ambiguous),
-      action: "ambiguous_guest",
-    });
-  }
-
-  const guest = activePick.guest;
+  const guest = incoming;
   if (!guest) {
     return finalize({
       ok: false, roomNumber, roomId, guestId: null, guestName: null, action: "no_guest",

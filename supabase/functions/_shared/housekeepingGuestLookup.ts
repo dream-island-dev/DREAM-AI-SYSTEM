@@ -287,7 +287,7 @@ export async function findArrivingTodayGuestForSuite(
   return pickBestMatch(merged, roomId, suiteLinks, today, scoreGuestForReadyBell);
 }
 
-/** Arriving today — eligible for physical check-in from WA group. */
+/** Arriving today — eligible for physical check-in from WA group (or already_checked_in). */
 export async function findIncomingGuestForSuiteCheckIn(
   supabase: ReturnType<typeof createClient>,
   roomId: string,
@@ -300,7 +300,7 @@ export async function findIncomingGuestForSuiteCheckIn(
       .select(GUEST_SELECT)
       .eq("arrival_date", today)
       .neq("status", "cancelled")
-      .in("status", [...CHECKIN_ELIGIBLE_STATUSES]),
+      .in("status", [...CHECKIN_ELIGIBLE_STATUSES, "checked_in"]),
     loadGuestsBySuiteRoomToday(supabase, roomId, today),
   ]);
 

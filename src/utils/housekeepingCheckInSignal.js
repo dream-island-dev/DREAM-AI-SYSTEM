@@ -21,7 +21,7 @@ export function buildHousekeepingCheckInAckLine(result) {
     case "already_checked_in":
       return `ℹ️ חדר ${roomId} — כבר מסומן כצ'ק-אין${guestName ? ` (${guestName})` : ""}`;
     case "no_guest":
-      return `⚠️ חדר ${roomId} — צ'ק-אין: לא נמצא אורח פעיל בחדר`;
+      return `⚠️ חדר ${roomId} — צ'ק-אין: לא נמצא אורח עם הגעה היום בחדר`;
     case "ambiguous_guest":
       return `⚠️ חדר ${roomId} — כמה אורחים מתאימים (תאריכים חופפים). בדקו ב-XOS וסמנו ידנית.${guestName ? ` (${guestName})` : ""}`;
     case "guest_not_eligible":

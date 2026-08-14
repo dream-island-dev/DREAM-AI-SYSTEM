@@ -31,8 +31,9 @@ export function isGuestInStayWindow(g: SuiteGuestRow, today: string): boolean {
   return g.arrival_date === today;
 }
 
-/** CI candidate: in stay window + not already past departure. */
+/** CI candidate: arrival_date must be today — never attach a group CI to a stay that started earlier. */
 export function isGuestEligibleForHousekeepingCheckIn(g: SuiteGuestRow, today: string): boolean {
+  if (!g.arrival_date || g.arrival_date !== today) return false;
   if (!isGuestInStayWindow(g, today)) return false;
   if (CHECKIN_ELIGIBLE_STATUSES.has(g.status)) return true;
   return g.status === "checked_in";
@@ -55,13 +56,6 @@ export function scoreGuestForCheckIn(g: SuiteGuestRow, today: string): number {
     if (g.status === "pending") return 2;
     if (g.status === "checked_in") return 3;
     return 10;
-  }
-
-  // Late check-in: arrived before today, still in stay, never checked in.
-  if (g.arrival_date && g.arrival_date < today && CHECKIN_ELIGIBLE_STATUSES.has(g.status)) {
-    if (g.status === "room_ready") return 20;
-    if (g.status === "expected") return 21;
-    return 22;
   }
 
   return HOUSEKEEPING_SCORE_OUT_OF_RANGE;

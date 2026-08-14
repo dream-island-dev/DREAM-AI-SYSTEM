@@ -4,6 +4,18 @@ import {
   HOUSEKEEPING_CHECKIN_PROBLEM_ACTIONS,
 } from "./housekeepingCheckInSignal.ts";
 
+Deno.test("buildHousekeepingCheckInAckLine: no_guest names missing arrival-today guest", () => {
+  const line = buildHousekeepingCheckInAckLine({
+    ok: false,
+    roomNumber: 9,
+    roomId: "אמטיסט 9",
+    guestId: null,
+    guestName: null,
+    action: "no_guest",
+  });
+  assertEquals(line, "⚠️ חדר אמטיסט 9 — צ'ק-אין: לא נמצא אורח עם הגעה היום בחדר");
+});
+
 Deno.test("buildHousekeepingCheckInAckLine: skipped_no_suite uses roomNumber (no roomId exists)", () => {
   const line = buildHousekeepingCheckInAckLine({
     ok: false,

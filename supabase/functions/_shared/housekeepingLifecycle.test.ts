@@ -80,7 +80,26 @@ Deno.test("scoreGuestForCheckIn: arrival today beats stale room_ready from past 
     scoreGuestForCheckIn(arrivingToday, today) < scoreGuestForCheckIn(staleReady, today),
     true,
   );
-  assertEquals(scoreGuestForCheckIn(staleReady, today), 20);
+  assertEquals(scoreGuestForCheckIn(staleReady, today), HOUSEKEEPING_SCORE_OUT_OF_RANGE);
+});
+
+Deno.test("isGuestEligibleForHousekeepingCheckIn: arrival yesterday / departing today is blocked", () => {
+  assertEquals(
+    isGuestEligibleForHousekeepingCheckIn({
+      arrival_date: "2026-07-29",
+      departure_date: today,
+      status: "expected",
+    }, today),
+    false,
+  );
+  assertEquals(
+    scoreGuestForCheckIn({
+      arrival_date: "2026-07-29",
+      departure_date: today,
+      status: "expected",
+    }, today),
+    HOUSEKEEPING_SCORE_OUT_OF_RANGE,
+  );
 });
 
 Deno.test("isGuestEligibleForHousekeepingCheckOut: requires departure on/before today", () => {

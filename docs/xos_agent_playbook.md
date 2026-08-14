@@ -1,6 +1,6 @@
 # XOS Agent Playbook — Smart Dev Environment
 > **Living document.** Mike + every Cursor agent reads this with `CLAUDE.md` and `docs/active_sprint.md`.
-> Last updated: 2026-07-24 (Claude Code Desktop — 3 subagents + `/xos-qa` `/xos-security` skills; Mike magic workflow §13).
+> Last updated: 2026-08-10 (thinking skills `/redteam` `/premortem` `/steelman` `/swot` in `.claude/skills` + `.cursor/skills`).
 >
 > **When you learn something new that works** → add a bullet here + 1 line in `docs/changelog.md` + refresh `CLAUDE.md` §13 if architecture changed.
 
@@ -15,7 +15,8 @@
 | `RESORT_UI_MANIFEST.md` | UI/UX philosophy + tab readiness |
 | **`docs/xos_agent_playbook.md`** | **How to work with Mike + how agents should behave** |
 | **`.claude/agents/`** | **Claude Code subagents** — `maya-partner`, `qa-gate`, `security-sentinel` (project-scoped, git-committed) |
-| **`.claude/skills/`** | **Claude Code slash skills** — `/xos-qa`, `/xos-security` (user-invoked gates) |
+| **`.claude/skills/`** | **Claude Code slash skills** — `/xos-qa`, `/xos-security`, `/xos-ux`, `/xos-qa-full` + thinking skills `/redteam` `/premortem` `/steelman` `/swot` |
+| **`.cursor/skills/`** | **Cursor project skills** — same thinking skills mirrored for slash use without Claude Code credits |
 
 This playbook captures **process knowledge** that is not code — communication, phases, corrected assumptions, and copy-paste prompts.
 
@@ -417,6 +418,23 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 ---
 
 ## 10. Learnings Log
+
+### 2026-08-14 — Housekeeping `N ci` must not attach to yesterday's occupant
+- **Symptom:** `9 ci` checked in הראל ברקוביץ (arrived yesterday, departing today) because nobody arrives today to אמטיסט 9.
+- **Root:** After `findIncomingGuestForSuiteCheckIn` returned empty, CI fell back to `findActiveGuestForSuite` "late check-in" (arrival < today, still in stay window including departure day).
+- **Fix:** CI only if `arrival_date === today`; else `no_guest`. Same gate on GuestsPage reconcile.
+- **Lesson:** Occupancy leftover ≠ arriving guest. Room-ready already had an arrival-today gate (2026-08-07); CI did not.
+
+### 2026-08-11 — Housekeeping group: never skip from_me staff signals
+- **Symptom:** `18 ci` / `25 ci` typed from the Suites Whapi device («סוויטות דרים איילנד») never updated XOS check-in.
+- **Root:** `whapi-webhook` HK loop had `if (msg.fromMe) continue` — Whapi marks device-sent group messages as `from_me`, so the listener ignored its own phone's posts.
+- **Fix:** Process from_me into ready/CI/CO signals; keep `canAck = hkGroupReply && !from_me` so opt-in group replies cannot self-loop on ack text.
+- **Lesson:** For a receive-only listener device that staff also type on, `from_me` skip is correct for DMs/ops-LLM but wrong for housekeeping signal parse.
+
+### 2026-08-10 — Thinking slash skills (redteam/premortem/steelman/swot) live in Cursor without Claude credits
+- **Goal:** Same adversarial/strategy commands from Claude Code culture, usable while Claude credits are empty.
+- **Decision:** Duplicate lean `SKILL.md` under `.claude/skills/` and `.cursor/skills/`; wire `/redteam` `/premortem` `/steelman` `/swot` in `.cursorrules`. Default order for XOS: redteam → premortem → steelman → swot.
+- **Lesson:** A delivery-guarantee patch that leaves `AUTOMATION_HEALTH_ENABLED` unset + unrepaired muted rows is a ship that looks green in code but silent in ops.
 
 ### 2026-07-24 — Claude Code Desktop: 3 dev subagents beat one mega-prompt
 - **Goal:** Mike describes a need in Hebrew; agents plan, build, QA, deploy — minimal friction.

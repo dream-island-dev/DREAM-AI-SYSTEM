@@ -61,7 +61,7 @@ describe("housekeepingCheckInReconcile", () => {
       { id: 1, room_id: "ג׳ספר 6", created_at: "2026-08-05T09:51:00Z", sync_action: "no_guest" },
     ]);
     const sync = resolveGuestHousekeepingSync(
-      { id: 10, status: "expected", room: "ג׳ספר 6" },
+      { id: 10, status: "expected", arrival_date: israelTodayStr(), room: "ג׳ספר 6" },
       [],
       hkByRoom,
     );
@@ -98,7 +98,7 @@ describe("housekeepingCheckInReconcile", () => {
       expect(sync.roomId).toBe("אמטיסט 9");
     });
 
-    test("check_in row present wins over activity — stays on the existing pending/synced path, not awaiting", () => {
+    test("check_in row present — yesterday arrival is not pending (arrival-today gate)", () => {
       const hkByRoom = indexHousekeepingCheckInsByRoom([
         { id: 1, room_id: "ג׳ספר 6", created_at: "2026-08-07T09:51:00Z", sync_action: "no_guest" },
       ]);
@@ -107,7 +107,7 @@ describe("housekeepingCheckInReconcile", () => {
       ]);
       const guest = { id: 10, status: "expected", arrival_date: yesterday, room: "ג׳ספר 6" };
       const sync = resolveGuestHousekeepingSync(guest, [], hkByRoom, activityRoomIds);
-      expect(sync.state).toBe("pending"); // unchanged from pre-B1 behavior
+      expect(sync.state).toBe("none");
     });
 
     test("no housekeeping activity at all for the room → none, not awaiting", () => {
@@ -220,12 +220,44 @@ describe("housekeepingCheckInReconcile", () => {
     });
   });
 
+  describe("resolveGuestHousekeepingSync — CI only for arrival today", () => {
+    test("yesterday arrival + today's room CI signal is not pending (do not attach)", () => {
+      const yesterday = israelDateOffsetStr(-1);
+      const hkByRoom = indexHousekeepingCheckInsByRoom([
+        { id: 1, room_id: "אמטיסט 9", created_at: "2026-08-14T08:01:54Z", sync_action: "updated", guest_id: 5150 },
+      ]);
+      const guest = { id: 5150, status: "expected", arrival_date: yesterday, room: "אמטיסט 9" };
+      const sync = resolveGuestHousekeepingSync(guest, [], hkByRoom);
+      expect(sync.state).toBe("none");
+    });
+  });
+
+  describe("reconcileHousekeepingCheckIns — arrival-today gate", () => {
+    test("never auto-applies CI to a guest whose arrival_date is not today", async () => {
+      const yesterday = israelDateOffsetStr(-1);
+      const hkByRoom = indexHousekeepingCheckInsByRoom([
+        { id: 1, room_id: "אמטיסט 9", created_at: "2026-08-14T08:01:54Z", sync_action: "no_guest" },
+      ]);
+      const guest = { id: 5150, status: "expected", arrival_date: yesterday, room: "אמטיסט 9" };
+      const supabaseThatMustNotBeCalled = {
+        from(table) { throw new Error(`unexpected supabase.from(${table}) call — auto-apply should have been skipped`); },
+      };
+      const applied = await reconcileHousekeepingCheckIns(
+        supabaseThatMustNotBeCalled,
+        [guest],
+        { 5150: [] },
+        hkByRoom,
+      );
+      expect(applied).toEqual([]);
+    });
+  });
+
   describe("reconcileHousekeepingCheckIns — ambiguous-room confirmation gate (QA P2 2026-08-05)", () => {
     test("never auto-applies when the room's signal already resolved to a different guest (logged_success_guest_stale)", async () => {
       const hkByRoom = indexHousekeepingCheckInsByRoom([
         { id: 3, room_id: "ג׳ספר 6", created_at: "2026-08-05T09:00:00Z", sync_action: "updated", guest_id: 999 },
       ]);
-      const guest = { id: 20, status: "expected", room: "ג׳ספר 6" };
+      const guest = { id: 20, status: "expected", arrival_date: israelTodayStr(), room: "ג׳ספר 6" };
       // Sanity check this fixture actually exercises the guarded branch.
       const sync = resolveGuestHousekeepingSync(guest, [], hkByRoom);
       expect(sync.reason).toBe("logged_success_guest_stale");

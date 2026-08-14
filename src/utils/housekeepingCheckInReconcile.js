@@ -85,6 +85,10 @@ export function resolveGuestHousekeepingSync(guest, suiteRoomRows, hkByRoom, act
     return { state: "synced", roomId, eventAt, action, eventId: evt.id };
   }
 
+  if (guest?.arrival_date !== israelTodayStr()) {
+    return { state: "none" };
+  }
+
   if (!HK_CHECKIN_ELIGIBLE_STATUSES.has(guest?.status)) {
     return {
       state: "failed",
@@ -255,6 +259,7 @@ export async function reconcileHousekeepingCheckIns(
   for (const guest of guests ?? []) {
     if (!guest?.id || guest.status === "checked_in") continue;
     if (!HK_CHECKIN_ELIGIBLE_STATUSES.has(guest.status)) continue;
+    if (guest.arrival_date !== israelTodayStr()) continue;
 
     const sync = resolveGuestHousekeepingSync(
       guest,
