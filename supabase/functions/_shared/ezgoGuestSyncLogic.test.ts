@@ -1,6 +1,9 @@
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import {
   BOARD_TO_MEAL_PLAN,
+  TRUSTED_ROOM_MAP_MATCHED_VIA,
+  buildTrustedRoomMap,
+  classifyOrderResolution,
   ddmmyyyyToIso,
   extractOrderClient,
   extractOrderRoomsCount,
@@ -245,4 +248,139 @@ Deno.test("empty remark -> coordinator identity (no signal to swap on)", () => {
   const result = resolveApiRoomOccupantIdentity(coord, "", 2);
   assertEquals(result.is_remark_group_occupant, false);
   assertEquals(result.phone, coord.tel1);
+});
+
+// ── buildTrustedRoomMap — trust gate (Mike, sync-management follow-up
+// part 1): an auto_bootstrap/manual RoomId mapping is an unconfirmed guess
+// until staff clicks "אשר נכון" in EzgoApiCodeMappingPanel.js. Using one to
+// resolve a room-line would let a wrong inference silently create/enrich a
+// guest with the wrong suite. ─────────────────────────────────────────────
+
+Deno.test("buildTrustedRoomMap: csv_verified and staff_verified rows are kept", () => {
+  const map = buildTrustedRoomMap([
+    { ezgo_room_id: 3, suite_name: "אמטיסט 8", matched_via: "csv_verified" },
+    { ezgo_room_id: 7, suite_name: "וילה 3", matched_via: "staff_verified" },
+  ]);
+  assertEquals(map.get(3), "אמטיסט 8");
+  assertEquals(map.get(7), "וילה 3");
+  assertEquals(map.size, 2);
+});
+
+Deno.test("buildTrustedRoomMap: auto_bootstrap and manual rows are dropped -- unresolved room_not_mapped, not a guess", () => {
+  const map = buildTrustedRoomMap([
+    { ezgo_room_id: 11, suite_name: "יהלום 2", matched_via: "auto_bootstrap" },
+    { ezgo_room_id: 12, suite_name: "ספיר 1", matched_via: "manual" },
+  ]);
+  assertEquals(map.has(11), false);
+  assertEquals(map.has(12), false);
+  assertEquals(map.size, 0);
+});
+
+Deno.test("buildTrustedRoomMap: mixed trust tiers -- only the trusted ones resolve", () => {
+  const map = buildTrustedRoomMap([
+    { ezgo_room_id: 1, suite_name: "טופז 1", matched_via: "csv_verified" },
+    { ezgo_room_id: 2, suite_name: "טופז 2", matched_via: "auto_bootstrap" },
+    { ezgo_room_id: 3, suite_name: "טופז 3", matched_via: "staff_verified" },
+    { ezgo_room_id: 4, suite_name: "טופז 4", matched_via: "manual" },
+  ]);
+  assertEquals([...map.keys()].sort(), [1, 3]);
+});
+
+Deno.test("buildTrustedRoomMap: empty input -> empty map, not an error", () => {
+  assertEquals(buildTrustedRoomMap([]).size, 0);
+});
+
+Deno.test("TRUSTED_ROOM_MAP_MATCHED_VIA: exactly mirrors EzgoApiCodeMappingPanel.js's isTrustedMatch tiers", () => {
+  assertEquals([...TRUSTED_ROOM_MAP_MATCHED_VIA].sort(), ["csv_verified", "staff_verified"]);
+});
+
+// ── classifyOrderResolution — terminal park (Mike, sync-management
+// follow-up part 2): a bad phone / unmapped room / duplicate guest / bad
+// dates must stop cycling staged->processing->staged forever with zero
+// trace, same bug class the grace-period fix closed for room-less orders.
+// no_checkin_date and a genuine "error" must NOT be parked -- both can
+// still resolve themselves on a later run. ─────────────────────────────────
+
+Deno.test("classifyOrderResolution: all created/enriched -> parsed", () => {
+  assertEquals(
+    classifyOrderResolution([{ kind: "created" }, { kind: "enriched" }]),
+    { action: "parsed" },
+  );
+});
+
+Deno.test("classifyOrderResolution: single-line no_usable_phone -> park, notes names the reason", () => {
+  assertEquals(
+    classifyOrderResolution([{ kind: "unresolved", reason: "no_usable_phone" }]),
+    { action: "park", notes: "unresolved_no_usable_phone" },
+  );
+});
+
+Deno.test("classifyOrderResolution: room_not_mapped -> park (also covers a trust-gated-out mapping, same reason string)", () => {
+  assertEquals(
+    classifyOrderResolution([{ kind: "unresolved", reason: "room_not_mapped" }]),
+    { action: "park", notes: "unresolved_room_not_mapped" },
+  );
+});
+
+Deno.test("classifyOrderResolution: duplicate_guest_same_phone_date -> park", () => {
+  assertEquals(
+    classifyOrderResolution([{ kind: "unresolved", reason: "duplicate_guest_same_phone_date" }]),
+    { action: "park", notes: "unresolved_duplicate_guest_same_phone_date" },
+  );
+});
+
+Deno.test("classifyOrderResolution: invalid_dates -> park", () => {
+  assertEquals(
+    classifyOrderResolution([{ kind: "unresolved", reason: "invalid_dates" }]),
+    { action: "park", notes: "unresolved_invalid_dates" },
+  );
+});
+
+Deno.test("classifyOrderResolution: no_checkin_date -> retry, NOT parked (a real race, may resolve next run)", () => {
+  assertEquals(
+    classifyOrderResolution([{ kind: "unresolved", reason: "no_checkin_date" }]),
+    { action: "retry" },
+  );
+});
+
+Deno.test("classifyOrderResolution: a genuine error -> retry, NOT parked (could be transient)", () => {
+  assertEquals(
+    classifyOrderResolution([{ kind: "error" }]),
+    { action: "retry" },
+  );
+});
+
+Deno.test("classifyOrderResolution: an unrecognized/empty reason -> retry, never guessed as parkable", () => {
+  assertEquals(classifyOrderResolution([{ kind: "unresolved", reason: "something_new" }]), { action: "retry" });
+  assertEquals(classifyOrderResolution([{ kind: "unresolved" }]), { action: "retry" });
+});
+
+Deno.test("classifyOrderResolution: two lines, both parkable but DIFFERENT reasons -> park, notes lists both sorted", () => {
+  assertEquals(
+    classifyOrderResolution([
+      { kind: "unresolved", reason: "room_not_mapped" },
+      { kind: "unresolved", reason: "no_usable_phone" },
+    ]),
+    { action: "park", notes: "unresolved_multiple:no_usable_phone,room_not_mapped" },
+  );
+});
+
+Deno.test("classifyOrderResolution: one parkable line + one no_checkin_date line -> retry, NOT park (mixed order stays whole)", () => {
+  assertEquals(
+    classifyOrderResolution([
+      { kind: "unresolved", reason: "room_not_mapped" },
+      { kind: "unresolved", reason: "no_checkin_date" },
+    ]),
+    { action: "retry" },
+  );
+});
+
+Deno.test("classifyOrderResolution: one created line + one parkable unresolved line -> park the whole order (the already-created guest write already happened and is unaffected -- only the ingest row's pointless per-minute re-processing stops)", () => {
+  assertEquals(
+    classifyOrderResolution([
+      { kind: "created" },
+      { kind: "unresolved", reason: "room_not_mapped" },
+    ]),
+    { action: "park", notes: "unresolved_room_not_mapped" },
+  );
 });

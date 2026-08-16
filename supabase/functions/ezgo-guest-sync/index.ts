@@ -30,8 +30,12 @@
  *   attach a room, and unconditionally left a 2+-room order's non-remark
  *   lines unresolved instead of falling back to the coordinator.
  *
- *   RoomId -> canonical suite name ONLY via ezgo_suite_room_map. RoomId=0
- *   and any RoomId absent from that table are never guessed (left staged).
+ *   RoomId -> canonical suite name ONLY via ezgo_suite_room_map, and only a
+ *   csv_verified/staff_verified row (TRUSTED_ROOM_MAP_MATCHED_VIA / see
+ *   buildTrustedRoomMap) — an auto_bootstrap/manual row is an unconfirmed
+ *   guess until staff confirms it in the mapping panel. RoomId=0, any
+ *   RoomId absent from the table, and any RoomId mapped only at an
+ *   untrusted tier are never guessed (left unresolved as room_not_mapped).
  *
  *   guests.email / guests.meal_plan (Order.Board) aren't part of the shared
  *   Doc2Record vocabulary (Doc2 has no API-style Board field), so those two
@@ -67,8 +71,12 @@ import {
 } from "../_shared/guestSegmentGuard.ts";
 import {
   BOARD_TO_MEAL_PLAN,
+  TRUSTED_ROOM_MAP_MATCHED_VIA,
   type OrderClientInfo,
+  type OrderLineResolution,
   type ReservationInfo,
+  buildTrustedRoomMap,
+  classifyOrderResolution,
   extractOrderClient,
   extractOrderRoomsCount,
   extractReservation,
@@ -104,13 +112,20 @@ async function findGuestByEzgoClientId(
   clientId: number,
   arrivalDate: string,
 ): Promise<Doc2GuestRow | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("guests")
     .select(GUEST_ROW_SELECT)
     .eq("ezgo_client_id", clientId)
     .eq("arrival_date", arrivalDate)
     .neq("status", "cancelled")
     .limit(2);
+  if (error) {
+    console.error("[ezgo-guest-sync] findGuestByEzgoClientId query failed:", error.message);
+    // Caught by processRoomLine's try/catch -> classified {kind:"error"},
+    // retried next run. Must not silently fall through to the order_number
+    // path below as if there were simply no ClientId match.
+    throw new Error(error.message);
+  }
   return data?.length === 1 ? (data[0] as Doc2GuestRow) : null;
 }
 
@@ -123,19 +138,27 @@ const BATCH_LIMIT = 500;
  * how many were affected — 0 is a normal outcome (order cancelled before
  * we ever synced a guest for it), not an error. */
 async function applyCancellation(supabase: SupabaseClient, orderId: string): Promise<number> {
-  const { data } = await supabase
+  const { data, error: selectError } = await supabase
     .from("guests")
     .select("id")
     .eq("order_number", orderId)
     .neq("status", "cancelled");
+  if (selectError) {
+    console.error("[ezgo-guest-sync] applyCancellation select failed:", selectError.message);
+    // Must not report "0 guests to cancel" when the read itself failed —
+    // the caller would then mark the ingest row parsed/resolved on a
+    // cancellation that never actually happened.
+    throw new Error(selectError.message);
+  }
   if (!data?.length) return 0;
   const { error } = await supabase
     .from("guests")
     .update({ status: "cancelled" })
     .in("id", data.map((g) => g.id));
   if (error) {
-    console.warn("[ezgo-guest-sync] applyCancellation update failed:", error.message);
-    return 0;
+    console.error("[ezgo-guest-sync] applyCancellation update failed:", error.message);
+    // Same reasoning — a failed write must not be reported as success.
+    throw new Error(error.message);
   }
   return data.length;
 }
@@ -181,15 +204,23 @@ async function applyApiOnlyEnrichment(
   guestId: number,
   { mealPlan, email, clientId }: { mealPlan?: string; email?: string | null; clientId?: number | null },
 ): Promise<void> {
+  // Best-effort fill-empty patches on top of an already-created/merged guest
+  // (core identity/dates/room already written by the caller) — logged, not
+  // thrown, so one failed supplementary field doesn't flip a successful
+  // create/enrich into {kind:"error"} and re-run the whole (idempotent, but
+  // unnecessary) merge just to retry an optional field.
   if (mealPlan) {
-    await supabase.from("guests").update({ meal_plan: mealPlan }).eq("id", guestId)
+    const { error } = await supabase.from("guests").update({ meal_plan: mealPlan }).eq("id", guestId)
       .or("meal_plan.is.null,meal_plan.eq.none");
+    if (error) console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment meal_plan failed for guest ${guestId}:`, error.message);
   }
   if (email) {
-    await supabase.from("guests").update({ email }).eq("id", guestId).is("email", null);
+    const { error } = await supabase.from("guests").update({ email }).eq("id", guestId).is("email", null);
+    if (error) console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment email failed for guest ${guestId}:`, error.message);
   }
   if (clientId) {
-    await supabase.from("guests").update({ ezgo_client_id: clientId }).eq("id", guestId).is("ezgo_client_id", null);
+    const { error } = await supabase.from("guests").update({ ezgo_client_id: clientId }).eq("id", guestId).is("ezgo_client_id", null);
+    if (error) console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment ezgo_client_id failed for guest ${guestId}:`, error.message);
   }
 }
 
@@ -395,242 +426,340 @@ serve(async (req) => {
     unresolved_duplicate_guest: 0, unresolved_invalid_dates: 0, unresolved_other: 0,
     resolved_via_remark: 0, resolved_via_order_client: 0,
     skipped_cancelled: 0, skipped_no_client_data: 0, ignored_out_of_scope: 0,
-    ignored_no_room_order_rows: 0,
+    parked_room_less: 0, parked_unresolved: 0,
     cancellations_applied: 0, delete_events_no_matching_guest: 0,
   };
 
-  // 1) Race-safe claim: select candidate staged rows, then atomically flip
-  // ONLY the ones still 'staged' at update time to 'processing'. A second
-  // overlapping invocation (retry after timeout, accidental double-trigger)
-  // gets zero rows back for anything this run already claimed — closes the
-  // gap flagged in security review where migration 295 added 'processing'
-  // but nothing actually used it as a claim state.
-  //
-  // Oldest-first (2c fix, 2026-08-16): without an ORDER BY, an unbounded
-  // sequential scan under constant insert/update churn gives no guarantee
-  // old rows ever get reclaimed ahead of fresh ones — the exact starvation
-  // that let the day-pass/spa-only backlog (see extractOrderRoomsCount doc)
-  // sit unprocessed for 3 days despite the cron running every minute the
-  // whole time.
-  const { data: candidateRows } = await supabase
-    .from("ezgo_api_ingest")
-    .select("id")
-    .eq("status", "staged")
-    .order("created_at", { ascending: true })
-    .limit(BATCH_LIMIT);
-  const candidateIds = (candidateRows ?? []).map((r) => r.id);
-
-  let claimedRows: { id: string; raw_payload: Record<string, unknown>; created_at: string }[] = [];
-  if (candidateIds.length) {
-    const { data } = await supabase
-      .from("ezgo_api_ingest")
-      .update({ status: "processing" })
-      .in("id", candidateIds)
-      .eq("status", "staged")
-      .select("id, raw_payload, created_at");
-    claimedRows = (data ?? []) as { id: string; raw_payload: Record<string, unknown>; created_at: string }[];
-  }
-
-  // Any claimed row not explicitly resolved to parsed/ignored/failed below
-  // gets released back to 'staged' at the end (see releaseIds), so a bug
-  // that forgets to touch a row can't strand it in 'processing' forever.
-  const releaseIds = new Set(claimedRows.map((r) => r.id));
+  // releaseIds/release are declared outside the try so the `finally` below
+  // can always reach them, even if something throws mid-run — a row claimed
+  // into 'processing' must never get stranded there just because a later
+  // step failed. This generalizes what used to be a single end-of-function
+  // release call into a safety net that fires on every exit path (normal
+  // completion, early continue, or an uncaught error from any query below).
+  const releaseIds = new Set<string>();
   const release = (ids: Iterable<string>) => { for (const id of ids) releaseIds.delete(id); };
 
-  // 2) Immediately park permanently out-of-scope rows so future runs don't
-  // keep re-evaluating them. Type=Delete is NOT parked here — it carries a
-  // usable OrderId and needs to actually cancel a matching guest, not just
-  // be discarded (see applyCancellation / Stage 1 of the sync-management plan).
-  const outOfScopeIds: string[] = [];
-  const deleteRows: { id: string; raw_payload: Record<string, unknown>; created_at: string }[] = [];
-  const inScopeRows: { id: string; raw_payload: Record<string, unknown>; created_at: string }[] = [];
-  for (const row of claimedRows) {
-    const rp = row.raw_payload as Record<string, unknown>;
-    const entity = rp.Entity as string | undefined;
-    const type = rp.Type as string | null | undefined;
-    if (type === "Delete") {
-      deleteRows.push(row);
-    } else if (entity === "Activities" || entity === "MealTimings" || entity === "Adds") {
-      outOfScopeIds.push(row.id);
-    } else if (entity === "Orders" || entity === "Reservations" || (!entity && (type === "Insert" || type === "Update"))) {
-      inScopeRows.push(row);
-    } else {
-      outOfScopeIds.push(row.id); // unrecognized shape — also park, fail-visibly
+  try {
+    // 1) Race-safe claim: select candidate staged rows, then atomically flip
+    // ONLY the ones still 'staged' at update time to 'processing'. A second
+    // overlapping invocation (retry after timeout, accidental double-trigger)
+    // gets zero rows back for anything this run already claimed — closes the
+    // gap flagged in security review where migration 295 added 'processing'
+    // but nothing actually used it as a claim state.
+    //
+    // Oldest-first (2c fix, 2026-08-16): without an ORDER BY, an unbounded
+    // sequential scan under constant insert/update churn gives no guarantee
+    // old rows ever get reclaimed ahead of fresh ones — the exact starvation
+    // that let the day-pass/spa-only backlog (see extractOrderRoomsCount doc)
+    // sit unprocessed for 3 days despite the cron running every minute the
+    // whole time.
+    const { data: candidateRows, error: candidateError } = await supabase
+      .from("ezgo_api_ingest")
+      .select("id")
+      .eq("status", "staged")
+      .order("created_at", { ascending: true })
+      .limit(BATCH_LIMIT);
+    if (candidateError) {
+      console.error("[ezgo-guest-sync] candidate staged-row query failed:", candidateError.message);
     }
-  }
-  if (outOfScopeIds.length) {
-    await supabase.from("ezgo_api_ingest").update({ status: "ignored", notes: "out_of_scope" }).in("id", outOfScopeIds);
-    summary.ignored_out_of_scope = outOfScopeIds.length;
-    release(outOfScopeIds);
-  }
+    const candidateIds = (candidateRows ?? []).map((r) => r.id);
 
-  // 2b) Delete events: cancel any already-synced guest for this order, then
-  // park the ingest row either way — nothing to retry once an order is gone.
-  for (const row of deleteRows) {
-    const orderId = String(row.raw_payload.OrderId ?? "").trim();
-    if (!orderId) {
-      await supabase.from("ezgo_api_ingest").update({ status: "ignored", notes: "delete_no_order_id" }).eq("id", row.id);
-      release([row.id]);
-      continue;
-    }
-    const cancelledCount = await applyCancellation(supabase, orderId);
-    summary.cancellations_applied += cancelledCount;
-    if (!cancelledCount) summary.delete_events_no_matching_guest++;
-    await supabase.from("ezgo_api_ingest").update({
-      status: "parsed",
-      notes: cancelledCount ? `cancellation_applied_${cancelledCount}` : "delete_no_matching_guest",
-    }).eq("id", row.id);
-    release([row.id]);
-  }
-
-  // created_at now comes straight off the claim step's own UPDATE...RETURNING
-  // (2c fix, 2026-08-16) -- this used to be a second SELECT with .in() over
-  // up to BATCH_LIMIT=500 UUIDs, whose *error* was silently discarded
-  // (`const { data } = await ...`, no `error` destructured). A GET-style
-  // filter that large is exactly the kind of request that can fail against
-  // a gateway URL-length limit; if it ever did, createdAtById silently came
-  // back empty and every id fell through to the `?? ""` / `?? now` default,
-  // making every order look brand-new regardless of its real age -- which
-  // is exactly why the grace-period check below could never fire. Piggy-
-  // backing on the claim mutation (already a single non-GET round trip)
-  // removes the fragile query entirely instead of hardening it.
-  const createdAtById = new Map(claimedRows.map((r) => [r.id, r.created_at]));
-  const inScopeFull = inScopeRows;
-
-  const orderClientByOrder = new Map<string, OrderClientInfo>();
-  const reservationsByOrder = new Map<string, ReservationInfo[]>();
-  const rowIdsByOrder = new Map<string, Set<string>>();
-
-  for (const row of inScopeFull) {
-    const oc = extractOrderClient(row as { id: string; created_at: string; raw_payload: Record<string, unknown> });
-    if (oc) {
-      const existing = orderClientByOrder.get(oc.orderId);
-      if (!existing || existing.createdAt < oc.createdAt) orderClientByOrder.set(oc.orderId, oc);
-      rowIdsByOrder.set(oc.orderId, (rowIdsByOrder.get(oc.orderId) ?? new Set()).add(row.id));
-      continue;
-    }
-    const res = extractReservation(row as { id: string; raw_payload: Record<string, unknown> });
-    if (res) {
-      const list = reservationsByOrder.get(res.orderId) ?? [];
-      list.push(res);
-      reservationsByOrder.set(res.orderId, list);
-      rowIdsByOrder.set(res.orderId, (rowIdsByOrder.get(res.orderId) ?? new Set()).add(row.id));
-    }
-  }
-
-  // 2c) Orders/Client snapshots with no Reservations line in this batch --
-  // could be a genuine race (Reservations for this order just hasn't
-  // arrived yet, will pair next run) or a day-pass/spa-only order that will
-  // NEVER get a Reservations event (EZGO only sends one for a physical
-  // room). Confirmed live 2026-08-16: 1041 of 1144 stuck OrderIds had never
-  // had a Reservations row anywhere, ever -- they were cycling
-  // staged->processing->staged every run since 2026-08-13, the day the
-  // webhook went live, three days before this fix. Give every order a
-  // GRACE_MS window to pair normally (covers the race); past that, only
-  // classify it out-of-scope when EVERY claimed row for that order
-  // positively confirms Order.Rooms: [] (never on an unparseable payload --
-  // Zero Data Loss). Day-pass guest creation via the live API isn't in this
-  // round's scope anyway (see module doc) -- this only stops the infinite
-  // retry loop and the unbounded ezgo_api_ingest growth it causes.
-  const GRACE_MS = 30 * 60 * 1000;
-  const now = Date.now();
-  for (const orderId of orderClientByOrder.keys()) {
-    if (reservationsByOrder.has(orderId)) continue;
-    const rowIds = [...(rowIdsByOrder.get(orderId) ?? [])];
-    if (!rowIds.length) continue;
-    const oldestCreatedAt = Math.min(...rowIds.map((id) => new Date(createdAtById.get(id) ?? now).getTime()));
-    if (now - oldestCreatedAt < GRACE_MS) continue; // still within the race window -- keep retrying
-
-    const roomsCounts = rowIds.map((id) => {
-      const row = inScopeFull.find((r) => r.id === id);
-      return row ? extractOrderRoomsCount(row.raw_payload) : null;
-    });
-    const allConfirmedRoomless = roomsCounts.every((c) => c === 0);
-    if (!allConfirmedRoomless) continue; // has rooms, or unparseable -- never guess, keep retrying
-
-    await supabase.from("ezgo_api_ingest").update({
-      status: "ignored",
-      notes: "order_no_room_grace_expired",
-    }).in("id", rowIds);
-    summary.ignored_no_room_order_rows += rowIds.length;
-    release(rowIds);
-  }
-
-  const roomMapRows = await supabase.from("ezgo_suite_room_map").select("ezgo_room_id, suite_name");
-  const roomMap = new Map<number, string>((roomMapRows.data ?? []).map((r) => [r.ezgo_room_id, r.suite_name]));
-
-  for (const [orderId, reservations] of reservationsByOrder) {
-    const rowIds = [...(rowIdsByOrder.get(orderId) ?? [])];
-
-    const oc = orderClientByOrder.get(orderId);
-    if (!oc) {
-      summary.skipped_no_client_data++; // no Orders/Client snapshot for this order yet — retry later
-      continue;
-    }
-    if (oc.status === 0) {
-      summary.skipped_cancelled++;
-      const cancelledCount = await applyCancellation(supabase, orderId);
-      summary.cancellations_applied += cancelledCount;
-      await supabase.from("ezgo_api_ingest").update({
-        status: "parsed",
-        notes: cancelledCount ? `order_cancelled_applied_${cancelledCount}` : "order_cancelled_no_matching_guest",
-      }).in("id", rowIds);
-      release(rowIds);
-      continue;
+    let claimedRows: { id: string; raw_payload: Record<string, unknown>; created_at: string }[] = [];
+    if (candidateIds.length) {
+      const { data, error: claimError } = await supabase
+        .from("ezgo_api_ingest")
+        .update({ status: "processing" })
+        .in("id", candidateIds)
+        .eq("status", "staged")
+        .select("id, raw_payload, created_at");
+      if (claimError) {
+        console.error("[ezgo-guest-sync] claim update failed -- this run will do nothing:", claimError.message);
+      }
+      claimedRows = (data ?? []) as { id: string; raw_payload: Record<string, unknown>; created_at: string }[];
     }
 
-    const byLine = new Map<string, ReservationInfo>();
-    for (const r of reservations) {
-      if (r.status === 0 || r.lineStatus === 0) continue;
-      byLine.set(r.lineId ?? `roomid:${r.roomId}`, r);
-    }
-    const lines = [...byLine.values()];
-    const totalLinesInOrder = lines.length;
-    if (!totalLinesInOrder) continue;
+    // Any claimed row not explicitly resolved to parsed/ignored below gets
+    // released back to 'staged' in the `finally` block, so a bug (or an
+    // uncaught error anywhere below) that forgets to touch a row can't
+    // strand it in 'processing' forever.
+    for (const row of claimedRows) releaseIds.add(row.id);
 
-    let allLinesDone = true;
-    for (const line of lines) {
-      const outcome = await processRoomLine(supabase, orderId, oc, line, totalLinesInOrder, roomMap);
-      switch (outcome.kind) {
-        case "created":
-          summary.created++;
-          if (outcome.identitySource === "remark") summary.resolved_via_remark++; else summary.resolved_via_order_client++;
-          break;
-        case "enriched":
-          summary.enriched++;
-          if (outcome.identitySource === "remark") summary.resolved_via_remark++; else summary.resolved_via_order_client++;
-          break;
-        case "unresolved":
-          allLinesDone = false;
-          if (outcome.reason === "no_usable_phone") summary.unresolved_no_usable_phone++;
-          else if (outcome.reason === "room_not_mapped") summary.unresolved_room_not_mapped++;
-          else if (outcome.reason === "no_checkin_date") summary.unresolved_no_checkin++;
-          else if (outcome.reason === "duplicate_guest_same_phone_date") summary.unresolved_duplicate_guest++;
-          else if (outcome.reason === "invalid_dates") summary.unresolved_invalid_dates++;
-          else summary.unresolved_other++;
-          break;
-        case "error":
-          allLinesDone = false;
-          summary.errors++;
-          break;
+    // 2) Immediately park permanently out-of-scope rows so future runs don't
+    // keep re-evaluating them. Type=Delete is NOT parked here — it carries a
+    // usable OrderId and needs to actually cancel a matching guest, not just
+    // be discarded (see applyCancellation / Stage 1 of the sync-management plan).
+    const outOfScopeIds: string[] = [];
+    const deleteRows: { id: string; raw_payload: Record<string, unknown>; created_at: string }[] = [];
+    const inScopeRows: { id: string; raw_payload: Record<string, unknown>; created_at: string }[] = [];
+    for (const row of claimedRows) {
+      const rp = row.raw_payload as Record<string, unknown>;
+      const entity = rp.Entity as string | undefined;
+      const type = rp.Type as string | null | undefined;
+      if (type === "Delete") {
+        deleteRows.push(row);
+      } else if (entity === "Activities" || entity === "MealTimings" || entity === "Adds") {
+        outOfScopeIds.push(row.id);
+      } else if (entity === "Orders" || entity === "Reservations" || (!entity && (type === "Insert" || type === "Update"))) {
+        inScopeRows.push(row);
+      } else {
+        outOfScopeIds.push(row.id); // unrecognized shape — also park, fail-visibly
+      }
+    }
+    if (outOfScopeIds.length) {
+      const { error } = await supabase.from("ezgo_api_ingest").update({ status: "ignored", notes: "out_of_scope" }).in("id", outOfScopeIds);
+      if (error) {
+        // Do NOT release/count on a failed write — the rows are still
+        // 'processing' in the DB; leaving them in releaseIds means the
+        // finally block puts them back in 'staged' for a clean retry,
+        // instead of falsely reporting them as parked.
+        console.error("[ezgo-guest-sync] failed to park out-of-scope rows:", error.message);
+      } else {
+        summary.ignored_out_of_scope = outOfScopeIds.length;
+        release(outOfScopeIds);
       }
     }
 
-    if (allLinesDone) {
-      await supabase.from("ezgo_api_ingest").update({ status: "parsed", notes: "all_room_lines_resolved" }).in("id", rowIds);
-      release(rowIds);
-    } // else: stays claimed here, released back to 'staged' below — retried next run
+    // 2b) Delete events: cancel any already-synced guest for this order, then
+    // park the ingest row either way — nothing to retry once an order is gone.
+    for (const row of deleteRows) {
+      const orderId = String(row.raw_payload.OrderId ?? "").trim();
+      if (!orderId) {
+        const { error } = await supabase.from("ezgo_api_ingest").update({ status: "ignored", notes: "delete_no_order_id" }).eq("id", row.id);
+        if (error) {
+          console.error(`[ezgo-guest-sync] failed to park delete row ${row.id} (no OrderId):`, error.message);
+        } else {
+          release([row.id]);
+        }
+        continue;
+      }
+      const cancelledCount = await applyCancellation(supabase, orderId);
+      summary.cancellations_applied += cancelledCount;
+      if (!cancelledCount) summary.delete_events_no_matching_guest++;
+      const { error } = await supabase.from("ezgo_api_ingest").update({
+        status: "parsed",
+        notes: cancelledCount ? `cancellation_applied_${cancelledCount}` : "delete_no_matching_guest",
+      }).eq("id", row.id);
+      if (error) {
+        console.error(`[ezgo-guest-sync] failed to finalize delete row ${row.id}:`, error.message);
+      } else {
+        release([row.id]);
+      }
+    }
+
+    // created_at now comes straight off the claim step's own UPDATE...RETURNING
+    // (2c fix, 2026-08-16) -- this used to be a second SELECT with .in() over
+    // up to BATCH_LIMIT=500 UUIDs, whose *error* was silently discarded
+    // (`const { data } = await ...`, no `error` destructured). A GET-style
+    // filter that large is exactly the kind of request that can fail against
+    // a gateway URL-length limit; if it ever did, createdAtById silently came
+    // back empty and every id fell through to the `?? ""` / `?? now` default,
+    // making every order look brand-new regardless of its real age -- which
+    // is exactly why the grace-period check below could never fire. Piggy-
+    // backing on the claim mutation (already a single non-GET round trip)
+    // removes the fragile query entirely instead of hardening it.
+    const createdAtById = new Map(claimedRows.map((r) => [r.id, r.created_at]));
+    const inScopeFull = inScopeRows;
+
+    const orderClientByOrder = new Map<string, OrderClientInfo>();
+    const reservationsByOrder = new Map<string, ReservationInfo[]>();
+    const rowIdsByOrder = new Map<string, Set<string>>();
+
+    for (const row of inScopeFull) {
+      const oc = extractOrderClient(row as { id: string; created_at: string; raw_payload: Record<string, unknown> });
+      if (oc) {
+        const existing = orderClientByOrder.get(oc.orderId);
+        if (!existing || existing.createdAt < oc.createdAt) orderClientByOrder.set(oc.orderId, oc);
+        rowIdsByOrder.set(oc.orderId, (rowIdsByOrder.get(oc.orderId) ?? new Set()).add(row.id));
+        continue;
+      }
+      const res = extractReservation(row as { id: string; raw_payload: Record<string, unknown> });
+      if (res) {
+        const list = reservationsByOrder.get(res.orderId) ?? [];
+        list.push(res);
+        reservationsByOrder.set(res.orderId, list);
+        rowIdsByOrder.set(res.orderId, (rowIdsByOrder.get(res.orderId) ?? new Set()).add(row.id));
+      }
+    }
+
+    // 2c) Orders/Client snapshots with no Reservations line in this batch --
+    // could be a genuine race (Reservations for this order just hasn't
+    // arrived yet, will pair next run) or a day-pass/spa-only order that will
+    // NEVER get a Reservations event (EZGO only sends one for a physical
+    // room). Confirmed live 2026-08-16: 1041 of 1144 stuck OrderIds had never
+    // had a Reservations row anywhere, ever -- they were cycling
+    // staged->processing->staged every run since 2026-08-13, the day the
+    // webhook went live, three days before this fix. Give every order a
+    // GRACE_MS window to pair normally (covers the race); past that, only
+    // classify it out-of-scope when EVERY claimed row for that order
+    // positively confirms Order.Rooms: [] (never on an unparseable payload --
+    // Zero Data Loss). Day-pass guest creation via the live API isn't in this
+    // round's scope anyway (see module doc) -- this only stops the infinite
+    // retry loop and the unbounded ezgo_api_ingest growth it causes.
+    const GRACE_MS = 30 * 60 * 1000;
+    const now = Date.now();
+    for (const orderId of orderClientByOrder.keys()) {
+      if (reservationsByOrder.has(orderId)) continue;
+      const rowIds = [...(rowIdsByOrder.get(orderId) ?? [])];
+      if (!rowIds.length) continue;
+      const oldestCreatedAt = Math.min(...rowIds.map((id) => new Date(createdAtById.get(id) ?? now).getTime()));
+      if (now - oldestCreatedAt < GRACE_MS) continue; // still within the race window -- keep retrying
+
+      const roomsCounts = rowIds.map((id) => {
+        const row = inScopeFull.find((r) => r.id === id);
+        return row ? extractOrderRoomsCount(row.raw_payload) : null;
+      });
+      const allConfirmedRoomless = roomsCounts.every((c) => c === 0);
+      if (!allConfirmedRoomless) continue; // has rooms, or unparseable -- never guess, keep retrying
+
+      // status='failed' (Mike, 2026-08-16, required before Stage 3's UI):
+      // NOT 'ignored'. purge_stale_ezgo_api_ingest (migration 296) purges
+      // 'ignored' rows after 3 days -- a room-less order is a genuine
+      // day-pass/spa-only candidate a human can still act on ("צור פרופיל
+      // בילוי יומי" in the exceptions queue), so it must stay visible the
+      // same way the other four unresolved reasons do (classifyOrderResolution
+      // above), not silently vanish before anyone gets to it.
+      const { error } = await supabase.from("ezgo_api_ingest").update({
+        status: "failed",
+        notes: "order_no_room_grace_expired",
+      }).in("id", rowIds);
+      if (error) {
+        console.error(`[ezgo-guest-sync] failed to park room-less order ${orderId}:`, error.message);
+      } else {
+        summary.parked_room_less += rowIds.length;
+        release(rowIds);
+      }
+    }
+
+    // Trust gate (Mike, sync-management follow-up part 1): only
+    // csv_verified/staff_verified matched_via tiers are usable to resolve a
+    // room-line — an auto_bootstrap/manual row is an unconfirmed guess (see
+    // buildTrustedRoomMap's doc comment). Filtered at the query AND again in
+    // buildTrustedRoomMap itself (defense-in-depth against a future caller
+    // forgetting the .in() below).
+    const { data: roomMapRows, error: roomMapError } = await supabase
+      .from("ezgo_suite_room_map")
+      .select("ezgo_room_id, suite_name, matched_via")
+      .in("matched_via", TRUSTED_ROOM_MAP_MATCHED_VIA);
+    if (roomMapError) {
+      console.error("[ezgo-guest-sync] ezgo_suite_room_map query failed -- treating as no trusted mappings this run:", roomMapError.message);
+    }
+    const roomMap = buildTrustedRoomMap(roomMapRows ?? []);
+
+    for (const [orderId, reservations] of reservationsByOrder) {
+      const rowIds = [...(rowIdsByOrder.get(orderId) ?? [])];
+
+      const oc = orderClientByOrder.get(orderId);
+      if (!oc) {
+        summary.skipped_no_client_data++; // no Orders/Client snapshot for this order yet — retry later
+        continue;
+      }
+      if (oc.status === 0) {
+        summary.skipped_cancelled++;
+        const cancelledCount = await applyCancellation(supabase, orderId);
+        summary.cancellations_applied += cancelledCount;
+        const { error } = await supabase.from("ezgo_api_ingest").update({
+          status: "parsed",
+          notes: cancelledCount ? `order_cancelled_applied_${cancelledCount}` : "order_cancelled_no_matching_guest",
+        }).in("id", rowIds);
+        if (error) {
+          console.error(`[ezgo-guest-sync] failed to finalize cancelled order ${orderId}:`, error.message);
+        } else {
+          release(rowIds);
+        }
+        continue;
+      }
+
+      const byLine = new Map<string, ReservationInfo>();
+      for (const r of reservations) {
+        if (r.status === 0 || r.lineStatus === 0) continue;
+        byLine.set(r.lineId ?? `roomid:${r.roomId}`, r);
+      }
+      const lines = [...byLine.values()];
+      const totalLinesInOrder = lines.length;
+      if (!totalLinesInOrder) continue;
+
+      const lineResolutions: OrderLineResolution[] = [];
+      for (const line of lines) {
+        const outcome = await processRoomLine(supabase, orderId, oc, line, totalLinesInOrder, roomMap);
+        switch (outcome.kind) {
+          case "created":
+            summary.created++;
+            if (outcome.identitySource === "remark") summary.resolved_via_remark++; else summary.resolved_via_order_client++;
+            lineResolutions.push({ kind: "created" });
+            break;
+          case "enriched":
+            summary.enriched++;
+            if (outcome.identitySource === "remark") summary.resolved_via_remark++; else summary.resolved_via_order_client++;
+            lineResolutions.push({ kind: "enriched" });
+            break;
+          case "unresolved":
+            if (outcome.reason === "no_usable_phone") summary.unresolved_no_usable_phone++;
+            else if (outcome.reason === "room_not_mapped") summary.unresolved_room_not_mapped++;
+            else if (outcome.reason === "no_checkin_date") summary.unresolved_no_checkin++;
+            else if (outcome.reason === "duplicate_guest_same_phone_date") summary.unresolved_duplicate_guest++;
+            else if (outcome.reason === "invalid_dates") summary.unresolved_invalid_dates++;
+            else summary.unresolved_other++;
+            lineResolutions.push({ kind: "unresolved", reason: outcome.reason });
+            break;
+          case "error":
+            summary.errors++;
+            lineResolutions.push({ kind: "error" });
+            break;
+        }
+      }
+
+      // classifyOrderResolution (ezgoGuestSyncLogic.ts) decides parsed vs.
+      // terminal park vs. keep retrying -- see its doc comment. Parking uses
+      // status='failed' (not 'ignored'): 'failed' rows are excluded from
+      // purge_stale_ezgo_api_ingest (migration 296), so a parked order stays
+      // visible until a human fixes the underlying cause or a future retry
+      // action re-runs it, instead of quietly vanishing after 3 days.
+      const resolution = classifyOrderResolution(lineResolutions);
+      if (resolution.action === "parsed") {
+        const { error } = await supabase.from("ezgo_api_ingest").update({ status: "parsed", notes: "all_room_lines_resolved" }).in("id", rowIds);
+        if (error) {
+          console.error(`[ezgo-guest-sync] failed to finalize resolved order ${orderId}:`, error.message);
+        } else {
+          release(rowIds);
+        }
+      } else if (resolution.action === "park") {
+        const { error } = await supabase.from("ezgo_api_ingest").update({ status: "failed", notes: resolution.notes }).in("id", rowIds);
+        if (error) {
+          console.error(`[ezgo-guest-sync] failed to park unresolved order ${orderId} (${resolution.notes}):`, error.message);
+        } else {
+          summary.parked_unresolved += rowIds.length;
+          release(rowIds);
+        }
+      } // else action === "retry": stays claimed here, released back to 'staged' in `finally` — retried next run
+    }
+
+    const purged = await purgeStaleEzgoApiIngest(supabase);
+
+    console.info("[ezgo-guest-sync] run summary:", JSON.stringify({ ...summary, purged }));
+    return new Response(JSON.stringify({ success: true, summary: { ...summary, purged } }), { status: 200, headers: { "Content-Type": "application/json" } });
+  } catch (err) {
+    // Any uncaught error above (a query whose failure we chose to throw
+    // rather than paper over -- e.g. applyCancellation, findGuestByEzgoClientId)
+    // lands here instead of crashing the isolate silently. `finally` below
+    // still runs and releases whatever this run claimed back to 'staged'.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[ezgo-guest-sync] run aborted by uncaught error:", message);
+    return new Response(JSON.stringify({ success: false, error: message }), { status: 500, headers: { "Content-Type": "application/json" } });
+  } finally {
+    // Anything still in releaseIds was claimed into 'processing' but never
+    // explicitly resolved above — whether by normal fall-through (unresolved
+    // room-lines) or by the catch block firing partway through. Release it
+    // back to 'staged' so the next run retries it, instead of leaving it
+    // stranded mid-claim. Runs on every exit path.
+    if (releaseIds.size) {
+      const { error } = await supabase.from("ezgo_api_ingest").update({ status: "staged" }).in("id", [...releaseIds]);
+      if (error) {
+        console.error(
+          "[ezgo-guest-sync] CRITICAL: failed to release claimed rows back to staged -- rows may be stuck in processing:",
+          error.message,
+          [...releaseIds],
+        );
+      }
+    }
   }
-
-  // 3) Anything still claimed ('processing') at this point was never given a
-  // terminal status above — release it back to 'staged' so the next run
-  // retries it, instead of leaving it stranded mid-claim.
-  if (releaseIds.size) {
-    await supabase.from("ezgo_api_ingest").update({ status: "staged" }).in("id", [...releaseIds]);
-  }
-
-  const purged = await purgeStaleEzgoApiIngest(supabase);
-
-  console.info("[ezgo-guest-sync] run summary:", JSON.stringify({ ...summary, purged }));
-  return new Response(JSON.stringify({ success: true, summary: { ...summary, purged } }), { status: 200, headers: { "Content-Type": "application/json" } });
 });

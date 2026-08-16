@@ -6,6 +6,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY, PREMIUM_DAY_ROOMS, GENERIC_DAY_PASS_ROOM } from "../data/suiteRegistry";
+import { normalizeWhatsAppPhone } from "../utils/ezgoParser";
+import { createDaypassGuestProfile } from "../utils/daypassGuestCreate";
+import { israelTodayYmd } from "../utils/israelTime";
 
 // 26 physical suites + Premium Day 1/2 — the 28 units EZGO assigns a RoomId
 // to. GENERIC_DAY_PASS_ROOM stays selectable in the dropdown (a RoomId can
@@ -125,27 +128,125 @@ function ConfirmButton({ disabled, onClick, children }) {
 // last-event age tells you whether EZGO itself has gone quiet.
 const ENTITY_LABELS = { Orders: "הזמנה", Reservations: "חדר", Activities: "טיפול", MealTimings: "שעת ארוחה", Adds: "תוספת" };
 
-function SyncHealthCard() {
+// ── Exceptions queue — status='failed' rows written by ezgo-guest-sync's
+// classifyOrderResolution (terminal park, no longer cycling staged forever).
+// notes is a fixed slug per reason (see _shared/ezgoGuestSyncLogic.ts) —
+// this is just the display label for each one, plus a generic bucket for
+// anything unrecognized so nothing silently disappears from the count.
+const EXCEPTION_NOTES_BUCKETS = [
+  { match: "unresolved_no_usable_phone", key: "no_usable_phone", label: "ללא טלפון תקין" },
+  { match: "unresolved_room_not_mapped", key: "room_not_mapped", label: "ממתין למיפוי חדר" },
+  { match: "unresolved_duplicate_guest_same_phone_date", key: "duplicate_guest", label: "כפילות אורח" },
+  { match: "unresolved_invalid_dates", key: "invalid_dates", label: "תאריכים שגויים" },
+  { match: "order_no_room_grace_expired", key: "room_less", label: "ללא חדר (בילוי יומי אפשרי)" },
+];
+
+function classifyEzgoExceptionNotes(notes) {
+  const found = EXCEPTION_NOTES_BUCKETS.find((b) => b.match === notes);
+  if (found) return found;
+  if (typeof notes === "string" && notes.startsWith("unresolved_multiple:")) {
+    return { key: "multiple", label: "כמה סיבות יחד" };
+  }
+  return { key: "other", label: notes || "לא מסווג" };
+}
+
+/** OrderId + Client.FullName/Tel1 for display only — same JSON shapes +
+ * fallback order extractOrderClient (ezgoGuestSyncLogic.ts:97, `root.OrderId
+ * ?? order.OrderId`) reads, re-read here in JS since the frontend can't
+ * import the Deno module. Not a new group detector: just the Order/Client
+ * block, no remark/identity resolution (room-less orders have no room-line
+ * remark to resolve against anyway). */
+function extractOrderInfoForDisplay(rawPayload) {
+  const rp = rawPayload || {};
+  const entity = rp.Entity;
+  const type = rp.Type;
+  let order = null;
+  let client = null;
+  if (entity === "Orders") {
+    try {
+      const value = typeof rp.Value === "string" ? JSON.parse(rp.Value) : null;
+      order = value?.Order || null;
+      client = value?.Client || null;
+    } catch {
+      order = null;
+      client = null;
+    }
+  } else if (!entity && (type === "Insert" || type === "Update")) {
+    order = rp.Order || null;
+    client = rp.Client || null;
+  }
+  const orderIdRaw = rp.OrderId ?? order?.OrderId ?? null;
+  return {
+    orderId: orderIdRaw != null ? String(orderIdRaw).trim() : null,
+    fullName: client?.FullName ? String(client.FullName).trim() : null,
+    tel1: client?.Tel1 ? String(client.Tel1).trim() : null,
+  };
+}
+
+/** Groups failed ingest rows by OrderId — classifyOrderResolution writes the
+ * SAME status+notes to every ingest row of one order in a single UPDATE, so
+ * one order is one actionable exception, not N. Falls back to the ingest
+ * row's own id only when OrderId truly can't be read (never observed live,
+ * but keeps a row visible instead of merging it into an unrelated group). */
+function groupFailedRowsByOrder(rows) {
+  const byOrder = new Map();
+  for (const row of rows) {
+    const info = extractOrderInfoForDisplay(row.raw_payload);
+    const orderId = info.orderId || String(row.id);
+    let group = byOrder.get(orderId);
+    if (!group) {
+      group = {
+        orderId,
+        notes: row.notes,
+        category: classifyEzgoExceptionNotes(row.notes),
+        ingestIds: [],
+        oldestCreatedAt: row.created_at,
+        fullName: null,
+        tel1: null,
+      };
+      byOrder.set(orderId, group);
+    }
+    group.ingestIds.push(row.id);
+    if (row.created_at < group.oldestCreatedAt) group.oldestCreatedAt = row.created_at;
+    if (!group.fullName && !group.tel1 && (info.fullName || info.tel1)) {
+      group.fullName = info.fullName;
+      group.tel1 = info.tel1;
+    }
+  }
+  return [...byOrder.values()].sort((a, b) => (a.oldestCreatedAt < b.oldestCreatedAt ? -1 : 1));
+}
+
+const FAILED_ROWS_FETCH_LIMIT = 500;
+
+function SyncHealthCard({ showToast }) {
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const [staged, processing, failed, parsed24h, lastRow] = await Promise.all([
+    const [staged, processing, failed, resolved, parsed24h, lastRow, failedRows] = await Promise.all([
       supabase.from("ezgo_api_ingest").select("id", { count: "exact", head: true }).eq("status", "staged"),
       supabase.from("ezgo_api_ingest").select("id", { count: "exact", head: true }).eq("status", "processing"),
       supabase.from("ezgo_api_ingest").select("id", { count: "exact", head: true }).eq("status", "failed"),
+      supabase.from("ezgo_api_ingest").select("id", { count: "exact", head: true }).eq("status", "parsed").eq("notes", "all_room_lines_resolved"),
       supabase.from("ezgo_api_ingest").select("id", { count: "exact", head: true }).eq("status", "parsed").gte("created_at", since24h),
       supabase.from("ezgo_api_ingest").select("created_at, raw_payload").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("ezgo_api_ingest").select("id, raw_payload, notes, created_at").eq("status", "failed").order("created_at", { ascending: true }).limit(FAILED_ROWS_FETCH_LIMIT),
     ]);
+    if (failedRows.error) console.error("[EzgoApiCodeMappingPanel] failed-rows query:", failedRows.error.message);
+    if (resolved.error) console.error("[EzgoApiCodeMappingPanel] resolved-count query:", resolved.error.message);
+    const groups = groupFailedRowsByOrder(failedRows.data ?? []);
     setHealth({
       staged: staged.count ?? 0,
       processing: processing.count ?? 0,
       failed: failed.count ?? 0,
+      resolved: resolved.count ?? 0,
       parsed24h: parsed24h.count ?? 0,
       lastEventAt: lastRow.data?.created_at ?? null,
       lastEntity: lastRow.data?.raw_payload?.Entity ?? null,
+      exceptionGroups: groups,
+      failedRowsTruncated: (failedRows.data ?? []).length >= FAILED_ROWS_FETCH_LIMIT,
     });
     setLoading(false);
   }, []);
@@ -157,12 +258,19 @@ function SyncHealthCard() {
   const backlog = health.staged + health.processing;
   let status = { text: "✓ הכל מסונכרן — התור ריק.", color: "#86efac" };
   if (health.failed > 0) {
-    status = { text: `⚠ ${health.failed} רשומות נכשלו בעיבוד — דורש בדיקה.`, color: "#f87171" };
+    status = { text: `⚠ ${health.failed} רשומות בחריגות — ראה תור למטה.`, color: "#f87171" };
   } else if (backlog > 50) {
     status = { text: `⏳ ${backlog} אירועים ממתינים לעיבוד — הקרון מנקז כל דקה, אמור להתאזן לבד תוך דקות.`, color: "#fbbf24" };
   } else if (backlog > 0) {
     status = { text: `${backlog} אירועים בתור — תקין (מתעדכן כל דקה).`, color: "rgba(232,201,138,0.7)" };
   }
+
+  const byKey = new Map(health.exceptionGroups.map((g) => [g.category.key, 0]));
+  for (const g of health.exceptionGroups) byKey.set(g.category.key, (byKey.get(g.category.key) ?? 0) + 1);
+  const breakdownParts = EXCEPTION_NOTES_BUCKETS
+    .map((b) => ({ label: b.label, count: byKey.get(b.key) ?? 0 }))
+    .concat(byKey.has("multiple") ? [{ label: "כמה סיבות יחד", count: byKey.get("multiple") }] : [])
+    .concat(byKey.has("other") ? [{ label: "לא מסווג", count: byKey.get("other") }] : []);
 
   return (
     <div style={{ ...cardBoxStyle, marginBottom: 16 }}>
@@ -175,6 +283,211 @@ function SyncHealthCard() {
         אירוע אחרון מ-EZGO: {fmtRelative(health.lastEventAt)}{health.lastEntity ? ` (${ENTITY_LABELS[health.lastEntity] ?? health.lastEntity})` : ""}
         {" · "}עובדו ב-24 שעות אחרונות: {health.parsed24h}
       </div>
+      <div style={{ fontSize: 11, color: "rgba(232,201,138,0.55)", marginTop: 6, lineHeight: 1.7 }}>
+        נוצרו / עודכנו: {health.resolved}
+        {health.failed > 0 && (
+          <>
+            {" · "}
+            {breakdownParts.filter((p) => p.count > 0).map((p) => `${p.label}: ${p.count}`).join(" · ")}
+          </>
+        )}
+      </div>
+      {health.failedRowsTruncated && (
+        <div style={{ fontSize: 11, color: "#fbbf24", marginTop: 4 }}>
+          ⚠ מוצגות {FAILED_ROWS_FETCH_LIMIT} החריגות הראשונות בלבד — ייתכן שיש עוד.
+        </div>
+      )}
+      <SyncExceptionsQueue groups={health.exceptionGroups} onChanged={load} showToast={showToast} />
+    </div>
+  );
+}
+
+// ── Exceptions queue actions — retry / ignore apply to any category; create
+// day-pass profile is enabled only for room_less (Disable-Don't-Hide: the
+// button stays visible on every row, greyed with a title on the rest).
+
+function ExceptionRow({ group, onChanged, showToast }) {
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState(group.fullName || "");
+  const [phone, setPhone] = useState(group.tel1 || "");
+  const [arrivalDate, setArrivalDate] = useState(israelTodayYmd);
+
+  const isRoomLess = group.category.key === "room_less";
+
+  async function handleRetry() {
+    // .eq("status","failed") + .select() — optimistic concurrency: if the
+    // cron (or another staff member) already moved this order off 'failed'
+    // between page load and this click, 0 rows match and we say so instead
+    // of claiming a retry that didn't actually happen.
+    const { data, error } = await supabase
+      .from("ezgo_api_ingest")
+      .update({ status: "staged", notes: null })
+      .in("id", group.ingestIds)
+      .eq("status", "failed")
+      .select("id");
+    if (error) {
+      showToast(`שגיאה בניסיון חוזר: ${error.message}`, "err");
+      return;
+    }
+    if (!data?.length) {
+      showToast(`הזמנה #${group.orderId} כבר טופלה בינתיים — מרענן`, "err");
+      onChanged();
+      return;
+    }
+    showToast(`✓ הזמנה #${group.orderId} תוזמנה לניסיון חוזר`);
+    onChanged();
+  }
+
+  async function handleIgnore() {
+    const { data, error } = await supabase
+      .from("ezgo_api_ingest")
+      .update({ status: "ignored", notes: `staff_ignored:${group.notes ?? "unknown"}` })
+      .in("id", group.ingestIds)
+      .eq("status", "failed")
+      .select("id");
+    if (error) {
+      showToast(`שגיאה בהתעלמות: ${error.message}`, "err");
+      return;
+    }
+    if (!data?.length) {
+      showToast(`הזמנה #${group.orderId} כבר טופלה בינתיים — מרענן`, "err");
+      onChanged();
+      return;
+    }
+    showToast(`הזמנה #${group.orderId} סומנה כהתעלמות`);
+    onChanged();
+  }
+
+  async function handleCreateDaypass() {
+    const normalized = normalizeWhatsAppPhone(phone);
+    if (!normalized) {
+      showToast("מספר טלפון לא תקין — יש להזין מספר ישראלי או בינלאומי עם קידומת.", "err");
+      return;
+    }
+    if (!arrivalDate) {
+      showToast("יש לבחור תאריך.", "err");
+      return;
+    }
+    try {
+      await createDaypassGuestProfile(supabase, { phone: normalized, name: name || null, arrivalDate }, arrivalDate);
+    } catch (e) {
+      const message = e?.message ?? String(e);
+      // A profile for this exact phone+date already exists -- most likely
+      // this same order was already created successfully on an earlier
+      // click whose ingest close-out below failed (network blip etc). The
+      // guest is NOT missing, only the bookkeeping is stale. Close it out
+      // here instead of leaving a dead end where every future "create"
+      // click just repeats this same error with no way out except ignore.
+      if (message.includes("כבר קיים פרופיל אורח")) {
+        const { data, error } = await supabase
+          .from("ezgo_api_ingest")
+          .update({ status: "parsed", notes: "daypass_created_manually" })
+          .in("id", group.ingestIds)
+          .eq("status", "failed")
+          .select("id");
+        if (error || !data?.length) {
+          showToast(`הפרופיל כבר קיים, אך סגירת השורה נכשלה — נסה «התעלם».`, "err");
+          return;
+        }
+        showToast(`הפרופיל כבר קיים עבור הזמנה #${group.orderId} — סומן כטופל.`);
+        setCreating(false);
+        onChanged();
+        return;
+      }
+      showToast(`שגיאה ביצירת פרופיל: ${message}`, "err");
+      return;
+    }
+    const { data, error } = await supabase
+      .from("ezgo_api_ingest")
+      .update({ status: "parsed", notes: "daypass_created_manually" })
+      .in("id", group.ingestIds)
+      .eq("status", "failed")
+      .select("id");
+    if (error || !data?.length) {
+      // The profile WAS created successfully above -- must not report clean
+      // success (Fail Visible) but also must not leave staff with no next
+      // step: retrying "create" now self-heals via the duplicate-guest
+      // branch above, or they can click "התעלם" directly.
+      console.error(
+        `[EzgoApiCodeMappingPanel] daypass created for order ${group.orderId} but ingest close-out failed:`,
+        error?.message ?? "0 rows matched (already moved off 'failed')",
+      );
+      showToast(`✓ הפרופיל נוצר, אך עדכון התור נכשל — לחץ «התעלם» כדי לסגור את החריגה.`, "err");
+      setCreating(false);
+      onChanged();
+      return;
+    }
+    showToast(`✓ פרופיל בילוי יומי נוצר עבור הזמנה #${group.orderId}`);
+    setCreating(false);
+    onChanged();
+  }
+
+  return (
+    <div style={{ ...rowStyle, flexDirection: "column", alignItems: "stretch" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontSize: 13, color: "rgba(232,201,138,0.85)" }}>
+          <strong>הזמנה #{group.orderId}</strong>
+          <span style={{ color: "rgba(232,201,138,0.5)" }}> · {group.category.label} · {group.ingestIds.length} רשומות</span>
+          {(group.fullName || group.tel1) && (
+            <div style={{ fontSize: 11, color: "rgba(232,201,138,0.6)", marginTop: 2 }}>
+              {group.fullName || "—"}{group.tel1 ? ` · ${group.tel1}` : ""}
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: "rgba(232,201,138,0.5)", marginTop: 2 }}>
+            תקוע מ-{fmtRelative(group.oldestCreatedAt)}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <ConfirmButton onClick={handleRetry}>🔄 נסה שוב</ConfirmButton>
+          <ConfirmButton onClick={handleIgnore}>🚫 התעלם</ConfirmButton>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={!isRoomLess}
+            onClick={() => setCreating((v) => !v)}
+            title={isRoomLess ? "" : "זמין רק להזמנות ללא חדר (בילוי יומי אפשרי)"}
+            style={{
+              fontSize: 11,
+              background: isRoomLess ? "var(--gold)" : "rgba(255,255,255,0.08)",
+              color: isRoomLess ? "#412402" : "rgba(255,255,255,0.4)",
+              fontWeight: 700,
+            }}
+          >
+            👤 צור פרופיל בילוי יומי
+          </button>
+        </div>
+      </div>
+
+      {creating && isRoomLess && (
+        <div style={{ ...cardBoxStyle, marginTop: 10, marginBottom: 0 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <input type="text" placeholder="שם" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
+            <input type="text" placeholder="טלפון" value={phone} onChange={(e) => setPhone(e.target.value)} style={inputStyle} />
+            <input type="date" value={arrivalDate} onChange={(e) => setArrivalDate(e.target.value)} style={inputStyle} />
+            <ConfirmButton disabled={!phone.trim() || !arrivalDate} onClick={handleCreateDaypass}>✓ אשר וצור</ConfirmButton>
+            <button type="button" className="btn btn-sm" onClick={() => setCreating(false)} style={{ fontSize: 11 }}>ביטול</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SyncExceptionsQueue({ groups, onChanged, showToast }) {
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(232,201,138,0.9)", marginBottom: 8 }}>
+        תור חריגות סנכרון {groups.length ? `(${groups.length})` : ""}
+      </div>
+      {!groups.length ? (
+        <div style={{ fontSize: 13, color: "rgba(232,201,138,0.5)" }}>✓ אין חריגות פתוחות כרגע.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {groups.map((g) => (
+            <ExceptionRow key={g.orderId} group={g} onChanged={onChanged} showToast={showToast} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -691,7 +1004,7 @@ export default function EzgoApiCodeMappingPanel({ showToast }) {
       <div style={{ fontSize: 12, color: "rgba(232,201,138,0.6)", marginBottom: 16 }}>
         שיוך RoomId חייב להיות מאומת. הסקה אוטומטית לא נחשבת נכונה עד שתלחץ «אשר נכון».
       </div>
-      <SyncHealthCard />
+      <SyncHealthCard showToast={notify} />
       <WorkerMappingSection showToast={notify} />
       <RoomMappingSection showToast={notify} />
     </div>

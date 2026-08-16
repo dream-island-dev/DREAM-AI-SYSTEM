@@ -216,3 +216,110 @@ export function pickFillEmpty<T>(
   if (existingVal === apiVal) return { value: undefined, conflict: false };
   return { value: undefined, conflict: true };
 }
+
+// ── Trusted room-mapping gate (Mike, sync-management follow-up part 1) ─────
+// ezgo_suite_room_map.matched_via tiers, lowest to highest confidence:
+// manual (staff panel pick, not yet confirmed) / auto_bootstrap (inferred
+// from our own DB, unconfirmed) / csv_verified (cross-checked against
+// EZGO's own arrivals CSV export) / staff_verified (staff confirmed
+// directly in EZGO's room catalog). Only the latter two are trusted enough
+// to drive guest creation/enrichment — mirrors
+// EzgoApiCodeMappingPanel.js's isTrustedMatch exactly (same two tiers). A
+// manual/auto_bootstrap row is still a GUESS until staff clicks "אשר נכון"
+// in the mapping panel; using it here would let a wrong inference silently
+// write a guest's room field before anyone confirmed it.
+export const TRUSTED_ROOM_MAP_MATCHED_VIA: readonly string[] = ["csv_verified", "staff_verified"];
+
+export interface RoomMapRow {
+  ezgo_room_id: number;
+  suite_name: string;
+  matched_via: string;
+}
+
+/**
+ * Builds the RoomId -> suite name lookup ezgo-guest-sync uses to resolve a
+ * room-line, keeping ONLY trusted tiers. Filtering again here (not just in
+ * the query that fetches these rows) is defense-in-depth against a future
+ * caller forgetting the query-side filter — same discipline as
+ * assertNoDuplicateGuest backstopping findGuestForDoc2SuiteCreate.
+ */
+export function buildTrustedRoomMap(rows: RoomMapRow[]): Map<number, string> {
+  const map = new Map<number, string>();
+  for (const row of rows) {
+    if (!TRUSTED_ROOM_MAP_MATCHED_VIA.includes(row.matched_via)) continue;
+    map.set(row.ezgo_room_id, row.suite_name);
+  }
+  return map;
+}
+
+// ── Terminal park for unresolved orders (Mike, sync-management follow-up
+// part 2) ────────────────────────────────────────────────────────────────
+// Without this, an order stuck on a bad phone / unmapped room / duplicate
+// guest / bad dates cycled staged->processing->staged forever, reclaimed
+// every single cron run with zero persisted trace of why — the exact same
+// bug class the grace-period fix (2026-08-16) closed for room-less orders,
+// just never extended to these four reasons. no_checkin_date is
+// deliberately NOT in this set: it's a real race (a Reservations line can
+// still arrive with a Checkin date next run), not a blocker a human needs
+// to act on, same for a genuine {kind:"error"} — both should keep retrying.
+
+const PARKABLE_UNRESOLVED_REASONS = new Set([
+  "no_usable_phone",
+  "room_not_mapped", // includes a mapping that exists but was filtered out by the trust gate above
+  "duplicate_guest_same_phone_date",
+  "invalid_dates",
+]);
+
+export type OrderLineResolutionKind = "created" | "enriched" | "unresolved" | "error";
+
+export interface OrderLineResolution {
+  kind: OrderLineResolutionKind;
+  /** Only meaningful when kind === "unresolved" (matches RoomLineOutcome's reason in ezgo-guest-sync/index.ts). */
+  reason?: string;
+}
+
+export type OrderResolutionAction =
+  | { action: "parsed" }
+  | { action: "park"; notes: string }
+  | { action: "retry" };
+
+/**
+ * Decides what to do with an order's ingest rows once every room-line has
+ * been resolved (or not) for this cron run:
+ *   - every line created/enriched -> "parsed" (existing behavior, unchanged)
+ *   - every remaining unresolved line's reason is in PARKABLE_UNRESOLVED_REASONS,
+ *     with NOT ONE line still in a genuinely-retriable state -> "park" with
+ *     a notes slug covering every distinct reason seen. status='failed' (not
+ *     'ignored') is the caller's job -- 'failed' rows are excluded from
+ *     purge_stale_ezgo_api_ingest (migration 296), so a parked order stays
+ *     visible for however long it takes staff to fix the underlying cause
+ *     (map the room, correct the phone in EZGO, etc.) or for Stage 3's
+ *     retry action to re-run it.
+ *   - anything else (a no_checkin_date race, a genuine processing error, or
+ *     a mix that includes one of those) -> "retry", unchanged from before:
+ *     stays claimed, released back to 'staged' by the caller, tried again
+ *     next run.
+ */
+export function classifyOrderResolution(lines: OrderLineResolution[]): OrderResolutionAction {
+  if (lines.every((l) => l.kind === "created" || l.kind === "enriched")) {
+    return { action: "parsed" };
+  }
+
+  const parkable = new Set<string>();
+  let hasRetriable = false;
+  for (const line of lines) {
+    if (line.kind === "unresolved" && line.reason && PARKABLE_UNRESOLVED_REASONS.has(line.reason)) {
+      parkable.add(line.reason);
+    } else if (line.kind === "unresolved" || line.kind === "error") {
+      hasRetriable = true;
+    }
+  }
+
+  if (parkable.size && !hasRetriable) {
+    const reasons = [...parkable].sort();
+    const notes = reasons.length === 1 ? `unresolved_${reasons[0]}` : `unresolved_multiple:${reasons.join(",")}`;
+    return { action: "park", notes };
+  }
+
+  return { action: "retry" };
+}
