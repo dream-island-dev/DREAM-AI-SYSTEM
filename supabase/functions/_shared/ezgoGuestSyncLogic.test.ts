@@ -71,7 +71,7 @@ Deno.test("extractOrderClient: Entity=Orders shape (Data Webhook)", () => {
       OrderId: 280735,
       Value: JSON.stringify({
         Order: { OrderId: 280735, Status: 1, Board: 11 },
-        Client: { FullName: "רוני אברהמי", Tel1: "0547762015", Email: "roni@example.com" },
+        Client: { FullName: "רוני אברהמי", Tel1: "0547762015", Email: "roni@example.com", ClientId: 157124 },
       }),
     },
   };
@@ -82,6 +82,23 @@ Deno.test("extractOrderClient: Entity=Orders shape (Data Webhook)", () => {
   assertEquals(result?.fullName, "רוני אברהמי");
   assertEquals(result?.tel1, "0547762015");
   assertEquals(result?.email, "roni@example.com");
+  assertEquals(result?.clientId, 157124);
+});
+
+Deno.test("extractOrderClient: ClientId=0 (EZGO's 'unset' sentinel, same pattern as RoomId=0) -> null, never a fake link", () => {
+  const row = {
+    id: "row-1b",
+    created_at: "2026-08-13T10:00:00Z",
+    raw_payload: {
+      Entity: "Orders",
+      OrderId: 280736,
+      Value: JSON.stringify({
+        Order: { OrderId: 280736, Status: 1, Board: 0 },
+        Client: { FullName: "בדיקה", Tel1: "0500000000", ClientId: 0 },
+      }),
+    },
+  };
+  assertEquals(extractOrderClient(row)?.clientId, null);
 });
 
 Deno.test("extractOrderClient: plain Type=Update full-snapshot shape (the other live webhook)", () => {

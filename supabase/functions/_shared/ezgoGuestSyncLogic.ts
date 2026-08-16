@@ -37,6 +37,11 @@ export interface OrderClientInfo {
   fullName: string | null;
   tel1: string | null;
   email: string | null;
+  /** Client.ClientId — the payer/coordinator this Order is registered under.
+   * NOT scoped to one order: EZGO splits a group booking into multiple
+   * OrderIds that all share this same ClientId (confirmed live, 2026-08-16 —
+   * see migration 298). 0/absent means EZGO didn't set it. */
+  clientId: number | null;
 }
 
 export interface ReservationInfo {
@@ -92,6 +97,9 @@ export function extractOrderClient(ingestRow: {
   const orderId = String(root.OrderId ?? order.OrderId ?? "").trim();
   if (!orderId) return null;
 
+  const clientIdRaw = client?.ClientId;
+  const clientId = typeof clientIdRaw === "number" && clientIdRaw > 0 ? clientIdRaw : null;
+
   return {
     orderId,
     ingestId: ingestRow.id,
@@ -101,6 +109,7 @@ export function extractOrderClient(ingestRow: {
     fullName: client?.FullName ? String(client.FullName).trim() : null,
     tel1: client?.Tel1 ? String(client.Tel1).trim() : null,
     email: client?.Email ? String(client.Email).trim() : null,
+    clientId,
   };
 }
 

@@ -75,12 +75,43 @@ import {
 } from "../_shared/ezgoGuestSyncLogic.ts";
 import { resolveDoc2ImportAutomationScope } from "../_shared/importAutomationScope.ts";
 import type { Doc2Record } from "../_shared/ezgoDoc2Parser.ts";
+import type { Doc2GuestRow } from "../_shared/ezgoDoc2MailLineWorkflow.ts";
 import {
   findGuestForDoc2SuiteCreate,
   shouldMergeDoc2RowOntoGuest,
   createDoc2SuiteArrival,
+  applyDoc2SuiteRoomAdd,
 } from "../_shared/ezgoDoc2SuiteRoomSync.ts";
 import { ensureMissingDepartureAlert } from "../_shared/guestDepartureGuard.ts";
+
+const GUEST_ROW_SELECT =
+  "id, name, phone, order_number, arrival_date, departure_date, room, room_type, meal_location, meal_time, automation_scope";
+
+/**
+ * ClientId-based cross-order merge (migration 298) — EZGO splits a group
+ * booking into a SEPARATE OrderId per room, linked only by the shared
+ * Order.Client.ClientId (confirmed live 2026-08-16: e.g. ClientId 205600
+ * spans 9 distinct OrderIds). findGuestForDoc2SuiteCreate/
+ * shouldMergeDoc2RowOntoGuest can never find these siblings — they treat a
+ * different order_number as a different booking, correct for Doc2 mail
+ * (which has no ClientId at all) but blind to this API-only link. Requires
+ * an EXACT single match on (ezgo_client_id, arrival_date); 0 or 2+ falls
+ * back to the order_number path below rather than guessing.
+ */
+async function findGuestByEzgoClientId(
+  supabase: SupabaseClient,
+  clientId: number,
+  arrivalDate: string,
+): Promise<Doc2GuestRow | null> {
+  const { data } = await supabase
+    .from("guests")
+    .select(GUEST_ROW_SELECT)
+    .eq("ezgo_client_id", clientId)
+    .eq("arrival_date", arrivalDate)
+    .neq("status", "cancelled")
+    .limit(2);
+  return data?.length === 1 ? (data[0] as Doc2GuestRow) : null;
+}
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -136,14 +167,18 @@ type RoomLineOutcome =
   | { kind: "unresolved"; reason: string }
   | { kind: "error"; message: string };
 
-/** Fill-empty-only patch for the two guests fields that aren't part of the
- * shared Doc2Record vocabulary (Order.Board has no Doc2 equivalent; Doc2's
- * own email enrichment lives on a different type). Applied after the reused
- * create/merge call, keyed by the guest id it returned either way. */
+/** Fill-empty-only patch for guests fields that aren't part of the shared
+ * Doc2Record vocabulary (Order.Board/ClientId have no Doc2 equivalent;
+ * Doc2's own email enrichment lives on a different type). Applied after the
+ * reused create/merge call, keyed by the guest id it returned either way.
+ * ezgo_client_id backfills a guest created before migration 298, or one
+ * that was first merged via the order_number path — so the NEXT sibling
+ * room for this client can find it via findGuestByEzgoClientId instead of
+ * order_number/phone matching again. */
 async function applyApiOnlyEnrichment(
   supabase: SupabaseClient,
   guestId: number,
-  { mealPlan, email }: { mealPlan?: string; email?: string | null },
+  { mealPlan, email, clientId }: { mealPlan?: string; email?: string | null; clientId?: number | null },
 ): Promise<void> {
   if (mealPlan) {
     await supabase.from("guests").update({ meal_plan: mealPlan }).eq("id", guestId)
@@ -151,6 +186,9 @@ async function applyApiOnlyEnrichment(
   }
   if (email) {
     await supabase.from("guests").update({ email }).eq("id", guestId).is("email", null);
+  }
+  if (clientId) {
+    await supabase.from("guests").update({ ezgo_client_id: clientId }).eq("id", guestId).is("ezgo_client_id", null);
   }
 }
 
@@ -237,8 +275,20 @@ async function processRoomLine(
   try {
     assertGuestSegmentConsistent({ room: suiteName, room_type: "suite" });
 
-    const existing = await findGuestForDoc2SuiteCreate(supabase, rec, line.checkin);
-    const willMerge = !!existing && shouldMergeDoc2RowOntoGuest(rec, existing);
+    // Try the ClientId link first (API-only signal, catches group-booking
+    // siblings under different OrderIds) — only for the coordinator's own
+    // identity, never a remark-swapped individual (a different person, not
+    // "this client's" room). Falls back to the existing order_number/phone
+    // path when there's no ClientId or no exact single match.
+    let existing = !identity.is_remark_group_occupant && oc.clientId
+      ? await findGuestByEzgoClientId(supabase, oc.clientId, line.checkin)
+      : null;
+    let willMerge = !!existing;
+
+    if (!existing) {
+      existing = await findGuestForDoc2SuiteCreate(supabase, rec, line.checkin);
+      willMerge = !!existing && shouldMergeDoc2RowOntoGuest(rec, existing);
+    }
 
     // No pre-write conflict alert here (dropped 2026-08-16 — see chat: an
     // earlier version compared this room-line's own fields against the
@@ -258,10 +308,21 @@ async function processRoomLine(
       await assertNoDuplicateGuest(supabase, phone, line.checkin);
     }
 
-    const result = await createDoc2SuiteArrival(supabase, rec, line.checkin);
+    // Once willMerge/existing is known, write directly via applyDoc2SuiteRoomAdd
+    // (guestId passed explicitly) rather than createDoc2SuiteArrival — that
+    // function does its OWN internal order_number-based rediscovery, which
+    // would miss a ClientId-matched existing guest entirely (different
+    // order_number by construction) and silently create a duplicate profile
+    // instead of merging. createDoc2SuiteArrival is only safe to call here
+    // when willMerge is false, since its internal check will independently
+    // agree there's no existing guest.
+    const result = willMerge && existing
+      ? await applyDoc2SuiteRoomAdd(supabase, { guestId: existing.id, rec, reportDateYmd: line.checkin })
+      : await createDoc2SuiteArrival(supabase, rec, line.checkin);
     await applyApiOnlyEnrichment(supabase, result.id, {
       mealPlan,
       email: !identity.is_remark_group_occupant ? oc.email : null,
+      clientId: !identity.is_remark_group_occupant ? oc.clientId : null,
     });
 
     if (willMerge && existing) {
