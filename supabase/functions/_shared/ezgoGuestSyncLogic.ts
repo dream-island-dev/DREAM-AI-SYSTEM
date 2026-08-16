@@ -6,9 +6,8 @@
 // testable logic in _shared and Edge Function entrypoints thin).
 
 import {
-  extractPhonesFromRemarkText,
-  extractNameFromRemarkText,
-  extractNameFromRemarkWithoutPhone,
+  resolveDoc2GuestIdentity,
+  type Doc2ClientIdentity,
 } from "./ezgoDoc2RemarkIdentity.ts";
 
 // ── Board (Order.Board) -> guests.meal_plan, restricted to the live CHECK
@@ -133,21 +132,36 @@ export function extractReservation(ingestRow: {
 }
 
 /**
- * A room's own remark, resolved to an occupant identity — reuses
- * ezgoDoc2RemarkIdentity.ts exactly (no new parser). Deliberately stricter
- * than the Doc2 pipeline's own fallback chain: that one's last resort
- * returns the COORDINATOR's name+phone when the remark has nothing usable.
- * Here we require a real phone extracted FROM the remark itself
- * (extractPhonesFromRemarkText) before accepting anything — no signal
- * means null, and the caller decides what null means.
+ * Per-room-line occupant identity for the EZGO live API path — a thin
+ * wrapper over resolveDoc2GuestIdentity, the SAME function the Doc2 mail/
+ * CSV pipeline uses (Mike, product rule shipped 2026-08-16, commit f85f2f8:
+ * reuse it, don't invent a second group detector).
+ *
+ * Doc2's "coordNameDuplicated" means the same coordinator name repeats
+ * across 2+ parsed report rows. Here that maps structurally onto "this
+ * OrderId has 2+ room-lines" — Order.Client is one value shared by every
+ * room-line under an order, so a multi-room order IS the shared-coordinator
+ * case. A single-room order never even attempts a remark swap (matches
+ * Doc2 exactly: a lone booking's remark is just notes/preferences, not a
+ * different occupant's contact info).
+ *
+ * resolveDoc2GuestIdentity itself only swaps identity when the remark has
+ * BOTH a name and a full Israeli mobile — a name-only remark ("דגנית ושיר
+ * מוריה 7787", hearts, birthday text) or a phone-only remark keeps the
+ * coordinator's identity, so the extra room merges onto one profile instead
+ * of splitting into a phantom "no name" guest.
  */
-export function resolveRemarkOccupant(remarkText: string): { name: string | null; phone: string } | null {
-  const remark = remarkText.trim();
-  if (!remark) return null;
-  const remarkPhones = extractPhonesFromRemarkText(remark);
-  if (!remarkPhones.length) return null;
-  const name = extractNameFromRemarkText(remark) ?? extractNameFromRemarkWithoutPhone(remark);
-  return { name, phone: remarkPhones[0] };
+export function resolveApiRoomOccupantIdentity(
+  orderClient: { fullName: string | null; tel1: string | null },
+  remarkText: string,
+  totalLinesInOrder: number,
+): Doc2ClientIdentity {
+  return resolveDoc2GuestIdentity(
+    orderClient.fullName,
+    orderClient.tel1,
+    remarkText,
+    totalLinesInOrder > 1,
+  );
 }
 
 /** Fill-empty-only: returns the patch value, or undefined to leave untouched,

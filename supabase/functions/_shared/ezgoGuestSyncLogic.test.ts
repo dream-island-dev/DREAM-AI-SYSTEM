@@ -5,7 +5,7 @@ import {
   extractOrderClient,
   extractReservation,
   pickFillEmpty,
-  resolveRemarkOccupant,
+  resolveApiRoomOccupantIdentity,
 } from "./ezgoGuestSyncLogic.ts";
 
 // ── ddmmyyyyToIso ──────────────────────────────────────────────────────────
@@ -151,20 +151,53 @@ Deno.test("extractReservation: RoomId=0 (not yet assigned) is still extracted �
   assertEquals(extractReservation(row)?.roomId, 0);
 });
 
-// ── resolveRemarkOccupant — the corrected group-vs-single logic's core ────
+// ── resolveApiRoomOccupantIdentity — group/room-merge rule (Mike, 2026-08-16,
+// live incident: EZGO arrivals 2026-08-17, 22 room-lines / 17 guests, 5
+// extra rooms with name-only remarks never landed in suite_rooms) ─────────
 
-Deno.test("resolveRemarkOccupant: real phone in remark -> resolved occupant", () => {
-  const result = resolveRemarkOccupant("יוסי כהן 0521234567");
-  assertEquals(result?.phone, "+972521234567");
+const coord = { fullName: "עידן זיתוני", tel1: "0523265035" };
+
+Deno.test("2-room order, remarks name-only (no phone) -> both rooms stay on coordinator identity (1 guest, 2 suite_rooms)", () => {
+  const room1 = resolveApiRoomOccupantIdentity(coord, "דגנית ושיר מוריה 7787", 2);
+  const room2 = resolveApiRoomOccupantIdentity(coord, "❤️ יום הולדת", 2);
+  for (const r of [room1, room2]) {
+    assertEquals(r.is_remark_group_occupant, false);
+    assertEquals(r.guest_name, coord.fullName);
+    assertEquals(r.phone, coord.tel1);
+  }
 });
 
-Deno.test("resolveRemarkOccupant: empty remark -> null (falls back to order-level logic upstream)", () => {
-  assertEquals(resolveRemarkOccupant(""), null);
-  assertEquals(resolveRemarkOccupant("   "), null);
+Deno.test("2-room order, each remark 'שם + 05x' -> two distinct occupants (2 guests, distinct phones)", () => {
+  const room1 = resolveApiRoomOccupantIdentity(coord, "יוסי כהן 0521234567", 2);
+  const room2 = resolveApiRoomOccupantIdentity(coord, "רותי לוי 0549876543", 2);
+  assertEquals(room1.is_remark_group_occupant, true);
+  assertEquals(room1.guest_name, "יוסי כהן");
+  assertEquals(room1.phone, "+972521234567");
+  assertEquals(room2.is_remark_group_occupant, true);
+  assertEquals(room2.guest_name, "רותי לוי");
+  assertEquals(room2.phone, "+972549876543");
+  assertEquals(room1.phone === room2.phone, false); // distinct phones -> distinct guests
 });
 
-Deno.test("resolveRemarkOccupant: remark text with no extractable phone -> null, never guesses", () => {
-  // Plain operational note, no phone number anywhere — must not be
-  // mistaken for an occupant identity.
-  assertEquals(resolveRemarkOccupant("שעות מתחם 21:00 - 16:00"), null);
+Deno.test("2-room order, remark is bare phone (no parseable name) -> do not swap, coordinator identity, rooms merged", () => {
+  const room1 = resolveApiRoomOccupantIdentity(coord, "0521234567", 2);
+  assertEquals(room1.is_remark_group_occupant, false);
+  assertEquals(room1.guest_name, coord.fullName);
+  assertEquals(room1.phone, coord.tel1);
+});
+
+Deno.test("single-room order (totalLinesInOrder=1) never swaps, even with a full name+phone remark", () => {
+  // Not a shared-coordinator booking — matches Doc2 exactly (coordNameDuplicated
+  // gates the swap, not remark content alone). Prevents inventing a second
+  // group detector keyed only on remark shape.
+  const solo = resolveApiRoomOccupantIdentity(coord, "יוסי כהן 0521234567", 1);
+  assertEquals(solo.is_remark_group_occupant, false);
+  assertEquals(solo.guest_name, coord.fullName);
+  assertEquals(solo.phone, coord.tel1);
+});
+
+Deno.test("empty remark -> coordinator identity (no signal to swap on)", () => {
+  const result = resolveApiRoomOccupantIdentity(coord, "", 2);
+  assertEquals(result.is_remark_group_occupant, false);
+  assertEquals(result.phone, coord.tel1);
 });

@@ -1,68 +1,52 @@
 /**
- * ezgo-guest-sync — EZGO live API sync. Partial, single-guest only.
+ * ezgo-guest-sync — EZGO live API sync. guests + suite_rooms only. Never
+ * touches spa_appointments or spa_therapists/ezgo_worker_id (a separate,
+ * already-completed effort).
  *
- * NOT YET DEPLOYED / NOT WIRED TO CRON — "בלי deploy בלי תעלה". This is not
- * a claim that the system is ready for full live sync: it resolves one
- * guest profile at a time (per room-line), nothing about spa, nothing
- * about restaurant, and group orders where no room has a resolvable
- * per-occupant remark yet are simply left unresolved (retried later), not
- * approximated.
+ * Per-room occupant resolution (rewritten 2026-08-16 — product rule shipped
+ * same day on Doc2, commit f85f2f8: one coordinator holding several suites
+ * is ONE guests row + N suite_rooms; WhatsApp/Live Queue count people, not
+ * rooms). Reuses ezgoDoc2RemarkIdentity.ts's resolveDoc2GuestIdentity and
+ * ezgoDoc2SuiteRoomSync.ts's merge/create pipeline verbatim — no second
+ * group detector:
  *
- * Scope:
- *   - guests + suite_rooms only. Never touches spa_appointments or
- *     spa_therapists/ezgo_worker_id (a separate, already-completed effort).
+ *   For EVERY room-line: resolveApiRoomOccupantIdentity (ezgoGuestSyncLogic.ts)
+ *   calls resolveDoc2GuestIdentity(Order.Client.FullName, .Tel1, room's own
+ *   Remark/OperationRemark, totalLinesInOrder > 1). A multi-room order IS the
+ *   Doc2 "shared coordinator" case (Order.Client is one value shared by every
+ *   room-line under it); a single-room order never attempts a remark swap,
+ *   same as a lone Doc2 report row. Swap only fires when the remark has BOTH
+ *   a name AND a full Israeli mobile — a name-only remark, a bare-phone
+ *   remark, or no remark at all all keep the coordinator's identity, and the
+ *   room gets MERGED onto that one profile (never left unresolved, never a
+ *   second guests row for the same phone+arrival_date — that's
+ *   findGuestForDoc2SuiteCreate + shouldMergeDoc2RowOntoGuest's job, reused
+ *   as-is via createDoc2SuiteArrival).
  *
- * Per-room occupant resolution (corrected 2026-08-13 — see chat: the
- * previous version used "2+ room-lines under one order" as its own signal
- * for "this is a group," which was the wrong test. tel1="111" is not a
- * group signal either — it's just a dummy value front-desk staff types in
- * when they don't have a real number yet, on single-room bookings too):
- *
- *   For EVERY room-line, regardless of how many rooms its order has:
- *     1. Try that room's OWN Remark / OperationRemark via
- *        ezgoDoc2RemarkIdentity.ts's extractPhonesFromRemarkText +
- *        extractNameFromRemarkText / extractNameFromRemarkWithoutPhone —
- *        no new parser. A real phone found INSIDE that room's remark makes
- *        this the room's occupant identity, full stop.
- *     2. Only if the room has no such remark signal AND this order has
- *        EXACTLY ONE room-line total (no ambiguity possible — Order.Client
- *        is structurally the only person on the order) does Order.Client
- *        (FullName/Tel1) get used as that room's identity.
- *     3. Any other case (no remark signal, order has 2+ room-lines) is left
- *        unresolved — Order.Client is never used as a fallback there, since
- *        it would be the same coordinator identity duplicated across every
- *        sibling room ("blob on the coordinator"). Retried next run.
- *
- *   This is the actual definition of "group" that matters here: not a room
- *   count, but whether Order.Client is safe to attribute to a specific
- *   room. It's unsafe exactly when 2+ rooms share it and none of them has
- *   its own remark identity to disambiguate.
- *
- *   Verified against live data (2026-08-13): 19 multi-room orders / 228
- *   room-lines currently in ezgo_api_ingest, zero of which have ANY remark
- *   text (Order- or Room-level) yet — these are far-future (2027) bookings
- *   where per-room assignment clearly hasn't happened on EZGO's side yet.
- *   So today this resolves 0 group profiles, which is correct, not a bug —
- *   the mechanism will fire once EZGO populates that data, without needing
- *   another code change.
+ *   Live incident this replaced: 2026-08-17 EZGO arrivals report, 22 room
+ *   lines / 17 guests XOS-side — 5 extra rooms under the same לקוח
+ *   (0523265035) with name-only remarks never landed in suite_rooms because
+ *   the old rule required a remark PHONE (any phone, no name check) to
+ *   attach a room, and unconditionally left a 2+-room order's non-remark
+ *   lines unresolved instead of falling back to the coordinator.
  *
  *   RoomId -> canonical suite name ONLY via ezgo_suite_room_map. RoomId=0
  *   and any RoomId absent from that table are never guessed (left staged).
  *
- *   Fill-empty-only enrichment (mirrors ezgoDoc2MailLineWorkflow.ts's
- *   pickEnrichValue) — a real disagreement against an existing non-empty
- *   field goes to guest_alerts (alert_type='ezgo_api_conflict'), never
- *   overwritten and never silently dropped.
+ *   guests.email / guests.meal_plan (Order.Board) aren't part of the shared
+ *   Doc2Record vocabulary (Doc2 has no API-style Board field), so those two
+ *   are applied as a small supplementary fill-empty-only patch after the
+ *   reused create/merge call — everything else (name, phone, dates,
+ *   automation_scope, suite_rooms, combined room label, bookings upsert,
+ *   late-import/housekeeping hooks) comes from ezgoDoc2SuiteRoomSync.ts
+ *   untouched.
  *
  *   Dates come directly from Reservations.Room.Checkin/Checkout (EZGO gives
- *   literal dates here, unlike the Doc2 mail pipeline's nights-count case) —
- *   addDepartureFromNights isn't the derivation path for that reason, but
- *   guestDepartureGuard.ts's fail-visible ensureMissingDepartureAlert IS
- *   reused for the invalid-date case (checkout<=checkin).
- *
- *   meal_plan: Order.Board -> guests.meal_plan via the existing CHECK
- *   constraint's enum only (none/half_board/full_board). BB(3) has no
- *   matching value and is deliberately left unset.
+ *   literal dates, unlike the Doc2 mail pipeline's nights-count case) — rec.
+ *   nights is left null so addDepartureFromNights defers to rec.departure_date
+ *   inside createDoc2SuiteArrival; an invalid pair (checkout<=checkin) makes
+ *   that function throw rather than fabricate a 0-night stay, caught below
+ *   as unresolved/invalid_dates (fail-visible, not silently dropped).
  *
  * Cancellations (added 2026-08-15, per the sync-management plan's Stage 1):
  * previously a cancelled order (Type=Delete, or Order.Status=0 on a regular
@@ -81,20 +65,22 @@ import {
   assertNoDuplicateGuest,
   normalizeWhatsAppPhone,
 } from "../_shared/guestSegmentGuard.ts";
-import { ensureMissingDepartureAlert } from "../_shared/guestDepartureGuard.ts";
 import {
   BOARD_TO_MEAL_PLAN,
   type OrderClientInfo,
   type ReservationInfo,
   extractOrderClient,
   extractReservation,
-  resolveRemarkOccupant,
-  pickFillEmpty,
+  resolveApiRoomOccupantIdentity,
 } from "../_shared/ezgoGuestSyncLogic.ts";
+import { resolveDoc2ImportAutomationScope } from "../_shared/importAutomationScope.ts";
+import type { Doc2Record } from "../_shared/ezgoDoc2Parser.ts";
 import {
-  resolveDoc2ImportAutomationScope,
-  mergeAutomationScope,
-} from "../_shared/importAutomationScope.ts";
+  findGuestForDoc2SuiteCreate,
+  shouldMergeDoc2RowOntoGuest,
+  createDoc2SuiteArrival,
+} from "../_shared/ezgoDoc2SuiteRoomSync.ts";
+import { ensureMissingDepartureAlert } from "../_shared/guestDepartureGuard.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -144,35 +130,35 @@ async function purgeStaleEzgoApiIngest(supabase: SupabaseClient): Promise<number
   return purged;
 }
 
-async function logConflict(
-  supabase: SupabaseClient,
-  guestId: number | null,
-  phone: string,
-  message: string,
-): Promise<void> {
-  const { error } = await supabase.from("guest_alerts").insert({
-    guest_id: guestId,
-    phone,
-    alert_type: "ezgo_api_conflict",
-    message,
-    resolved: false,
-  });
-  if (error) console.warn("[ezgo-guest-sync] guest_alerts insert failed:", error.message);
-}
-
 type RoomLineOutcome =
   | { kind: "created" }
-  | { kind: "enriched"; conflict: boolean }
+  | { kind: "enriched" }
   | { kind: "unresolved"; reason: string }
   | { kind: "error"; message: string };
 
+/** Fill-empty-only patch for the two guests fields that aren't part of the
+ * shared Doc2Record vocabulary (Order.Board has no Doc2 equivalent; Doc2's
+ * own email enrichment lives on a different type). Applied after the reused
+ * create/merge call, keyed by the guest id it returned either way. */
+async function applyApiOnlyEnrichment(
+  supabase: SupabaseClient,
+  guestId: number,
+  { mealPlan, email }: { mealPlan?: string; email?: string | null },
+): Promise<void> {
+  if (mealPlan) {
+    await supabase.from("guests").update({ meal_plan: mealPlan }).eq("id", guestId)
+      .or("meal_plan.is.null,meal_plan.eq.none");
+  }
+  if (email) {
+    await supabase.from("guests").update({ email }).eq("id", guestId).is("email", null);
+  }
+}
+
 /**
- * Resolves and (if safe) writes ONE room-line. identitySource is
- * 'remark' when the room's own Remark/OperationRemark yielded a real
- * phone, or 'order_client' when this is the ONLY room-line on its order
- * (Order.Client is unambiguous there). Any other case is 'unresolved' —
- * see the module doc comment for why Order.Client is never used as a
- * fallback when 2+ rooms share an order and none has its own remark.
+ * Resolves and (if safe) writes ONE room-line, reusing the Doc2 identity
+ * resolver + suite_rooms merge pipeline end to end — see module doc comment.
+ * identitySource mirrors is_remark_group_occupant purely for the run summary
+ * (resolved_via_remark / resolved_via_order_client stats).
  */
 async function processRoomLine(
   supabase: SupabaseClient,
@@ -182,25 +168,16 @@ async function processRoomLine(
   totalLinesInOrder: number,
   roomMap: Map<number, string>,
 ): Promise<RoomLineOutcome & { identitySource?: "remark" | "order_client" }> {
-  const remarkOccupant = resolveRemarkOccupant(line.remark || line.operationRemark);
+  const coordPhone = normalizeWhatsAppPhone(oc.tel1);
+  const remarkText = line.remark || line.operationRemark || "";
+  const identity = resolveApiRoomOccupantIdentity(
+    { fullName: oc.fullName, tel1: coordPhone },
+    remarkText,
+    totalLinesInOrder,
+  );
+  const identitySource: "remark" | "order_client" = identity.is_remark_group_occupant ? "remark" : "order_client";
 
-  let rawName: string | null;
-  let rawPhone: string | null;
-  let identitySource: "remark" | "order_client";
-
-  if (remarkOccupant) {
-    rawName = remarkOccupant.name;
-    rawPhone = remarkOccupant.phone;
-    identitySource = "remark";
-  } else if (totalLinesInOrder === 1) {
-    rawName = oc.fullName;
-    rawPhone = oc.tel1;
-    identitySource = "order_client";
-  } else {
-    return { kind: "unresolved", reason: "multi_room_no_remark_signal" };
-  }
-
-  const phone = normalizeWhatsAppPhone(rawPhone);
+  const phone = normalizeWhatsAppPhone(identity.phone);
   if (!phone) return { kind: "unresolved", reason: "no_usable_phone" };
 
   const suiteName = line.roomId ? roomMap.get(line.roomId) : undefined;
@@ -208,8 +185,12 @@ async function processRoomLine(
 
   if (!line.checkin) return { kind: "unresolved", reason: "no_checkin_date" };
 
-  const mealPlan = identitySource === "order_client" && oc.board != null ? BOARD_TO_MEAL_PLAN[oc.board] : undefined;
-  const name = rawName;
+  // Order-level fields (board/email) only ever describe the coordinator, not
+  // a remark-swapped individual occupant — same discipline the previous
+  // version applied, now against is_remark_group_occupant instead of a
+  // hand-rolled identitySource check.
+  const mealPlan = !identity.is_remark_group_occupant && oc.board != null ? BOARD_TO_MEAL_PLAN[oc.board] : undefined;
+  const name = identity.guest_name;
   const departure = line.checkout && line.checkout > line.checkin ? line.checkout : null;
 
   // Reuses the exact Doc2 mail-pipeline rule (never re-derived): a remark-
@@ -222,134 +203,94 @@ async function processRoomLine(
   // from a single-room booking would receive full guest WhatsApp automation.
   const automationScope = resolveDoc2ImportAutomationScope({
     coordNameRaw: oc.fullName,
-    isRemarkGroupOccupant: identitySource === "remark",
+    isRemarkGroupOccupant: identity.is_remark_group_occupant,
   });
+
+  const rec: Doc2Record = {
+    _report: "doc2",
+    section: "arrival",
+    order_number: orderId,
+    room_raw: suiteName,
+    room: suiteName,
+    board_basis: null,
+    meal_location: null,
+    arrival_time: null,
+    nights: null, // literal Checkin/Checkout below, not a nights-count — see module doc
+    guest_count: null,
+    guest_name: name,
+    phone,
+    amount: null,
+    notes: remarkText || null,
+    arrival_date: line.checkin,
+    departure_date: departure,
+    departure_missing_nights: !departure,
+    is_day_guest: false,
+    is_premium_day: false,
+    meal_time: null,
+    automation_scope: automationScope,
+    automation_muted: automationScope === "muted",
+    is_remark_group_occupant: identity.is_remark_group_occupant,
+    coord_name: oc.fullName,
+    coord_phone: coordPhone,
+  };
 
   try {
     assertGuestSegmentConsistent({ room: suiteName, room_type: "suite" });
 
-    // Multiple guests can legitimately share order_number once remark-based
-    // per-room identities are in play — key the existing-row lookup by
-    // (order_number, room), not order_number alone.
-    const { data: existingRows } = await supabase
-      .from("guests")
-      .select("id, name, phone, email, room, room_type, arrival_date, departure_date, meal_plan, order_number, status, automation_scope")
-      .eq("order_number", orderId)
-      .eq("room", suiteName)
-      .neq("status", "cancelled");
+    const existing = await findGuestForDoc2SuiteCreate(supabase, rec, line.checkin);
+    const willMerge = !!existing && shouldMergeDoc2RowOntoGuest(rec, existing);
 
-    if ((existingRows?.length ?? 0) > 1) {
-      return { kind: "unresolved", reason: "ambiguous_existing_rows", identitySource };
-    }
-    const existing = existingRows?.[0] ?? null;
-
-    if (existing) {
-      const patch: Record<string, unknown> = {};
-      let hadConflict = false;
-
-      // Phone gets the same fill-empty-only treatment as every other field —
-      // previously computed only for the conflict flag and never actually
-      // written, so a pre-existing no-phone guest (blocked from WhatsApp
-      // automation by the missing_phone gate) could never get backfilled
-      // even when the correct phone was sitting right there in the API data.
-      const phoneP = pickFillEmpty(phone, existing.phone);
-      if (phoneP.value !== undefined) patch.phone = phoneP.value;
-      hadConflict = hadConflict || phoneP.conflict;
-
-      const nameP = pickFillEmpty(name, existing.name);
-      if (nameP.value !== undefined) patch.name = nameP.value;
-      hadConflict = hadConflict || nameP.conflict;
-
-      if (identitySource === "order_client") {
-        const emailP = pickFillEmpty(oc.email, existing.email);
-        if (emailP.value !== undefined) patch.email = emailP.value;
-        hadConflict = hadConflict || emailP.conflict;
-      }
-
-      const arrP = pickFillEmpty(line.checkin, existing.arrival_date);
-      if (arrP.value !== undefined) patch.arrival_date = arrP.value;
-      hadConflict = hadConflict || arrP.conflict;
-
-      const depP = pickFillEmpty(departure ?? undefined, existing.departure_date);
-      if (depP.value !== undefined) patch.departure_date = depP.value;
-      hadConflict = hadConflict || depP.conflict;
-
-      if (mealPlan) {
-        const mpP = pickFillEmpty(mealPlan, existing.meal_plan === "none" ? undefined : existing.meal_plan);
-        if (mpP.value !== undefined) patch.meal_plan = mpP.value;
-      }
-
-      // Never loosens an already-muted/courtesy_only guest back toward full
-      // (mergeAutomationScope escalates toward the more restrictive side).
-      const mergedScope = mergeAutomationScope(existing.automation_scope, automationScope);
-      if (mergedScope !== (existing.automation_scope ?? "full")) {
-        patch.automation_scope = mergedScope;
-        patch.automation_muted = mergedScope === "muted";
-      }
-
-      if (hadConflict) {
-        await logConflict(supabase, existing.id, phone,
-          `⚠️ EZGO API מדווח נתונים שונים מהקיים להזמנה #${orderId} — נבדק ולא נדרס אוטומטית`);
-      }
-      if (Object.keys(patch).length) {
-        const { error } = await supabase.from("guests").update(patch).eq("id", existing.id);
-        if (error) throw error;
-      }
-      await ensureMissingDepartureAlert(supabase, { ...existing, ...patch });
-      return { kind: "enriched", conflict: hadConflict, identitySource };
+    // No pre-write conflict alert here (dropped 2026-08-16 — see chat: an
+    // earlier version compared this room-line's own fields against the
+    // merge target and logged a guest_alerts row on any disagreement, but
+    // on a real multi-room order it fired every single cron tick, including
+    // against the WRONG line's phone in a case not yet root-caused. Doc2's
+    // own mail/CSV merge path (applyDoc2SuiteRoomAdd, reused below) has
+    // never done this either — fill-empty-only and silent on merge, full
+    // stop. Parity with Doc2, not a new invented behavior.)
+    if (!willMerge) {
+      // Genuine create path only — assertNoDuplicateGuest must never run on
+      // a merge (that's exactly what used to block room #2 of the same
+      // person). findGuestForDoc2SuiteCreate already ruled out a merge
+      // target; this is a defense-in-depth net for a phone-format edge case
+      // its heuristics might miss, turned into a retry rather than a bad
+      // duplicate guests row.
+      await assertNoDuplicateGuest(supabase, phone, line.checkin);
     }
 
-    await assertNoDuplicateGuest(supabase, phone, line.checkin);
-    const insert: Record<string, unknown> = {
-      phone,
-      name: name || null,
-      arrival_date: line.checkin,
-      departure_date: departure,
-      room: suiteName,
-      room_type: "suite",
-      status: "expected",
-      order_number: orderId,
-      guest_index: 1,
-      automation_scope: automationScope,
-      automation_muted: automationScope === "muted",
-    };
-    if (identitySource === "order_client" && oc.email) insert.email = oc.email;
-    if (mealPlan) insert.meal_plan = mealPlan;
-
-    const { data: inserted, error: insErr } = await supabase.from("guests").insert(insert).select("id").maybeSingle();
-    if (insErr) throw insErr;
-
-    await supabase.from("suite_rooms").insert({
-      guest_id: inserted!.id,
-      guest_phone: phone,
-      guest_name: name || null,
-      order_number: orderId,
-      res_line_id: line.lineId ?? String(line.roomId),
-      room_name: suiteName,
-      room_display: suiteName,
-      arrival_date: line.checkin,
-      nights: departure
-        ? Math.round((new Date(`${departure}T12:00:00`).getTime() - new Date(`${line.checkin}T12:00:00`).getTime()) / 86400000)
-        : 0,
-      adults: 1,
-      is_day_guest: false,
+    const result = await createDoc2SuiteArrival(supabase, rec, line.checkin);
+    await applyApiOnlyEnrichment(supabase, result.id, {
+      mealPlan,
+      email: !identity.is_remark_group_occupant ? oc.email : null,
     });
 
+    if (willMerge && existing) {
+      const effectiveDeparture = existing.departure_date || departure || null;
+      await ensureMissingDepartureAlert(supabase, {
+        id: existing.id, phone, name: result.name,
+        arrival_date: existing.arrival_date || line.checkin,
+        departure_date: effectiveDeparture, room_type: "suite", room: suiteName,
+      });
+      return { kind: "enriched", identitySource };
+    }
+
     await ensureMissingDepartureAlert(supabase, {
-      id: inserted!.id, phone, name, arrival_date: line.checkin, departure_date: departure, room_type: "suite", room: suiteName,
+      id: result.id, phone, name: result.name, arrival_date: line.checkin, departure_date: departure, room_type: "suite", room: suiteName,
     });
     return { kind: "created", identitySource };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // A legitimate single guest across 2+ physical rooms under one order
-    // (existing multi-room-stay support elsewhere in the app) trips
-    // assertNoDuplicateGuest on the second room, since it keys on
-    // phone+arrival_date only, not room. That's a real, known limitation of
-    // this phase (not corruption) — classify it as unresolved so it doesn't
-    // read as a scary/actionable error, but it genuinely won't resolve on
-    // retry until multi-room-per-guest is explicitly scoped.
+    // A genuinely different room-merge edge case (not the same-person one
+    // the 2026-08-16 rewrite fixed) still trips assertNoDuplicateGuest —
+    // classify as unresolved so it doesn't read as a scary/actionable error,
+    // retried next run rather than dropped.
     if (message.includes("כבר קיים פרופיל אורח")) {
       return { kind: "unresolved", reason: "duplicate_guest_same_phone_date", identitySource };
+    }
+    // createDoc2SuiteArrival's fail-visible refusal on checkout<=checkin
+    // (never fabricates a 0-night stay) — retried once EZGO corrects it.
+    if (message.includes("חסר מספר לילות")) {
+      return { kind: "unresolved", reason: "invalid_dates", identitySource };
     }
     return { kind: "error", message, identitySource };
   }
@@ -387,9 +328,9 @@ serve(async (req) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
   const summary = {
-    created: 0, enriched: 0, conflicts: 0, errors: 0,
-    unresolved_no_remark_multi_room: 0, unresolved_no_usable_phone: 0,
-    unresolved_room_not_mapped: 0, unresolved_no_checkin: 0, unresolved_duplicate_guest: 0, unresolved_other: 0,
+    created: 0, enriched: 0, errors: 0,
+    unresolved_no_usable_phone: 0, unresolved_room_not_mapped: 0, unresolved_no_checkin: 0,
+    unresolved_duplicate_guest: 0, unresolved_invalid_dates: 0, unresolved_other: 0,
     resolved_via_remark: 0, resolved_via_order_client: 0,
     skipped_cancelled: 0, skipped_no_client_data: 0, ignored_out_of_scope: 0,
     cancellations_applied: 0, delete_events_no_matching_guest: 0,
@@ -544,16 +485,15 @@ serve(async (req) => {
           break;
         case "enriched":
           summary.enriched++;
-          if (outcome.conflict) summary.conflicts++;
           if (outcome.identitySource === "remark") summary.resolved_via_remark++; else summary.resolved_via_order_client++;
           break;
         case "unresolved":
           allLinesDone = false;
-          if (outcome.reason === "multi_room_no_remark_signal") summary.unresolved_no_remark_multi_room++;
-          else if (outcome.reason === "no_usable_phone") summary.unresolved_no_usable_phone++;
+          if (outcome.reason === "no_usable_phone") summary.unresolved_no_usable_phone++;
           else if (outcome.reason === "room_not_mapped") summary.unresolved_room_not_mapped++;
           else if (outcome.reason === "no_checkin_date") summary.unresolved_no_checkin++;
           else if (outcome.reason === "duplicate_guest_same_phone_date") summary.unresolved_duplicate_guest++;
+          else if (outcome.reason === "invalid_dates") summary.unresolved_invalid_dates++;
           else summary.unresolved_other++;
           break;
         case "error":
