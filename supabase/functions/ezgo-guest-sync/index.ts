@@ -420,15 +420,15 @@ serve(async (req) => {
     .limit(BATCH_LIMIT);
   const candidateIds = (candidateRows ?? []).map((r) => r.id);
 
-  let claimedRows: { id: string; raw_payload: Record<string, unknown> }[] = [];
+  let claimedRows: { id: string; raw_payload: Record<string, unknown>; created_at: string }[] = [];
   if (candidateIds.length) {
     const { data } = await supabase
       .from("ezgo_api_ingest")
       .update({ status: "processing" })
       .in("id", candidateIds)
       .eq("status", "staged")
-      .select("id, raw_payload");
-    claimedRows = (data ?? []) as { id: string; raw_payload: Record<string, unknown> }[];
+      .select("id, raw_payload, created_at");
+    claimedRows = (data ?? []) as { id: string; raw_payload: Record<string, unknown>; created_at: string }[];
   }
 
   // Any claimed row not explicitly resolved to parsed/ignored/failed below
@@ -442,18 +442,18 @@ serve(async (req) => {
   // usable OrderId and needs to actually cancel a matching guest, not just
   // be discarded (see applyCancellation / Stage 1 of the sync-management plan).
   const outOfScopeIds: string[] = [];
-  const deleteRows: { id: string; raw_payload: Record<string, unknown> }[] = [];
-  const inScopeRows: { id: string; raw_payload: Record<string, unknown> }[] = [];
+  const deleteRows: { id: string; raw_payload: Record<string, unknown>; created_at: string }[] = [];
+  const inScopeRows: { id: string; raw_payload: Record<string, unknown>; created_at: string }[] = [];
   for (const row of claimedRows) {
     const rp = row.raw_payload as Record<string, unknown>;
     const entity = rp.Entity as string | undefined;
     const type = rp.Type as string | null | undefined;
     if (type === "Delete") {
-      deleteRows.push(row as { id: string; raw_payload: Record<string, unknown> });
+      deleteRows.push(row);
     } else if (entity === "Activities" || entity === "MealTimings" || entity === "Adds") {
       outOfScopeIds.push(row.id);
     } else if (entity === "Orders" || entity === "Reservations" || (!entity && (type === "Insert" || type === "Update"))) {
-      inScopeRows.push(row as { id: string; raw_payload: Record<string, unknown> });
+      inScopeRows.push(row);
     } else {
       outOfScopeIds.push(row.id); // unrecognized shape — also park, fail-visibly
     }
@@ -483,15 +483,19 @@ serve(async (req) => {
     release([row.id]);
   }
 
-  // inScopeRows already carries raw_payload from the claim step; we only
-  // need created_at (for "latest wins") in addition, so pull just that
-  // rather than re-selecting raw_payload a second time.
-  const { data: createdAtRows } = await supabase
-    .from("ezgo_api_ingest")
-    .select("id, created_at")
-    .in("id", inScopeRows.map((r) => r.id));
-  const createdAtById = new Map((createdAtRows ?? []).map((r) => [r.id, r.created_at as string]));
-  const inScopeFull = inScopeRows.map((r) => ({ id: r.id, raw_payload: r.raw_payload, created_at: createdAtById.get(r.id) ?? "" }));
+  // created_at now comes straight off the claim step's own UPDATE...RETURNING
+  // (2c fix, 2026-08-16) -- this used to be a second SELECT with .in() over
+  // up to BATCH_LIMIT=500 UUIDs, whose *error* was silently discarded
+  // (`const { data } = await ...`, no `error` destructured). A GET-style
+  // filter that large is exactly the kind of request that can fail against
+  // a gateway URL-length limit; if it ever did, createdAtById silently came
+  // back empty and every id fell through to the `?? ""` / `?? now` default,
+  // making every order look brand-new regardless of its real age -- which
+  // is exactly why the grace-period check below could never fire. Piggy-
+  // backing on the claim mutation (already a single non-GET round trip)
+  // removes the fragile query entirely instead of hardening it.
+  const createdAtById = new Map(claimedRows.map((r) => [r.id, r.created_at]));
+  const inScopeFull = inScopeRows;
 
   const orderClientByOrder = new Map<string, OrderClientInfo>();
   const reservationsByOrder = new Map<string, ReservationInfo[]>();
