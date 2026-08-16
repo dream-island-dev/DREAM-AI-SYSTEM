@@ -176,10 +176,15 @@ function extractOrderInfoForDisplay(rawPayload) {
     client = rp.Client || null;
   }
   const orderIdRaw = rp.OrderId ?? order?.OrderId ?? null;
+  const clientIdRaw = client?.ClientId;
   return {
     orderId: orderIdRaw != null ? String(orderIdRaw).trim() : null,
     fullName: client?.FullName ? String(client.FullName).trim() : null,
     tel1: client?.Tel1 ? String(client.Tel1).trim() : null,
+    // ClientId is the coordinator link EZGO reuses across several distinct
+    // OrderIds for one group booking (migration 298) — carried through so
+    // SuiteSyncStatusCard can count/match at the person level, not per order.
+    clientId: typeof clientIdRaw === "number" && clientIdRaw > 0 ? clientIdRaw : null,
   };
 }
 
@@ -203,6 +208,7 @@ function groupFailedRowsByOrder(rows) {
         oldestCreatedAt: row.created_at,
         fullName: null,
         tel1: null,
+        clientId: null,
       };
       byOrder.set(orderId, group);
     }
@@ -212,11 +218,189 @@ function groupFailedRowsByOrder(rows) {
       group.fullName = info.fullName;
       group.tel1 = info.tel1;
     }
+    if (!group.clientId && info.clientId) group.clientId = info.clientId;
   }
   return [...byOrder.values()].sort((a, b) => (a.oldestCreatedAt < b.oldestCreatedAt ? -1 : 1));
 }
 
 const FAILED_ROWS_FETCH_LIMIT = 500;
+
+// ── Suite sync status (Stage 0) — the business-facing "are our active suite
+// orders showing up in guests" question, separate from SyncHealthCard's
+// technical/ops view (is the cron keeping up). Only status='failed' rows
+// count as blocked — staged/processing is normal in-flight churn (the cron
+// drains every minute), not a signal a human needs to act on. A failed
+// order whose guest already exists (matched by order_number OR
+// ezgo_client_id — EZGO splits one group booking across several OrderIds
+// sharing one ClientId, migration 298) is NOT blocked; if its reason was
+// no_usable_phone it's surfaced separately as "בלי WA", never counted
+// against the sync banner. Adds/Activities/MealTimings never reach
+// status='failed' (routed to 'ignored' by ezgo-guest-sync's Entity router)
+// so they're excluded from every count here by construction, no extra
+// filter needed.
+function dedupeGroupsByClientId(groups) {
+  const seen = new Set();
+  const out = [];
+  for (const g of groups) {
+    if (g.clientId && seen.has(g.clientId)) continue;
+    if (g.clientId) seen.add(g.clientId);
+    out.push(g);
+  }
+  return out;
+}
+
+function SuiteSyncStatusCard({ showToast }) {
+  const [state, setState] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const today = israelTodayYmd();
+    const [{ count: syncedCount, error: syncedErr }, { data: failedRows, error: failedErr }] = await Promise.all([
+      supabase.from("guests").select("id", { count: "exact", head: true })
+        .not("order_number", "is", null)
+        .eq("room_type", "suite")
+        .neq("status", "cancelled")
+        .gte("departure_date", today),
+      supabase.from("ezgo_api_ingest").select("id, raw_payload, notes, created_at").eq("status", "failed")
+        .order("created_at", { ascending: true }).limit(FAILED_ROWS_FETCH_LIMIT),
+    ]);
+    if (syncedErr) console.error("[EzgoApiCodeMappingPanel] SuiteSyncStatusCard synced-count query:", syncedErr.message);
+    if (failedErr) console.error("[EzgoApiCodeMappingPanel] SuiteSyncStatusCard failed-rows query:", failedErr.message);
+
+    const groups = groupFailedRowsByOrder(failedRows ?? []);
+    const orderIds = groups.map((g) => g.orderId).filter(Boolean);
+    const clientIds = [...new Set(groups.map((g) => g.clientId).filter(Boolean))];
+
+    const [byOrderNumber, byClientId] = await Promise.all([
+      orderIds.length
+        ? supabase.from("guests").select("order_number").in("order_number", orderIds).neq("status", "cancelled")
+        : Promise.resolve({ data: [] }),
+      clientIds.length
+        ? supabase.from("guests").select("ezgo_client_id").in("ezgo_client_id", clientIds).neq("status", "cancelled")
+        : Promise.resolve({ data: [] }),
+    ]);
+    if (byOrderNumber.error) console.error("[EzgoApiCodeMappingPanel] SuiteSyncStatusCard order_number reconcile:", byOrderNumber.error.message);
+    if (byClientId.error) console.error("[EzgoApiCodeMappingPanel] SuiteSyncStatusCard ezgo_client_id reconcile:", byClientId.error.message);
+    const existingOrderNumbers = new Set((byOrderNumber.data ?? []).map((r) => r.order_number));
+    const existingClientIds = new Set((byClientId.data ?? []).map((r) => r.ezgo_client_id));
+
+    let roomsPending = 0;
+    const notSyncedRaw = [];
+    const noWa = [];
+    for (const g of groups) {
+      if (g.category.key === "room_not_mapped") roomsPending++;
+      const hasGuest = existingOrderNumbers.has(g.orderId) || (g.clientId && existingClientIds.has(g.clientId));
+      if (hasGuest) {
+        if (g.category.key === "no_usable_phone") noWa.push(g);
+      } else {
+        notSyncedRaw.push(g);
+      }
+    }
+
+    setState({
+      synced: syncedCount ?? 0,
+      notSynced: dedupeGroupsByClientId(notSyncedRaw), // person-level: one order/ClientId, not per RoomId
+      noWa,
+      roomsPending,
+    });
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading || !state) {
+    return <div style={{ fontSize: 13, color: "rgba(232,201,138,0.6)" }}>בודק סטטוס סנכרון סוויטות...</div>;
+  }
+
+  const allSynced = state.notSynced.length === 0;
+  const total = state.synced + state.notSynced.length;
+
+  return (
+    <div style={{ ...cardBoxStyle, marginBottom: 16, border: `1px solid ${allSynced ? "rgba(34,197,94,0.5)" : "rgba(248,113,113,0.5)"}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: allSynced ? "#86efac" : "#f87171" }}>
+          {allSynced ? `✅ סוויטות מסונכרנות (${state.synced})` : `⚠ ${state.notSynced.length} אורחי סוויטה לא מסונכרנים מתוך ${total}`}
+        </div>
+        <button type="button" className="btn btn-sm" onClick={load} style={{ fontSize: 11 }}>🔄 רענון</button>
+      </div>
+      {state.roomsPending > 0 && (
+        <div style={{ fontSize: 12, color: "#fbbf24", marginTop: 6 }}>
+          🏠 {state.roomsPending} חדרים ממתינים למיפוי — ראה «מיפוי חדרים» למטה.
+        </div>
+      )}
+      {state.noWa.length > 0 && (
+        <div style={{ fontSize: 12, color: "rgba(232,201,138,0.6)", marginTop: 6 }}>
+          📵 {state.noWa.length} אורחים מסונכרנים בלי WA תקין (הפרופיל כבר קיים — רק הטלפון בשורה הזו לא היה תקין)
+        </div>
+      )}
+      {!allSynced && (
+        <div style={{ fontSize: 11, color: "rgba(232,201,138,0.55)", marginTop: 6 }}>
+          פירוט ההזמנות החסומות בתור החריגים למטה.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Suite guests auto-created without a phone (Stage 1 no-phone gate) — Fail
+// Visible: the profile exists (room+dates were good enough), but EZGO gave
+// no usable number, WhatsApp automation is hard-muted, and someone needs to
+// go get the real number. Not the same list as SuiteSyncStatusCard's "בלי
+// WA" — that's an already-existing guest whose ingest row failed; this is
+// literally every currently-active suite guest missing a phone.
+function NoPhoneGuestsCard() {
+  const [guests, setGuests] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const today = israelTodayYmd();
+    const { data, error } = await supabase
+      .from("guests")
+      .select("id, name, room, arrival_date, departure_date, order_number")
+      .is("phone", null)
+      .not("order_number", "is", null)
+      .eq("room_type", "suite")
+      .neq("status", "cancelled")
+      .gte("departure_date", today)
+      .order("arrival_date", { ascending: true });
+    if (error) console.error("[EzgoApiCodeMappingPanel] NoPhoneGuestsCard query:", error.message);
+    setGuests(data ?? []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading || !guests.length) return null;
+
+  return (
+    <div style={{ ...cardBoxStyle, marginBottom: 16, border: "1px solid rgba(245,158,11,0.5)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "#fbbf24" }}>
+          ⚠ {guests.length} אורחי סוויטה נוצרו בלי טלפון (EZGO)
+        </div>
+        <button type="button" className="btn btn-sm" onClick={load} style={{ fontSize: 11 }}>🔄 רענון</button>
+      </div>
+      <div style={{ fontSize: 11, color: "rgba(232,201,138,0.6)", marginTop: 6, marginBottom: 8, lineHeight: 1.6 }}>
+        חדר ותאריכים תקינים, אבל EZGO לא סיפק מספר טלפון תקין — הפרופיל נוצר בכל זאת, WhatsApp אוטומטי כבוי לגמרי (מושתק) עד שיעודכן טלפון אמיתי ב-«צ'ק-אין סוויטות».
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {guests.map((g) => (
+          <div key={g.id} style={{ ...rowStyle, padding: "8px 12px" }}>
+            <div style={{ fontSize: 12, color: "rgba(232,201,138,0.85)" }}>
+              <strong>{g.name || "ללא שם"}</strong>
+              <span style={{ color: "rgba(232,201,138,0.5)" }}> · {g.room || "—"} · הזמנה #{g.order_number}</span>
+            </div>
+            <div style={{ fontSize: 11, color: "rgba(232,201,138,0.55)" }}>
+              {g.arrival_date} → {g.departure_date}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function SyncHealthCard({ showToast }) {
   const [health, setHealth] = useState(null);
@@ -1004,6 +1188,8 @@ export default function EzgoApiCodeMappingPanel({ showToast }) {
       <div style={{ fontSize: 12, color: "rgba(232,201,138,0.6)", marginBottom: 16 }}>
         שיוך RoomId חייב להיות מאומת. הסקה אוטומטית לא נחשבת נכונה עד שתלחץ «אשר נכון».
       </div>
+      <SuiteSyncStatusCard showToast={notify} />
+      <NoPhoneGuestsCard />
       <SyncHealthCard showToast={notify} />
       <WorkerMappingSection showToast={notify} />
       <RoomMappingSection showToast={notify} />

@@ -186,8 +186,8 @@ async function purgeStaleEzgoApiIngest(supabase: SupabaseClient): Promise<number
 }
 
 type RoomLineOutcome =
-  | { kind: "created" }
-  | { kind: "enriched" }
+  | { kind: "created"; noPhone?: boolean }
+  | { kind: "enriched"; noPhone?: boolean }
   | { kind: "unresolved"; reason: string }
   | { kind: "error"; message: string };
 
@@ -202,7 +202,7 @@ type RoomLineOutcome =
 async function applyApiOnlyEnrichment(
   supabase: SupabaseClient,
   guestId: number,
-  { mealPlan, email, clientId }: { mealPlan?: string; email?: string | null; clientId?: number | null },
+  { mealPlan, email, clientId, noPhoneAtImport }: { mealPlan?: string; email?: string | null; clientId?: number | null; noPhoneAtImport?: boolean },
 ): Promise<void> {
   // Best-effort fill-empty patches on top of an already-created/merged guest
   // (core identity/dates/room already written by the caller) — logged, not
@@ -221,6 +221,40 @@ async function applyApiOnlyEnrichment(
   if (clientId) {
     const { error } = await supabase.from("guests").update({ ezgo_client_id: clientId }).eq("id", guestId).is("ezgo_client_id", null);
     if (error) console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment ezgo_client_id failed for guest ${guestId}:`, error.message);
+  }
+  if (noPhoneAtImport) {
+    // Fail Visible marker + hard automation mute for the Stage 1 no-phone
+    // gate — only when the GUEST (not just this one room-line) still
+    // genuinely has no phone. A merge onto an existing guest that already
+    // has a real phone from a different room-line/order must never
+    // retroactively flag/mute it just because this particular line's
+    // identity had none.
+    //
+    // The automation_scope re-assertion here is NOT redundant with the
+    // rec.automation_scope="muted" set by the caller: createDoc2SuiteArrival
+    // recomputes automation_scope itself via doc2CreateAutomationScope(rec),
+    // which for a normal (non-corporate, non-remark-group) name IGNORES
+    // rec.automation_scope entirely and hardcodes "full" — so the caller's
+    // "muted" would otherwise be silently overwritten on the fresh-create
+    // path. Forcing it again here, after the shared Doc2 pipeline has
+    // already run, is what actually guarantees zero WA.
+    const { data: guestRow, error: fetchErr } = await supabase
+      .from("guests").select("phone, guest_profile, automation_scope").eq("id", guestId).maybeSingle();
+    if (fetchErr) {
+      console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment guest_profile fetch failed for guest ${guestId}:`, fetchErr.message);
+    } else if (guestRow && !guestRow.phone) {
+      const existingProfile = (guestRow.guest_profile as Record<string, unknown>) || {};
+      const existingSync = (existingProfile.ezgo_sync as Record<string, unknown>) || {};
+      const { error } = await supabase.from("guests").update({
+        guest_profile: {
+          ...existingProfile,
+          ezgo_sync: { ...existingSync, no_phone_at_import: true, flagged_at: existingSync.flagged_at ?? new Date().toISOString() },
+        },
+        automation_scope: "muted",
+        automation_muted: true,
+      }).eq("id", guestId);
+      if (error) console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment no_phone_at_import flag failed for guest ${guestId}:`, error.message);
+    }
   }
 }
 
@@ -248,12 +282,26 @@ async function processRoomLine(
   const identitySource: "remark" | "order_client" = identity.is_remark_group_occupant ? "remark" : "order_client";
 
   const phone = normalizeWhatsAppPhone(identity.phone);
-  if (!phone) return { kind: "unresolved", reason: "no_usable_phone" };
 
   const suiteName = line.roomId ? roomMap.get(line.roomId) : undefined;
   if (!suiteName) return { kind: "unresolved", reason: "room_not_mapped" };
 
   if (!line.checkin) return { kind: "unresolved", reason: "no_checkin_date" };
+
+  // Stage 1 gated no-phone create (Mike, sync-management plan, 2026-08-16):
+  // previously ANY missing phone parked the whole order as no_usable_phone
+  // forever, even once the room was trust-mapped and the dates were fine —
+  // an arriving guest got no profile at all just because EZGO's
+  // Client.Tel1/room remark had nothing usable. Room-mapped (checked above)
+  // and a real checkin date (checked above) are the two preconditions that
+  // make a create safe; a missing phone no longer blocks it below. A room
+  // that ISN'T mapped still parks as room_not_mapped regardless of phone —
+  // unchanged, that check already ran first. automation_scope is forced to
+  // "muted" further down (not left to the corporate-name heuristic) so
+  // nothing ever attempts to WhatsApp a number that doesn't exist —
+  // hasDialableGuestPhone(null) already gates every automation path on
+  // guests.phone, this is belt-and-suspenders, not a bet on one shared
+  // helper never regressing.
 
   // Order-level fields (board/email) only ever describe the coordinator, not
   // a remark-swapped individual occupant — same discipline the previous
@@ -271,10 +319,12 @@ async function processRoomLine(
   // matches the corporate/municipal pattern (עיריית/בנק לאומי/…) — otherwise
   // full. Without this, a municipal coordinator's own number synced straight
   // from a single-room booking would receive full guest WhatsApp automation.
-  const automationScope = resolveDoc2ImportAutomationScope({
-    coordNameRaw: oc.fullName,
-    isRemarkGroupOccupant: identity.is_remark_group_occupant,
-  });
+  const automationScope = phone
+    ? resolveDoc2ImportAutomationScope({
+      coordNameRaw: oc.fullName,
+      isRemarkGroupOccupant: identity.is_remark_group_occupant,
+    })
+    : "muted"; // zero WA — no dialable number to send to (Stage 1 no-phone gate)
 
   const rec: Doc2Record = {
     _report: "doc2",
@@ -355,6 +405,7 @@ async function processRoomLine(
       mealPlan,
       email: !identity.is_remark_group_occupant ? oc.email : null,
       clientId: !identity.is_remark_group_occupant ? oc.clientId : null,
+      noPhoneAtImport: !phone,
     });
 
     if (willMerge && existing) {
@@ -364,13 +415,13 @@ async function processRoomLine(
         arrival_date: existing.arrival_date || line.checkin,
         departure_date: effectiveDeparture, room_type: "suite", room: suiteName,
       });
-      return { kind: "enriched", identitySource };
+      return { kind: "enriched", identitySource, noPhone: !phone };
     }
 
     await ensureMissingDepartureAlert(supabase, {
       id: result.id, phone, name: result.name, arrival_date: line.checkin, departure_date: departure, room_type: "suite", room: suiteName,
     });
-    return { kind: "created", identitySource };
+    return { kind: "created", identitySource, noPhone: !phone };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // A genuinely different room-merge edge case (not the same-person one
@@ -421,7 +472,7 @@ serve(async (req) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
   const summary = {
-    created: 0, enriched: 0, errors: 0,
+    created: 0, enriched: 0, errors: 0, no_phone_synced: 0,
     unresolved_no_usable_phone: 0, unresolved_room_not_mapped: 0, unresolved_no_checkin: 0,
     unresolved_duplicate_guest: 0, unresolved_invalid_dates: 0, unresolved_other: 0,
     resolved_via_remark: 0, resolved_via_order_client: 0,
@@ -684,11 +735,13 @@ serve(async (req) => {
         switch (outcome.kind) {
           case "created":
             summary.created++;
+            if (outcome.noPhone) summary.no_phone_synced++;
             if (outcome.identitySource === "remark") summary.resolved_via_remark++; else summary.resolved_via_order_client++;
             lineResolutions.push({ kind: "created" });
             break;
           case "enriched":
             summary.enriched++;
+            if (outcome.noPhone) summary.no_phone_synced++;
             if (outcome.identitySource === "remark") summary.resolved_via_remark++; else summary.resolved_via_order_client++;
             lineResolutions.push({ kind: "enriched" });
             break;

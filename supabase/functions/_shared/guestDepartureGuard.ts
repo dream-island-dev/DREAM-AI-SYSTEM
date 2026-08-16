@@ -52,9 +52,19 @@ function missingDepartureMessage(guestName?: string | null): string {
 /** Idempotent guest_alerts row for active suite guests missing departure_date. */
 export async function ensureMissingDepartureAlert(
   supabase: SupabaseClient,
-  guest: { id: number; phone: string; name?: string | null; arrival_date?: string | null; departure_date?: string | null; room_type?: string | null; room?: string | null },
+  guest: { id: number; phone: string | null; name?: string | null; arrival_date?: string | null; departure_date?: string | null; room_type?: string | null; room?: string | null },
 ): Promise<void> {
   if (!isMissingSuiteDepartureDate(guest)) return;
+  if (!guest.phone) {
+    // guest_alerts.phone is NOT NULL (012_concierge_alerts.sql) — a guest
+    // created via ezgo-guest-sync's no-phone gate (Stage 1, 2026-08-16) can
+    // legitimately have both a missing departure_date and no phone at once.
+    // Can't silently drop the missing-departure signal (Fail Visible), but
+    // can't insert NULL into a NOT NULL column either — surfaced via a log
+    // line instead until the phone is filled in.
+    console.warn(`[guestDepartureGuard] guest ${guest.id} missing departure_date AND phone — cannot write guest_alerts (NOT NULL phone), fix phone first`);
+    return;
+  }
   const { data: existing } = await supabase
     .from("guest_alerts")
     .select("id")
