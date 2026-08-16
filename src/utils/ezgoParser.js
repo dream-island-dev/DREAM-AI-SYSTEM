@@ -478,43 +478,28 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   const remarkPhones   = extractPhonesFromText(remark);
   const opRemarkPhones = extractPhonesFromText(opRemark);
   const remarkNameCandidate = useRemarkIdentity
-    ? (
-      extractNameFromRemark(remark)
-      ?? extractNameFromRemarkWithoutPhone(remark)
-      ?? extractNameFromRemark(opRemark)
-      ?? extractNameFromRemarkWithoutPhone(opRemark)
-    )
+    ? (extractNameFromRemark(remark) ?? extractNameFromRemark(opRemark))
     : null;
 
   let guestPhone;
   let phoneSource; // "individual" | "coordinator"
 
   if (useRemarkIdentity) {
-    // Group / duplicate coordinator rows — occupant lives in sRemark.
-    if (remarkPhones.length > 0 && remarkNameCandidate) {
-      guestPhone   = remarkPhones[0];
-      phoneSource  = "individual";
-    } else if (remarkNameCandidate && directE164 && !isDummyPhone(directE164)) {
-      guestPhone   = directE164;
-      phoneSource  = "individual";
-    } else if (remarkNameCandidate && coordE164 && !isDummyPhone(coordE164)) {
-      guestPhone   = coordE164;
-      phoneSource  = "individual";
-    } else if (directE164 && !isDummyPhone(directE164)) {
-      guestPhone  = directE164;
+    const remarkSwapPhone = remarkPhones.length > 0 && extractNameFromRemark(remark)
+      ? remarkPhones[0]
+      : (opRemarkPhones.length > 0 && extractNameFromRemark(opRemark) ? opRemarkPhones[0] : null);
+    if (remarkSwapPhone && !isDummyPhone(remarkSwapPhone)) {
+      guestPhone = remarkSwapPhone;
       phoneSource = "individual";
-    } else if (remarkPhones.length > 0) {
-      guestPhone   = remarkPhones[0];
-      phoneSource  = "individual";
-    } else if (opRemarkPhones.length > 0) {
-      guestPhone   = opRemarkPhones[0];
-      phoneSource  = "individual";
+    } else if (directE164 && !isDummyPhone(directE164)) {
+      guestPhone = directE164;
+      phoneSource = "coordinator";
     } else if (coordE164 && !isDummyPhone(coordE164)) {
-      guestPhone   = coordE164;
-      phoneSource  = "coordinator";
+      guestPhone = coordE164;
+      phoneSource = "coordinator";
     } else {
-      guestPhone   = null;
-      phoneSource  = null;
+      guestPhone = null;
+      phoneSource = null;
     }
   } else {
     // Solo row — sClientFullName + sTel1 only; sRemark is ops notes (birthday, etc.).
@@ -530,8 +515,8 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
     }
   }
 
-  const guestName = useRemarkIdentity
-    ? (remarkNameCandidate ?? coordName)
+  const guestName = (useRemarkIdentity && phoneSource === "individual" && remarkNameCandidate)
+    ? remarkNameCandidate
     : coordName;
 
   const isRemarkGroupOccupantRow = isRemarkGroupOccupant({

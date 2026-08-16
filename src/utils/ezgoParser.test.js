@@ -288,7 +288,7 @@ describe("ezgoParser — Sprint 1 fixes", () => {
     expect(row.guestPhone).toBe("+972506919808");
   });
 
-  test("name-only remark + phone in sTel1 column → occupant profile (duplicate coord only)", () => {
+  test("name-only remark + duplicate coord → keep coordinator (not occupant swap)", () => {
     expect(extractNameFromRemarkWithoutPhone("נילי הללי")).toBe("נילי הללי");
     expect(extractNameFromRemarkWithoutPhone("Eric Yosef Cohen")).toBe("Eric Yosef Cohen");
 
@@ -304,11 +304,10 @@ describe("ezgoParser — Sprint 1 fixes", () => {
       null,
       { coordNameDuplicated: true },
     );
-    expect(row.guestName).toBe("נילי הללי");
+    expect(row.guestName).toBe("עיריית תל אביב");
     expect(row.guestPhone).toBe("+972524549965");
-    expect(row.phoneSource).toBe("individual");
-    expect(row.automationScope).toBe("courtesy_only");
-    expect(row.isRemarkGroupOccupant).toBe(true);
+    expect(row.isRemarkGroupOccupant).toBe(false);
+    expect(row.automationScope).toBe("muted");
   });
 
   test("municipal coordinator without remark occupant stays muted (רכז עירייה)", () => {

@@ -209,7 +209,7 @@ export function parseHtmlArrivalsReport(htmlText: string): Doc2Record[] {
 
   for (const row of pending) {
     const coordNameDuplicated = !!row.coordName && duplicateCoords.has(row.coordName);
-    const { guest_name, phone } = resolveDoc2GuestIdentity(
+    const { guest_name, phone, is_remark_group_occupant } = resolveDoc2GuestIdentity(
       row.coordName,
       row.coordPhone,
       row.notes,
@@ -226,7 +226,7 @@ export function parseHtmlArrivalsReport(htmlText: string): Doc2Record[] {
     const departure_missing_nights = !is_day_guest && !departure_date;
     const automation_scope = resolveDoc2ImportAutomationScope({
       coordNameRaw: row.coordName,
-      isRemarkGroupOccupant: coordNameDuplicated,
+      isRemarkGroupOccupant: is_remark_group_occupant,
     });
 
     records.push({
@@ -252,7 +252,7 @@ export function parseHtmlArrivalsReport(htmlText: string): Doc2Record[] {
       meal_time,
       automation_scope,
       automation_muted: automation_scope === "muted",
-      is_remark_group_occupant: coordNameDuplicated,
+      is_remark_group_occupant,
       coord_name: row.coordName || null,
       coord_phone: row.coordPhone || null,
     });

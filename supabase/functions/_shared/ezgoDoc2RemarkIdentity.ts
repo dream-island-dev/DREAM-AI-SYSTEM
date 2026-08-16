@@ -142,11 +142,13 @@ function isDummyPhone(phone: string | null): boolean {
 export type Doc2ClientIdentity = {
   guest_name: string | null;
   phone: string | null;
+  is_remark_group_occupant: boolean;
 };
 
 /**
- * When coordNameDuplicated=true, occupant name+phone come from remark (הערות).
- * Mirrors ezgoDoc2SuiteCsvParser.extractSuiteRow + ezgoParser.js extractGuestDetails.
+ * Group (duplicate לקוח) only: replace name+phone when הערות has both a name
+ * and a full Israeli mobile. Name-only remarks stay on the coordinator —
+ * one guest, multiple rooms.
  */
 export function resolveDoc2GuestIdentity(
   coordName: string | null,
@@ -155,26 +157,25 @@ export function resolveDoc2GuestIdentity(
   coordNameDuplicated: boolean,
 ): Doc2ClientIdentity {
   if (!coordNameDuplicated) {
-    return { guest_name: coordName, phone: coordPhone };
+    return { guest_name: coordName, phone: coordPhone, is_remark_group_occupant: false };
   }
 
   const remarkPhones = extractPhonesFromRemarkText(remark || "");
-  const remarkName = extractNameFromRemarkText(remark || "")
-    ?? extractNameFromRemarkWithoutPhone(remark || "");
+  const remarkName = extractNameFromRemarkText(remark || "");
 
-  if (remarkPhones.length > 0 && remarkName) {
-    return { guest_name: remarkName, phone: remarkPhones[0] };
+  if (remarkPhones.length > 0 && remarkName && !isDummyPhone(remarkPhones[0])) {
+    return {
+      guest_name: remarkName,
+      phone: remarkPhones[0],
+      is_remark_group_occupant: true,
+    };
   }
-  if (remarkPhones.length > 0) {
-    return { guest_name: remarkName || coordName, phone: remarkPhones[0] };
-  }
-  if (remarkName && coordPhone && !isDummyPhone(coordPhone)) {
-    return { guest_name: remarkName, phone: coordPhone };
-  }
-  if (coordPhone && !isDummyPhone(coordPhone)) {
-    return { guest_name: remarkName || coordName, phone: coordPhone };
-  }
-  return { guest_name: remarkName || coordName, phone: coordPhone };
+
+  return {
+    guest_name: coordName,
+    phone: coordPhone,
+    is_remark_group_occupant: false,
+  };
 }
 
 export function duplicateCoordNameKeys(

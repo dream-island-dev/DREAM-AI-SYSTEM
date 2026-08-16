@@ -54,10 +54,10 @@ Deno.test("parseHtmlArrivalsReport: duplicate coordinator → occupant from הע
   assertEquals(rows[1].order_number, "262984");
 });
 
-Deno.test("parseHtmlArrivalsReport: group occupants → automation_scope=muted, meal_time extracted — P0 2026-08-05", () => {
+Deno.test("parseHtmlArrivalsReport: group occupants → automation_scope=courtesy_only (P0 2026-08-10, was muted), meal_time extracted", () => {
   const rows = parseHtmlArrivalsReport(GROUP_COORD_HTML);
-  assertEquals(rows[0].automation_scope, "muted");
-  assertEquals(rows[0].automation_muted, true);
+  assertEquals(rows[0].automation_scope, "courtesy_only");
+  assertEquals(rows[0].automation_muted, false);
   assertEquals(rows[0].is_remark_group_occupant, true);
   assertEquals(rows[0].meal_time, "20:00");
   assertEquals(rows[1].meal_time, "19:30");
@@ -78,13 +78,13 @@ const MUNICIPAL_GROUP_3ROW_HTML = `
 <tr><td></td><td>301111</td><td>סוויטת ג'ספר - 3</td><td>HB</td><td></td><td>1</td><td>2</td><td>עיריית תל אביב , 0501112222</td><td>2,000₪</td><td>רונית עמר 054-5556666 - א. ערב 20:00</td></tr>
 </table>`;
 
-Deno.test("parseHtmlArrivalsReport: municipal 3-row group → 3 profiles, all automation_scope=muted — P0 2026-08-05", () => {
+Deno.test("parseHtmlArrivalsReport: municipal 3-row group → 3 profiles, all automation_scope=courtesy_only (P0 2026-08-10, was muted)", () => {
   const rows = parseHtmlArrivalsReport(MUNICIPAL_GROUP_3ROW_HTML);
   assertEquals(rows.length, 3);
   assertEquals(rows.map((r) => r.guest_name), ["דנה לוי", "יוסי כהן", "רונית עמר"]);
   assertEquals(rows.map((r) => r.phone), ["+972501112222", "+972523334444", "+972545556666"]);
-  assertEquals(rows.every((r) => r.automation_scope === "muted"), true);
-  assertEquals(rows.every((r) => r.automation_muted === true), true);
+  assertEquals(rows.every((r) => r.automation_scope === "courtesy_only"), true);
+  assertEquals(rows.every((r) => r.automation_muted === false), true);
   assertEquals(rows.every((r) => r.is_remark_group_occupant === true), true);
   assertEquals(rows.map((r) => r.room), ["ג׳ספר 1", "ג׳ספר 2", "ג׳ספר 3"]);
 });
@@ -135,6 +135,25 @@ Deno.test("parseHtmlArrivalsReport: single-row municipal coordinator (no remark 
   assertEquals(rows[0].is_remark_group_occupant, false);
   assertEquals(rows[0].automation_scope, "muted");
   assertEquals(rows[0].room, "רובי 14");
+});
+
+const MULTI_ROOM_COORD_NO_REMARK_PHONE_HTML = `
+<table><tr><td>כניסה</td><td>17/08/2026</td></tr>
+<tr><td>..</td><td>מס. הזמנה</td><td>סוג יחידה - חדר</td><td>בסיס אירוח</td><td>שעה</td><td>לילות</td><td>מב-ילד-ת</td><td>לקוח</td><td>סכום</td><td>הערות</td></tr>
+<tr><td></td><td>273519</td><td>סוויטת אמטיסט - 8</td><td>HB</td><td></td><td>1</td><td>2</td><td>רונית קאשי , 0523265035</td><td>2,000₪</td><td>דגנית ושיר מוריה 7787</td></tr>
+<tr><td></td><td>273519</td><td>סוויטת אמטיסט - 9</td><td>HB</td><td></td><td>1</td><td>2</td><td>רונית קאשי , 0523265035</td><td>2,000₪</td><td>אתי ותהילה ולריו</td></tr>
+</table>`;
+
+Deno.test("parseHtmlArrivalsReport: duplicate coordinator + name-only remarks → keep coord identity, mergeable rooms", () => {
+  const rows = parseHtmlArrivalsReport(MULTI_ROOM_COORD_NO_REMARK_PHONE_HTML);
+  assertEquals(rows.length, 2);
+  assertEquals(rows[0].guest_name, "רונית קאשי");
+  assertEquals(rows[0].phone, "+972523265035");
+  assertEquals(rows[1].guest_name, "רונית קאשי");
+  assertEquals(rows[1].phone, "+972523265035");
+  assertEquals(rows.every((r) => r.is_remark_group_occupant === false), true);
+  assertEquals(rows[0].room, "אמטיסט 8");
+  assertEquals(rows[1].room, "אמטיסט 9");
 });
 
 Deno.test("parseHtmlArrivalsReport: solo row ignores remark occupant", () => {

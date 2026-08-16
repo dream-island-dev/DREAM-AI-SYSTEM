@@ -6,13 +6,13 @@ import {
   sanitizeE164,
 } from "./ezgoDoc1Parser.ts";
 import type { Doc2Record } from "./ezgoDoc2Parser.ts";
+import { resolveDoc2GuestIdentity } from "./ezgoDoc2RemarkIdentity.ts";
 import {
   isPremiumDayRoom,
   resolveSuiteRoomFromEzgoLabel,
 } from "./suiteNames.ts";
 import { addDepartureFromNights } from "./guestDepartureGuard.ts";
 
-const IL_MOBILE_RE = /(0(?:5[0-9])[-. ]?\d{3}[-. ]?\d{4})(?!\d)/g;
 const DUMMY_DATE_RE = /^01[/.-]01[/.-](1900|1970|2001)/;
 
 const EZGO_CORE_HEADERS = [
@@ -276,28 +276,6 @@ function parseArrivalDateCell(raw: unknown): string | null {
   return null;
 }
 
-function extractPhonesFromText(text: string): string[] {
-  const out: string[] = [];
-  const s = String(text || "");
-  for (const m of s.matchAll(IL_MOBILE_RE)) {
-    const e164 = sanitizeE164(extractPhoneFromOpsText(m[1]) || m[1]);
-    if (e164 && !out.includes(e164)) out.push(e164);
-  }
-  return out;
-}
-
-function extractNameFromRemark(remark: string): string | null {
-  const s = String(remark || "").trim();
-  if (!s) return null;
-  const phones = extractPhonesFromText(s);
-  let name = s;
-  for (const p of phones) {
-    name = name.replace(p, "").replace(/0\d{2}[-. ]?\d{3}[-. ]?\d{4}/g, "");
-  }
-  name = name.replace(/[,;|]+/g, " ").replace(/\s+/g, " ").trim();
-  return name || null;
-}
-
 function isDummyPhone(phone: string | null): boolean {
   if (!phone) return true;
   const digits = phone.replace(/\D/g, "");
@@ -361,30 +339,17 @@ function extractSuiteRow(
   const groupId = parseInt(val("groupId") || "0", 10) || 0;
   const arrivalDate = parseArrivalDateCell(val("arrivalDate")) ?? fallbackDate;
 
-  const remarkPhones = extractPhonesFromText(remark);
-  const remarkName = coordNameDuplicated ? extractNameFromRemark(remark) ?? extractNameFromRemark(opRemark) : null;
-
-  let guestPhone: string | null = null;
-  let guestName: string | null = coordName;
-
-  if (coordNameDuplicated) {
-    if (remarkPhones.length > 0 && remarkName) {
-      guestPhone = remarkPhones[0];
-      guestName = remarkName;
-    } else if (remarkName && directPhone && !isDummyPhone(directPhone)) {
-      guestPhone = directPhone;
-      guestName = remarkName;
-    } else if (directPhone && !isDummyPhone(directPhone)) {
-      guestPhone = directPhone;
-    } else if (remarkPhones.length > 0) {
-      guestPhone = remarkPhones[0];
-    } else if (coordPhone && !isDummyPhone(coordPhone)) {
-      guestPhone = coordPhone;
-    }
-  } else if (directPhone && !isDummyPhone(directPhone)) {
-    guestPhone = directPhone;
-  } else if (coordPhone && !isDummyPhone(coordPhone)) {
-    guestPhone = coordPhone;
+  const identity = resolveDoc2GuestIdentity(
+    coordName,
+    coordPhone || directPhone,
+    remark || opRemark,
+    coordNameDuplicated,
+  );
+  let guestName = identity.guest_name;
+  let guestPhone = identity.phone;
+  if (!coordNameDuplicated) {
+    if (directPhone && !isDummyPhone(directPhone)) guestPhone = directPhone;
+    else if (coordPhone && !isDummyPhone(coordPhone)) guestPhone = coordPhone;
   }
 
   if (!guestName && !guestPhone && !roomName && !suiteType) return null;
@@ -398,7 +363,7 @@ function extractSuiteRow(
     nights,
     arrivalDate,
     groupId,
-    isGroupOccupant: coordNameDuplicated,
+    isGroupOccupant: identity.is_remark_group_occupant,
     coordName,
     coordPhone,
   };

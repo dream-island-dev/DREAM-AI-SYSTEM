@@ -72,6 +72,20 @@ Deno.test("parseSuiteArrivalsCsvText: duplicated coordinator name → is_remark_
   if (records[1].guest_name !== "משה לוי") throw new Error(`row1 guest_name ${records[1].guest_name}`);
 });
 
+Deno.test("parseSuiteArrivalsCsvText: duplicate coord + name-only remarks → not group occupant", () => {
+  const csv = [
+    "iOrderId,sTel1,sRemark,sClientFullName,sSubItemName,sRoomName,iResLineId,iNights",
+    "273519,0523265035,דגנית ושיר מוריה 7787,רונית קאשי,סוויטת אמטיסט,8,9821400,1",
+    "273519,0523265035,אתי ותהילה ולריו,רונית קאשי,סוויטת אמטיסט,9,9821401,1",
+  ].join("\n");
+  const records = parseSuiteArrivalsCsvText(csv, "17.08.26.csv");
+  if (records.length !== 2) throw new Error(`expected 2 records got ${records.length}`);
+  for (const r of records) {
+    if (r.is_remark_group_occupant) throw new Error("expected is_remark_group_occupant false");
+    if (r.guest_name !== "רונית קאשי") throw new Error(`guest_name ${r.guest_name}`);
+  }
+});
+
 Deno.test("parseSuiteArrivalsCsvText: iNights=0 on day-pass row → departure_date === arrival_date — P0 2026-08-05", () => {
   const csv = [
     "iOrderId,sTel1,sRemark,sClientFullName,sSubItemName,sRoomName,iResLineId,iNights",

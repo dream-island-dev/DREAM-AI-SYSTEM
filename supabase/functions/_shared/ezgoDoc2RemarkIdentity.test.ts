@@ -47,14 +47,10 @@ Deno.test("resolveDoc2GuestIdentity: dual-occupant remark still resolves to occu
   );
   assertEquals(identity.guest_name, "אורטל בנטורה");
   assertEquals(identity.phone, "+972503302020");
+  assertEquals(identity.is_remark_group_occupant, true);
 });
 
-Deno.test("resolveDoc2GuestIdentity: remark has a phone but no parseable name → prefers remarkPhones[0] over a valid coordPhone — QA regression lock-in 2026-08-05", () => {
-  // Branch-order regression guard: remarkPhones.length>0 is checked before the
-  // coordPhone-valid branch. A remark that's just a bare phone (no name text
-  // in front of it) has remarkPhones non-empty but remarkName null — this
-  // must resolve to the remark's phone, with the name falling back to
-  // coordName, NOT fall through to coordPhone.
+Deno.test("resolveDoc2GuestIdentity: phone in remark without a name → keep coordinator (swap needs name+phone)", () => {
   const identity = resolveDoc2GuestIdentity(
     "בנק לאומי ועד תיכון",
     "0502005820",
@@ -62,18 +58,20 @@ Deno.test("resolveDoc2GuestIdentity: remark has a phone but no parseable name �
     true,
   );
   assertEquals(identity.guest_name, "בנק לאומי ועד תיכון");
-  assertEquals(identity.phone, "+972503302020");
+  assertEquals(identity.phone, "0502005820");
+  assertEquals(identity.is_remark_group_occupant, false);
 });
 
-Deno.test("resolveDoc2GuestIdentity: no remark phone at all → falls back to coordPhone (passed through as given, no normalization inside this function)", () => {
+Deno.test("resolveDoc2GuestIdentity: name-only remark → keep coordinator name+phone (multi-room same guest)", () => {
   const identity = resolveDoc2GuestIdentity(
-    "בנק לאומי ועד תיכון",
-    "0502005820",
-    "נילי הללי",
+    "רונית קאשי",
+    "+972523265035",
+    "דגנית ושיר מוריה 7787",
     true,
   );
-  assertEquals(identity.guest_name, "נילי הללי");
-  assertEquals(identity.phone, "0502005820");
+  assertEquals(identity.guest_name, "רונית קאשי");
+  assertEquals(identity.phone, "+972523265035");
+  assertEquals(identity.is_remark_group_occupant, false);
 });
 
 Deno.test("duplicateCoordNameKeys: flags names appearing 2+ times", () => {
