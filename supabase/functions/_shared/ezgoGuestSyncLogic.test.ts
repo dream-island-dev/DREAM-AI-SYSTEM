@@ -3,6 +3,7 @@ import {
   BOARD_TO_MEAL_PLAN,
   ddmmyyyyToIso,
   extractOrderClient,
+  extractOrderRoomsCount,
   extractReservation,
   pickFillEmpty,
   resolveApiRoomOccupantIdentity,
@@ -131,6 +132,33 @@ Deno.test("extractOrderClient: Type=Delete is NOT extracted here (handled separa
 Deno.test("extractOrderClient: Activities/Reservations entities return null (not this function's job)", () => {
   assertEquals(extractOrderClient({ id: "x", created_at: "", raw_payload: { Entity: "Activities" } }), null);
   assertEquals(extractOrderClient({ id: "x", created_at: "", raw_payload: { Entity: "Reservations" } }), null);
+});
+
+// ── extractOrderRoomsCount ──────────────────────────────────────────────────
+
+Deno.test("extractOrderRoomsCount: Entity=Orders shape, empty Rooms -> 0 (day-pass/spa-only)", () => {
+  const rawPayload = {
+    Entity: "Orders",
+    OrderId: 285007,
+    Value: JSON.stringify({ Order: { OrderId: 285007, Rooms: [] }, Client: {} }),
+  };
+  assertEquals(extractOrderRoomsCount(rawPayload), 0);
+});
+
+Deno.test("extractOrderRoomsCount: plain Type=Update shape, empty Rooms -> 0", () => {
+  const rawPayload = { Type: "Update", OrderId: 284340, Order: { OrderId: 284340, Rooms: [] }, Client: {} };
+  assertEquals(extractOrderRoomsCount(rawPayload), 0);
+});
+
+Deno.test("extractOrderRoomsCount: non-empty Rooms -> count, not room-less", () => {
+  const rawPayload = { Type: "Update", OrderId: 1, Order: { Rooms: [{ RoomId: 3 }, { RoomId: 7 }] }, Client: {} };
+  assertEquals(extractOrderRoomsCount(rawPayload), 2);
+});
+
+Deno.test("extractOrderRoomsCount: unreadable shape -> null, never guessed as room-less", () => {
+  assertEquals(extractOrderRoomsCount({ Entity: "Activities" }), null);
+  assertEquals(extractOrderRoomsCount({ Type: "Delete", Order: { Rooms: [] } }), null);
+  assertEquals(extractOrderRoomsCount({ Type: "Update", Order: { Rooms: "not-an-array" } }), null);
 });
 
 // ── extractReservation ─────────────────────────────────────────────────────

@@ -113,6 +113,38 @@ export function extractOrderClient(ingestRow: {
   };
 }
 
+/**
+ * Whether an Orders/plain-snapshot payload's own Order.Rooms array has any
+ * entries. Both live shapes carry Order.Rooms: [] identically for a
+ * room-less booking (day-pass/spa-only) -- confirmed live, 2026-08-16: EZGO
+ * never pushes an Entity=Reservations event for these at all, so pairing
+ * every Orders/Client snapshot against a same-batch Reservations line (the
+ * only way ezgo-guest-sync currently resolves an order) retries them
+ * forever with nothing that will ever arrive. 1041 of 1144 stuck OrderIds
+ * in the live backlog had NEVER had a Reservations row in the table's
+ * entire history at the time this was found.
+ *
+ * Returns null (not 0) when the shape can't be read at all -- the caller
+ * must never treat "couldn't tell" as "definitely room-less" (Zero Data
+ * Loss: only give up on an order when this positively confirms Rooms:[],
+ * never on an unparseable payload).
+ */
+export function extractOrderRoomsCount(rawPayload: Record<string, unknown>): number | null {
+  const entity = rawPayload.Entity as string | undefined;
+  const type = rawPayload.Type as string | null | undefined;
+
+  let order: Record<string, unknown> | null = null;
+  if (entity === "Orders") {
+    const value = parseInnerValue(rawPayload);
+    order = (value?.Order as Record<string, unknown>) ?? null;
+  } else if (!entity && (type === "Insert" || type === "Update")) {
+    order = (rawPayload.Order as Record<string, unknown>) ?? null;
+  }
+  if (!order) return null;
+  const rooms = order.Rooms;
+  return Array.isArray(rooms) ? rooms.length : null;
+}
+
 export function extractReservation(ingestRow: {
   id: string;
   raw_payload: Record<string, unknown>;

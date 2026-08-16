@@ -70,6 +70,7 @@ import {
   type OrderClientInfo,
   type ReservationInfo,
   extractOrderClient,
+  extractOrderRoomsCount,
   extractReservation,
   resolveApiRoomOccupantIdentity,
 } from "../_shared/ezgoGuestSyncLogic.ts";
@@ -394,6 +395,7 @@ serve(async (req) => {
     unresolved_duplicate_guest: 0, unresolved_invalid_dates: 0, unresolved_other: 0,
     resolved_via_remark: 0, resolved_via_order_client: 0,
     skipped_cancelled: 0, skipped_no_client_data: 0, ignored_out_of_scope: 0,
+    ignored_no_room_order_rows: 0,
     cancellations_applied: 0, delete_events_no_matching_guest: 0,
   };
 
@@ -502,6 +504,44 @@ serve(async (req) => {
       reservationsByOrder.set(res.orderId, list);
       rowIdsByOrder.set(res.orderId, (rowIdsByOrder.get(res.orderId) ?? new Set()).add(row.id));
     }
+  }
+
+  // 2c) Orders/Client snapshots with no Reservations line in this batch --
+  // could be a genuine race (Reservations for this order just hasn't
+  // arrived yet, will pair next run) or a day-pass/spa-only order that will
+  // NEVER get a Reservations event (EZGO only sends one for a physical
+  // room). Confirmed live 2026-08-16: 1041 of 1144 stuck OrderIds had never
+  // had a Reservations row anywhere, ever -- they were cycling
+  // staged->processing->staged every run since 2026-08-13, the day the
+  // webhook went live, three days before this fix. Give every order a
+  // GRACE_MS window to pair normally (covers the race); past that, only
+  // classify it out-of-scope when EVERY claimed row for that order
+  // positively confirms Order.Rooms: [] (never on an unparseable payload --
+  // Zero Data Loss). Day-pass guest creation via the live API isn't in this
+  // round's scope anyway (see module doc) -- this only stops the infinite
+  // retry loop and the unbounded ezgo_api_ingest growth it causes.
+  const GRACE_MS = 30 * 60 * 1000;
+  const now = Date.now();
+  for (const orderId of orderClientByOrder.keys()) {
+    if (reservationsByOrder.has(orderId)) continue;
+    const rowIds = [...(rowIdsByOrder.get(orderId) ?? [])];
+    if (!rowIds.length) continue;
+    const oldestCreatedAt = Math.min(...rowIds.map((id) => new Date(createdAtById.get(id) ?? now).getTime()));
+    if (now - oldestCreatedAt < GRACE_MS) continue; // still within the race window -- keep retrying
+
+    const roomsCounts = rowIds.map((id) => {
+      const row = inScopeFull.find((r) => r.id === id);
+      return row ? extractOrderRoomsCount(row.raw_payload) : null;
+    });
+    const allConfirmedRoomless = roomsCounts.every((c) => c === 0);
+    if (!allConfirmedRoomless) continue; // has rooms, or unparseable -- never guess, keep retrying
+
+    await supabase.from("ezgo_api_ingest").update({
+      status: "ignored",
+      notes: "order_no_room_grace_expired",
+    }).in("id", rowIds);
+    summary.ignored_no_room_order_rows += rowIds.length;
+    release(rowIds);
   }
 
   const roomMapRows = await supabase.from("ezgo_suite_room_map").select("ezgo_room_id, suite_name");
