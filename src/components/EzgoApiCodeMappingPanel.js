@@ -39,6 +39,26 @@ function fmtActivityTime(start, end) {
   return endTime ? `${date} ${time}–${endTime}` : `${date} ${time || ""}`.trim();
 }
 
+function fmtRelative(iso) {
+  if (!iso) return "—";
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "עכשיו";
+  if (mins < 60) return `לפני ${mins} דק'`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `לפני ${hours} שע'`;
+  return `לפני ${Math.floor(hours / 24)} ימים`;
+}
+
+function sampleOrderHint(seenRow) {
+  if (!seenRow) return { text: "אין אירוע חי לדוגמה — נוסף ידנית או שטרם נצפה ב-API.", warn: false };
+  if (!seenRow.sample_order_id) return { text: "אין אירוע חי לדוגמה — נוסף ידנית או שטרם נצפה ב-API.", warn: false };
+  const multi = Number(seenRow.sample_order_room_count) > 1;
+  return multi
+    ? { text: `⚠ הזמנה #${seenRow.sample_order_id} כוללת ${seenRow.sample_order_room_count} חדרים — אל תאמת לפיה בלבד. קח את המספר מרשימת היחידות ב-EZGO.`, warn: true }
+    : { text: `לאימות: הזמנה #${seenRow.sample_order_id} (חדר אחד) · נצפה ${seenRow.event_count} פעמים · לאחרונה ${fmtTimestamp(seenRow.last_seen_at)}`, warn: false };
+}
+
 const rowStyle = {
   background: "rgba(0,0,0,0.2)",
   border: "1px solid rgba(201,169,110,0.25)",
@@ -96,6 +116,66 @@ function ConfirmButton({ disabled, onClick, children }) {
     >
       {busy ? "שומר..." : children}
     </button>
+  );
+}
+
+// ── Sync health — is EZGO actually sending data, is our cron actually
+// draining it. Reads ezgo_api_ingest directly: staged/processing stuck high
+// means the cron isn't keeping up; failed>0 means a row needs a look;
+// last-event age tells you whether EZGO itself has gone quiet.
+const ENTITY_LABELS = { Orders: "הזמנה", Reservations: "חדר", Activities: "טיפול", MealTimings: "שעת ארוחה", Adds: "תוספת" };
+
+function SyncHealthCard() {
+  const [health, setHealth] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const [staged, processing, failed, parsed24h, lastRow] = await Promise.all([
+      supabase.from("ezgo_api_ingest").select("id", { count: "exact", head: true }).eq("status", "staged"),
+      supabase.from("ezgo_api_ingest").select("id", { count: "exact", head: true }).eq("status", "processing"),
+      supabase.from("ezgo_api_ingest").select("id", { count: "exact", head: true }).eq("status", "failed"),
+      supabase.from("ezgo_api_ingest").select("id", { count: "exact", head: true }).eq("status", "parsed").gte("created_at", since24h),
+      supabase.from("ezgo_api_ingest").select("created_at, raw_payload").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    ]);
+    setHealth({
+      staged: staged.count ?? 0,
+      processing: processing.count ?? 0,
+      failed: failed.count ?? 0,
+      parsed24h: parsed24h.count ?? 0,
+      lastEventAt: lastRow.data?.created_at ?? null,
+      lastEntity: lastRow.data?.raw_payload?.Entity ?? null,
+    });
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading || !health) return <div style={{ fontSize: 13, color: "rgba(232,201,138,0.6)" }}>בודק בריאות סנכרון...</div>;
+
+  const backlog = health.staged + health.processing;
+  let status = { text: "✓ הכל מסונכרן — התור ריק.", color: "#86efac" };
+  if (health.failed > 0) {
+    status = { text: `⚠ ${health.failed} רשומות נכשלו בעיבוד — דורש בדיקה.`, color: "#f87171" };
+  } else if (backlog > 50) {
+    status = { text: `⏳ ${backlog} אירועים ממתינים לעיבוד — הקרון מנקז כל דקה, אמור להתאזן לבד תוך דקות.`, color: "#fbbf24" };
+  } else if (backlog > 0) {
+    status = { text: `${backlog} אירועים בתור — תקין (מתעדכן כל דקה).`, color: "rgba(232,201,138,0.7)" };
+  }
+
+  return (
+    <div style={{ ...cardBoxStyle, marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(232,201,138,0.9)" }}>📡 בריאות סנכרון EZGO</div>
+        <button type="button" className="btn btn-sm" onClick={load} style={{ fontSize: 11 }}>🔄 רענון</button>
+      </div>
+      <div style={{ fontSize: 13, color: status.color, marginTop: 8 }}>{status.text}</div>
+      <div style={{ fontSize: 11, color: "rgba(232,201,138,0.55)", marginTop: 6, lineHeight: 1.7 }}>
+        אירוע אחרון מ-EZGO: {fmtRelative(health.lastEventAt)}{health.lastEntity ? ` (${ENTITY_LABELS[health.lastEntity] ?? health.lastEntity})` : ""}
+        {" · "}עובדו ב-24 שעות אחרונות: {health.parsed24h}
+      </div>
+    </div>
   );
 }
 
@@ -261,16 +341,19 @@ function OrderActivityLookup({ therapists, onMapped, showToast }) {
 
 function WorkerMappingSection({ showToast }) {
   const [therapists, setTherapists] = useState([]);
+  const [seenMap, setSeenMap] = useState(new Map());
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("spa_therapists")
-      .select("id, name, active, ezgo_worker_id")
-      .order("name");
+    const [{ data, error }, { data: seen, error: seenErr }] = await Promise.all([
+      supabase.from("spa_therapists").select("id, name, active, ezgo_worker_id").order("name"),
+      supabase.from("ezgo_worker_ids_seen").select("*"),
+    ]);
     if (error) console.error("[EzgoApiCodeMappingPanel] spa_therapists:", error.message);
+    if (seenErr) console.error("[EzgoApiCodeMappingPanel] ezgo_worker_ids_seen:", seenErr.message);
     setTherapists(data ?? []);
+    setSeenMap(new Map((seen ?? []).map((r) => [r.ezgo_worker_id, r])));
     setLoading(false);
   }, []);
 
@@ -308,23 +391,31 @@ function WorkerMappingSection({ showToast }) {
         <div style={{ fontSize: 13, color: "rgba(232,201,138,0.5)" }}>אין עדיין מטפל/ת משויכ/ת.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {mapped.map((t) => (
-            <div key={t.id} style={rowStyle}>
-              <div style={{ fontSize: 13, color: "rgba(232,201,138,0.85)" }}>
-                <strong>{t.name}</strong>{t.active ? "" : " (לא פעיל/ה)"}
-                <span style={{ color: "rgba(232,201,138,0.5)" }}> · WorkerId {t.ezgo_worker_id}</span>
+          {mapped.map((t) => {
+            const seenRow = seenMap.get(t.ezgo_worker_id);
+            return (
+              <div key={t.id} style={rowStyle}>
+                <div style={{ fontSize: 13, color: "rgba(232,201,138,0.85)" }}>
+                  <strong>{t.name}</strong>{t.active ? "" : " (לא פעיל/ה)"}
+                  <span style={{ color: "rgba(232,201,138,0.5)" }}> · WorkerId {t.ezgo_worker_id}</span>
+                  <div style={{ fontSize: 11, color: "rgba(232,201,138,0.55)", marginTop: 4 }}>
+                    {seenRow?.sample_order_id
+                      ? `לאימות: הזמנה #${seenRow.sample_order_id} · נצפה ${seenRow.event_count} פעמים · לאחרונה ${fmtTimestamp(seenRow.last_seen_at)}`
+                      : "אין אירוע חי לדוגמה עדיין — לא נצפה ב-API."}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => handleClear(t)}
+                  title="מסיר את השיוך — WorkerId יחזור להיות פנוי לשיוך מחדש"
+                  style={{ fontSize: 11 }}
+                >
+                  בטל שיוך
+                </button>
               </div>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => handleClear(t)}
-                title="מסיר את השיוך — WorkerId יחזור להיות פנוי לשיוך מחדש"
-                style={{ fontSize: 11 }}
-              >
-                בטל שיוך
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -335,6 +426,7 @@ function WorkerMappingSection({ showToast }) {
 
 function RoomMappingSection({ showToast }) {
   const [rows, setRows] = useState([]);
+  const [seenMap, setSeenMap] = useState(new Map());
   const [mapped, setMapped] = useState([]);
   const [choice, setChoice] = useState({});
   const [edit, setEdit] = useState({});
@@ -352,6 +444,7 @@ function RoomMappingSection({ showToast }) {
     if (mpErr) console.error("[EzgoApiCodeMappingPanel] ezgo_suite_room_map:", mpErr.message);
     const mappedIds = new Set((mp ?? []).map((m) => m.ezgo_room_id));
     setRows((seen ?? []).filter((r) => !mappedIds.has(r.ezgo_room_id)));
+    setSeenMap(new Map((seen ?? []).map((r) => [r.ezgo_room_id, r])));
     setMapped(mp ?? []);
     setLoading(false);
   }, []);
@@ -491,6 +584,7 @@ function RoomMappingSection({ showToast }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {sortedMapped.map((m) => {
               const trustedRow = isTrustedMatch(m.matched_via);
+              const hint = sampleOrderHint(seenMap.get(m.ezgo_room_id));
               return (
                 <div
                   key={m.ezgo_room_id}
@@ -504,6 +598,9 @@ function RoomMappingSection({ showToast }) {
                     <span> → {m.suite_name}</span>
                     <div style={{ fontSize: 11, color: trustedRow ? "#86efac" : "#fbbf24", marginTop: 4 }}>
                       {MATCHED_VIA_LABELS[m.matched_via] ?? m.matched_via}
+                    </div>
+                    <div style={{ fontSize: 11, color: hint.warn ? "#fbbf24" : "rgba(232,201,138,0.55)", marginTop: 2 }}>
+                      {hint.text}
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -594,6 +691,7 @@ export default function EzgoApiCodeMappingPanel({ showToast }) {
       <div style={{ fontSize: 12, color: "rgba(232,201,138,0.6)", marginBottom: 16 }}>
         שיוך RoomId חייב להיות מאומת. הסקה אוטומטית לא נחשבת נכונה עד שתלחץ «אשר נכון».
       </div>
+      <SyncHealthCard />
       <WorkerMappingSection showToast={notify} />
       <RoomMappingSection showToast={notify} />
     </div>
