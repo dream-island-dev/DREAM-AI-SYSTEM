@@ -5,10 +5,19 @@ import {
   resolveDoc2ImportAutomationScope,
 } from "./importAutomationScope.ts";
 
-Deno.test("resolveDoc2ImportAutomationScope: remark group occupant → muted, not courtesy_only", () => {
+Deno.test("resolveDoc2ImportAutomationScope: remark group occupant → courtesy_only, not muted (P0 2026-08-10)", () => {
   assertEquals(
     resolveDoc2ImportAutomationScope({ coordNameRaw: "בנק לאומי ועד תיכון", isRemarkGroupOccupant: true }),
-    "muted",
+    "courtesy_only",
+  );
+});
+
+Deno.test("resolveDoc2ImportAutomationScope: remark group occupant wins even over a corporate coord name", () => {
+  // isRemarkGroupOccupant is checked first — a resolved individual occupant on
+  // a corporate-coordinator booking still gets the Stage 4 courtesy check.
+  assertEquals(
+    resolveDoc2ImportAutomationScope({ coordNameRaw: "עיריית תל אביב", isRemarkGroupOccupant: true }),
+    "courtesy_only",
   );
 });
 

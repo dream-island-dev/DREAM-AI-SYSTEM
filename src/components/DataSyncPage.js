@@ -10,12 +10,14 @@ import SpaUpsellHub from "./SpaUpsellHub";
 import DayPassRoomBulkFixPanel from "./DayPassRoomBulkFixPanel";
 import SuiteRoomTypeBulkFixPanel from "./SuiteRoomTypeBulkFixPanel";
 import EzgoMailSyncPanel from "./EzgoMailSyncPanel";
+import EzgoApiCodeMappingPanel from "./EzgoApiCodeMappingPanel";
 import { israelTodayYmd } from "../utils/spaUpsellAudience";
 
 const TABS = [
   { id: "import", label: "📥 ייבוא דוחות", hint: "Doc 1/2, Smart Paste, פעילויות ספא" },
   { id: "ezgo_mail", label: "📧 מייל EZGO", hint: "דוחות מהגר — אישור ידני" },
   { id: "spa_upsell", label: "💆 הצעת ספא — בילוי יומי", hint: "שליחה לאורחים ללא טיפול" },
+  { id: "ezgo_api", label: "🔌 EZGO API", hint: "מיפוי קודים חד-פעמי (Phase 1)" },
 ];
 
 function todayYmd() {
@@ -246,6 +248,8 @@ export default function DataSyncPage() {
           />
         </>
       )}
+
+      {activeTab === "ezgo_api" && <EzgoApiCodeMappingPanel showToast={showToast} />}
     </div>
   );
 }
