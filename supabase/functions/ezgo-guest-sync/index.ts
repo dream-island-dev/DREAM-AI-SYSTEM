@@ -405,10 +405,18 @@ serve(async (req) => {
   // gets zero rows back for anything this run already claimed — closes the
   // gap flagged in security review where migration 295 added 'processing'
   // but nothing actually used it as a claim state.
+  //
+  // Oldest-first (2c fix, 2026-08-16): without an ORDER BY, an unbounded
+  // sequential scan under constant insert/update churn gives no guarantee
+  // old rows ever get reclaimed ahead of fresh ones — the exact starvation
+  // that let the day-pass/spa-only backlog (see extractOrderRoomsCount doc)
+  // sit unprocessed for 3 days despite the cron running every minute the
+  // whole time.
   const { data: candidateRows } = await supabase
     .from("ezgo_api_ingest")
     .select("id")
     .eq("status", "staged")
+    .order("created_at", { ascending: true })
     .limit(BATCH_LIMIT);
   const candidateIds = (candidateRows ?? []).map((r) => r.id);
 
