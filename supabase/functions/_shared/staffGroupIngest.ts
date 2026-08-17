@@ -18,6 +18,7 @@ export type OperationalKind =
   | "chitchat"
   | "task_open"
   | "task_resolve_reaction"
+  | "ops_no_answer"
   | "hk_ready"
   | "hk_check_in"
   | "hk_check_out"

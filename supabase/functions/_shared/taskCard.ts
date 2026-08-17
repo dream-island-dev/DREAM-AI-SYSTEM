@@ -1,6 +1,19 @@
 // supabase/functions/_shared/taskCard.ts
-// Structured English Whapi ops-group task card — shared by whapi-webhook (staff
-// group reports) and notify-manual-task (in-app / inbox-routed / guest_request).
+// Compact English Whapi ops-group task card — shared by whapi-webhook and
+// notify-manual-task. Completion is 👍🏼 on the message id, not this wording.
+
+function sourceTag(source: string | null): string | null {
+  if (source === "guest_request") return "[BOT]";
+  if (source === "inbox_routed") return "[GUEST WA]";
+  if (source === "manual") return "[MANUAL TASK]";
+  if (source === "front_desk_voice") return "[FRONT DESK]";
+  if (source === "executive_voice") return "[EXEC VOICE]";
+  return null;
+}
+
+function joinCard(lines: Array<string | null | false | undefined>): string {
+  return lines.filter((l): l is string => typeof l === "string" && l.length > 0).join("\n");
+}
 
 /** Staff Whapi group card — whapi-webhook staff reports & voice transcriptions. */
 export function buildTaskCard(
@@ -9,14 +22,13 @@ export function buildTaskCard(
   assigneeLine: string | null,
   fromVoice = false,
 ): string {
-  return [
-    `📌 New Task Opened: Suite ${room ?? "—"}`,
-    ...(fromVoice ? [`🎤 Transcribed from voice:`] : []),
-    `📋 Task: ${desc}`,
-    `⏰ Status: Pending`,
-    ...(assigneeLine ? [assigneeLine] : []),
-    `👉 Please react with 👍🏼 to complete this task.`,
-  ].join("\n");
+  return joinCard([
+    `📌 Suite ${room ?? "—"}`,
+    fromVoice ? "🎤 voice" : null,
+    desc,
+    assigneeLine,
+    "👍🏼 done",
+  ]);
 }
 
 /** In-app / inbox-routed / HITL-approved guest tasks — same layout + source tag. */
@@ -26,22 +38,11 @@ export function buildStaffDispatchedTaskCard(
   assigneeLine: string | null,
   source: string | null,
 ): string {
-  // guest_request = bot/portal HITL path — must stay visually distinct from
-  // inbox_routed (staff manually routed from Inbox). Same card layout either way.
-  const sourceTag =
-    source === "guest_request" ? "[BOT]"
-      : source === "inbox_routed" ? "[GUEST WA]"
-      : source === "manual" ? "[MANUAL TASK]"
-      : source === "front_desk_voice" ? "[FRONT DESK]"
-      : source === "executive_voice" ? "[EXEC VOICE]"
-      : null;
-
-  return [
-    `📌 New Task Opened: Suite ${room ?? "—"}`,
-    ...(sourceTag ? [`📍 Source: ${sourceTag}`] : []),
-    `📋 Task: ${desc}`,
-    `⏰ Status: Pending`,
-    ...(assigneeLine ? [assigneeLine] : []),
-    `👉 Please react with 👍🏼 to complete this task.`,
-  ].join("\n");
+  return joinCard([
+    `📌 Suite ${room ?? "—"}`,
+    sourceTag(source),
+    desc,
+    assigneeLine,
+    "👍🏼 done",
+  ]);
 }

@@ -419,6 +419,17 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-08-17 — Ops `no answer` is a guest ping, not a new task
+- **Symptom:** Field staff knock, nobody opens, they type `5 no answer` (or reply on the card). LLM used to treat that as a new ticket or ignore it as chitchat.
+- **Fix:** Tier-0 in `whapi-webhook` before classify — resolve room from digits or quoted task card, Whapi the in-stay guest, ack the ops group. Do not mark the task done.
+- **Lesson:** Door-miss is guest comms, not a second ops ticket. Keep 👍🏼 as the only complete signal.
+
+### 2026-08-17 — Gemini 2.5 thinking truncates one-line field-ops translation
+- **Symptom:** Whapi ops card `📋 Task: Deliver 2 toothbrushes and` (cut after "and"); board Hebrew was complete.
+- **Root:** `fieldOpsTranslation` `maxOutputTokens:160` on Gemini 2.5 — thinking tokens consume the budget; code accepted any non-Hebrew line. Inbox prefix `[מתיבת וואטסאפ — name]` was also sent to the model.
+- **Fix:** Strip prefix; `thinkingBudget:0`; 1024 tokens; reject `MAX_TOKENS` / dangling and|or|the.
+- **Lesson:** Guest-bot already flags `finishReason=MAX_TOKENS`; short "one line" Gemini calls need the same + thinking off.
+
 ### 2026-08-14 — Housekeeping `N ci` must not attach to yesterday's occupant
 - **Symptom:** `9 ci` checked in הראל ברקוביץ (arrived yesterday, departing today) because nobody arrives today to אמטיסט 9.
 - **Root:** After `findIncomingGuestForSuiteCheckIn` returned empty, CI fell back to `findActiveGuestForSuite` "late check-in" (arrival < today, still in stay window including departure day).

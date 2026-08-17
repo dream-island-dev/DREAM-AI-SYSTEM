@@ -7,7 +7,7 @@
 // reported tasks got a group card — inbox_routed sat silently on the board.
 //
 // Card format unified with buildTaskCard() in _shared/taskCard.ts
-// ("📌 New Task Opened: Suite X") — same English-in-group layout as whapi-
+// ("📌 Suite X" + source tag + desc + 👍🏼 done) — same English-in-group layout as whapi-
 // webhook staff reports. Source tag ([BOT] / [GUEST WA] / [MANUAL TASK]) on a
 // separate line so room number and task description never get mashed together.
 //

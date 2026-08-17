@@ -597,7 +597,7 @@ function guessHousekeepingSubCategory(text) {
   if (/קרח|ice/i.test(t)) return "ice";
   if (/מים|water|בקבוק|זירו|קולה/i.test(t)) return "water";
   if (/ניקיון|סידור|clean/i.test(t)) return "room_makeup";
-  if (/כוס|צלח|סבון|שמפו|כריך|נוחות|amenit/i.test(t)) return "amenities";
+  if (/כוס|צלח|סבון|שמפו|כריך|נוחות|משחת|מברשת|tooth|dental|amenit/i.test(t)) return "amenities";
   return null;
 }
 

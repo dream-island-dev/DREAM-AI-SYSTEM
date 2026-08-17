@@ -3,10 +3,17 @@
 import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import { buildStaffDispatchedTaskCard } from "./taskCard.ts";
 
-Deno.test("buildStaffDispatchedTaskCard — front_desk_voice and executive_voice source tags", () => {
-  const desk = buildStaffDispatchedTaskCard("Suite 8", "Extra towels", null, "front_desk_voice");
-  assertEquals(desk.includes("📍 Source: [FRONT DESK]"), true);
+Deno.test("buildStaffDispatchedTaskCard — compact layout + source tags", () => {
+  const desk = buildStaffDispatchedTaskCard("ג׳ספר 5", "DENTAL KIT", null, "front_desk_voice");
+  assertEquals(desk.includes("📌 Suite ג׳ספר 5"), true);
+  assertEquals(desk.includes("[FRONT DESK]"), true);
+  assertEquals(desk.includes("📍 Source:"), false);
+  assertEquals(desk.includes("New Task Opened"), false);
+  assertEquals(desk.endsWith("👍🏼 done"), true);
+
+  const guestWa = buildStaffDispatchedTaskCard("ג׳ספר 5", "DENTAL KIT", null, "inbox_routed");
+  assertEquals(guestWa.includes("[GUEST WA]"), true);
 
   const exec = buildStaffDispatchedTaskCard("Suite 3", "AC repair", null, "executive_voice");
-  assertEquals(exec.includes("📍 Source: [EXEC VOICE]"), true);
+  assertEquals(exec.includes("[EXEC VOICE]"), true);
 });

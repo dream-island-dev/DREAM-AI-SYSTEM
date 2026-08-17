@@ -93,10 +93,25 @@ import {
 } from "../_shared/daypassWindowOpener.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import { extractArrivalTimeFromText, persistGuestEta, insertArrivalEtaBoardAlert } from "../_shared/guestEta.ts";
+import {
+  detectGuestOccasionMention,
+  persistGuestOccasion,
+  buildOccasionAckReply,
+} from "../_shared/guestOccasionDetect.ts";
 import { tryHandleOritCsWhapiReply } from "../_shared/oritAgentOritDecision.ts";
 import { tryHandleOritGuestWaInbound } from "../_shared/oritGuestWaBridge.ts";
 import { isStaffAssistantInbound } from "../_shared/executiveIdentity.ts";
 import { handleExecutiveVoiceMessage } from "../_shared/executiveAssistant.ts";
+import {
+  buildOpsNoAnswerGroupAck,
+  dispatchOpsNoAnswerForRoom,
+  extractWhapiQuotedRef,
+  isOpsNoAnswerText,
+  parseOpsNoAnswerRoomIds,
+  parseSuiteLabelFromTaskCard,
+  resolveOpsNoAnswerGuestText,
+  roomIdFromSuiteLabel,
+} from "../_shared/opsNoAnswer.ts";
 import { ingestStaffGroupMessage, resolveHousekeepingSender } from "../_shared/staffGroupIngest.ts";
 import {
   isGuestStaffClaimActive,
@@ -390,6 +405,7 @@ async function transcribeVoice(apiKey: string, base64Audio: string, mimeType: st
 interface IncomingMessage {
   id: string; fromMe: boolean; chatId: string; fromPhone: string; fromName: string; text: string;
   voiceMediaId: string | null; voiceMimeType: string | null; voiceSeconds: number | null;
+  quotedId: string; quotedText: string;
 }
 function extractMessages(payload: Record<string, unknown>): IncomingMessage[] {
   const raw = Array.isArray(payload?.messages) ? (payload.messages as Array<Record<string, unknown>>) : [];
@@ -400,6 +416,7 @@ function extractMessages(payload: Record<string, unknown>): IncomingMessage[] {
       : type === "image" ? String((m?.image as Record<string, unknown>)?.caption ?? "")
       : "";
     const voice = type === "voice" ? (m?.voice as Record<string, unknown> | undefined) : undefined;
+    const quoted = extractWhapiQuotedRef(m);
     return {
       id:        String(m?.id ?? ""),
       fromMe:    m?.from_me === true,
@@ -410,6 +427,8 @@ function extractMessages(payload: Record<string, unknown>): IncomingMessage[] {
       voiceMediaId:  voice?.id ? String(voice.id) : null,
       voiceMimeType: voice?.mime_type ? String(voice.mime_type) : null,
       voiceSeconds:  typeof voice?.seconds === "number" ? voice.seconds : null,
+      quotedId: quoted.id,
+      quotedText: quoted.text,
     };
   });
 }
@@ -476,6 +495,85 @@ async function findOpenTaskForReaction(
   if (byTrigger) return { ...byTrigger, matchedOn: "source_message_id" };
 
   return null;
+}
+
+async function findTaskRoomForQuotedMessage(
+  supabase: ReturnType<typeof createClient>,
+  quotedId: string,
+): Promise<string | null> {
+  if (!quotedId) return null;
+  const { data: byCard } = await supabase
+    .from("tasks")
+    .select("room_number")
+    .eq("whapi_message_id", quotedId)
+    .maybeSingle();
+  if (byCard?.room_number) return String(byCard.room_number);
+  const { data: byTrigger } = await supabase
+    .from("tasks")
+    .select("room_number")
+    .eq("source_message_id", quotedId)
+    .maybeSingle();
+  return byTrigger?.room_number ? String(byTrigger.room_number) : null;
+}
+
+async function tryHandleOpsNoAnswer(
+  supabase: ReturnType<typeof createClient>,
+  msg: IncomingMessage,
+  opts: { ackToGroup: boolean },
+  results: Array<Record<string, unknown>>,
+): Promise<boolean> {
+  if (!msg.text || !isOpsNoAnswerText(msg.text)) return false;
+  if (msg.fromMe && /^[✉️⚠️]/.test(msg.text)) return false;
+
+  let roomIds = parseOpsNoAnswerRoomIds(msg.text);
+  if (roomIds.length === 0) {
+    const taskRoom = await findTaskRoomForQuotedMessage(supabase, msg.quotedId);
+    const cardLabel = parseSuiteLabelFromTaskCard(msg.quotedText);
+    const id = roomIdFromSuiteLabel(taskRoom) ?? roomIdFromSuiteLabel(cardLabel)
+      ?? (taskRoom && /^\d{1,2}$/.test(taskRoom.trim()) ? taskRoom.trim() : null);
+    if (id) roomIds = [id];
+  }
+
+  if (roomIds.length === 0) {
+    if (opts.ackToGroup) {
+      try {
+        await sendWhapiText(msg.chatId, "⚠️ no answer — חסר מספר חדר (השיבו לכרטיס או כתבו 5 no answer)", { noLinkPreview: true });
+      } catch { /* group ack is best-effort */ }
+    }
+    results.push({ id: msg.id, channel: "ops_no_answer", ignored: "missing_room" });
+    return true;
+  }
+
+  const guestText = await resolveOpsNoAnswerGuestText(supabase);
+  const dispatched = [];
+  for (const roomId of roomIds) {
+    dispatched.push(await dispatchOpsNoAnswerForRoom(supabase, roomId, guestText));
+  }
+  await ingestStaffGroupMessage(supabase, {
+    waMessageId: msg.id,
+    chatId: msg.chatId,
+    fromPhone: msg.fromPhone,
+    fromName: msg.fromName,
+    messageKind: "text",
+    bodyPreview: msg.text,
+    isOperational: true,
+    operationalKind: "ops_no_answer",
+  });
+  if (opts.ackToGroup) {
+    try {
+      await sendWhapiText(msg.chatId, buildOpsNoAnswerGroupAck(dispatched), { noLinkPreview: true });
+    } catch (e) {
+      console.warn("[whapi-webhook] ops_no_answer group ack failed:", (e as Error).message);
+    }
+  }
+  results.push({
+    id: msg.id,
+    channel: "ops_no_answer",
+    rooms: roomIds,
+    dispatched,
+    from_me: msg.fromMe,
+  });
+  return true;
 }
 
 async function resolveTaskByReaction(
@@ -1298,6 +1396,49 @@ async function handleGuestDirectMessage(
       return;
     }
 
+    // ── Occasion mention (birthday / anniversary / honeymoon / celebration) ──
+    // Deliberately LAST in the Tier-0 chain — every specific intercept above
+    // (balloon, spa, administrative/operational, human request…) already had
+    // its `return` chance, so a combined message like "בלונים ליום הולדת"
+    // still reaches the balloon intercept normally instead of being swallowed
+    // into a bare congratulations. Silent guest_profile capture only — never
+    // guest_alerts / needs_callback / ops task (guestOccasionDetect.ts).
+    // Falls through to the normal LLM/FAQ path when nothing changed
+    // (ineligible guest, or staff already set a different occasion type).
+    if (guestId && guestRecord) {
+      const detectedOccasion = detectGuestOccasionMention(text);
+      if (detectedOccasion) {
+        const occasionResult = await persistGuestOccasion(supabase, {
+          guestId,
+          guest: guestRecord as { arrival_date?: string | null; status?: string | null },
+          detected: detectedOccasion,
+        });
+        if (occasionResult.ok && occasionResult.changed) {
+          await patchGuestDmInbound(supabase, conversationId, {
+            guest_id: guestId,
+            intent: "occasion_capture",
+          });
+          await sendGuestDmReply(
+            supabase,
+            phone,
+            guestId,
+            buildOccasionAckReply(detectedOccasion.type),
+            false,
+          );
+          results.push({
+            ...base,
+            action: "occasion_capture",
+            occasionType: detectedOccasion.type,
+            muted: staffMuted,
+          });
+          return;
+        }
+        if (!occasionResult.ok && occasionResult.error) {
+          console.error("[whapi-webhook] occasion persist FAILED:", occasionResult.error);
+        }
+      }
+    }
+
     // bot_active_whapi — stub gate ahead of §4's real toggle UI (migration
     // 170 seeds bot_config.bot_active_whapi default 'true'). Mirrors where
     // Meta's bot_active gates (whatsapp-webhook.js) — only the generic
@@ -1696,6 +1837,8 @@ serve(async (req: Request) => {
         }
 
         const canAck = hkGroupReply && !msg.fromMe;
+        if (await tryHandleOpsNoAnswer(supabase, msg, { ackToGroup: canAck }, results)) continue;
+
         const hkSender = await resolveHousekeepingSender(supabase, msg.fromPhone, msg.fromName);
 
         const readyRooms = parseHousekeepingReadyRoomNumbers(msg.text);
@@ -1856,11 +1999,14 @@ serve(async (req: Request) => {
 
     for (const msg of messages) {
       // ── Guards ────────────────────────────────────────────────────────────
-      if (msg.fromMe)                  { results.push({ id: msg.id, ignored: "from_me" });     continue; } // never react to our own sends → no loops
       if (isDirectGuestChat(msg.chatId)) continue; // handled by guest_dm sweep above
       if (!msg.chatId.endsWith("@g.us")) { results.push({ id: msg.id, ignored: "not_a_group" }); continue; }
       if (hkGroup && msg.chatId === hkGroup) continue; // handled by housekeeping sweep — never ops-classify
       if (lockGroup && msg.chatId !== lockGroup) { results.push({ id: msg.id, ignored: "other_group" }); continue; }
+
+      if (msg.text && await tryHandleOpsNoAnswer(supabase, msg, { ackToGroup: true }, results)) continue;
+
+      if (msg.fromMe)                  { results.push({ id: msg.id, ignored: "from_me" });     continue; } // never react to our own sends → no loops
 
       // ── Voice note → transcribe, then rejoin the SAME pipeline a typed
       // message uses below (parseDeterministic/classifyWithAi never know the
