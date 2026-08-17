@@ -1,0 +1,469 @@
+// Live occupancy forecast (דוח צפי) — suites from guests, day packages from Operations HTML.
+
+import { israelLocalHour, israelYmd } from "./automationSchedule.ts";
+import {
+  classifyOpsRow,
+  extractOpsTableRows,
+  sumSpaTreatmentsFromExtras,
+  type OpsPackageRow,
+} from "./forecastOpsClassify.ts";
+import { isEffectiveDayPassGuest, isEffectiveSuiteGuest } from "./suiteNames.ts";
+import { sendWhapiTextGuarded } from "./whapiVelocityGuard.ts";
+import { cleanPhoneForMention } from "./whapiSend.ts";
+
+// deno-lint-ignore no-explicit-any
+type SupabaseClient = any;
+
+export const FORECAST_CONFIG_KEY = "forecast_daily";
+export const FORECAST_PAGE_PATH = "/?page=forecast_daily";
+export const FORECAST_APP_ORIGIN = "https://dream-ai-system.vercel.app";
+
+export type ForecastGroupRow = {
+  name: string;
+  arrival: string;
+  spa: string;
+  meals: string;
+  qty: number;
+};
+
+export type ForecastDailyConfig = {
+  enabled: boolean;
+  send_hour: number;
+  yelena_phone: string;
+  last_sent_ymd: string;
+  groups_by_date: Record<string, ForecastGroupRow[]>;
+};
+
+export type ForecastPackageCount = { label: string; guests: number };
+
+export type ForecastReport = {
+  prepDate: string;
+  targetDate: string;
+  morning: ForecastPackageCount[];
+  morningTotal: number;
+  evening: ForecastPackageCount[];
+  eveningTotal: number;
+  groups: ForecastGroupRow[];
+  groupsTotal: number;
+  arrivals: { rooms: number; guests: number };
+  departures: { rooms: number; guests: number };
+  stayovers: { rooms: number; guests: number };
+  capsules: { rooms: number; guests: number };
+  totalWithDepartures: number;
+  totalOnSite: number;
+  spaTreatments: number | null;
+  meals: {
+    breakfast: { suites: number | null; resort: number | null; groups: number | null };
+    lunch: { suites: number | null; resort: number | null; groups: number | null };
+    dinner: { suites: number | null; resort: number | null; groups: number | null };
+  };
+  sources: {
+    operationsIngestId: string | null;
+    operationsReceivedAt: string | null;
+    guestsScanned: number;
+    missingOperations: boolean;
+  };
+  notes: string[];
+};
+
+const DEFAULT_CONFIG: ForecastDailyConfig = {
+  enabled: true,
+  send_hour: 21,
+  yelena_phone: "",
+  last_sent_ymd: "",
+  groups_by_date: {},
+};
+
+export function addYmd(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
+}
+
+export function defaultForecastDates(now = new Date()): { prepDate: string; targetDate: string } {
+  const prepDate = israelYmd(now);
+  return { prepDate, targetDate: addYmd(prepDate, 1) };
+}
+
+export function parseForecastConfig(raw: unknown): ForecastDailyConfig {
+  const o = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const hour = Number(o.send_hour);
+  const groupsIn = o.groups_by_date && typeof o.groups_by_date === "object"
+    ? o.groups_by_date as Record<string, unknown>
+    : {};
+  const groups_by_date: Record<string, ForecastGroupRow[]> = {};
+  for (const [k, v] of Object.entries(groupsIn)) {
+    if (!Array.isArray(v)) continue;
+    groups_by_date[k] = v.map((g) => {
+      const row = g && typeof g === "object" ? g as Record<string, unknown> : {};
+      return {
+        name: String(row.name ?? "").trim(),
+        arrival: String(row.arrival ?? "").trim(),
+        spa: String(row.spa ?? "").trim(),
+        meals: String(row.meals ?? "").trim(),
+        qty: Math.max(0, parseInt(String(row.qty ?? "0"), 10) || 0),
+      };
+    }).filter((g) => g.name || g.qty);
+  }
+  return {
+    enabled: o.enabled !== false,
+    send_hour: Number.isFinite(hour) && hour >= 0 && hour <= 23 ? Math.round(hour) : 21,
+    yelena_phone: String(o.yelena_phone ?? "").replace(/\D/g, ""),
+    last_sent_ymd: String(o.last_sent_ymd ?? "").trim(),
+    groups_by_date,
+  };
+}
+
+export function forecastDeepLink(): string {
+  return `${FORECAST_APP_ORIGIN}${FORECAST_PAGE_PATH}`;
+}
+
+export function composeForecastPingText(report: ForecastReport): string {
+  const missing = report.sources.missingOperations ? "\n⚠ דוח תפעול ליום היעד לא נמצא במייל — בדקי בלוח." : "";
+  return [
+    `דוח צפי ל-${report.targetDate}`,
+    `סה״כ במתחם: ${report.totalOnSite} · כולל עזיבות: ${report.totalWithDepartures}`,
+    report.spaTreatments == null ? "ספא: לא נמצא מידע" : `ספא (טיפולים): ${report.spaTreatments}`,
+    "לצפייה בדוח החי בממשק — ההודעה הבאה היא הקישור.",
+    missing,
+  ].filter(Boolean).join("\n");
+}
+
+type GuestRow = {
+  id: number;
+  room: string | null;
+  room_type: string | null;
+  status: string | null;
+  arrival_date: string | null;
+  departure_date: string | null;
+  order_number: string | null;
+  meal_plan: string | null;
+};
+
+function ymd(v: unknown): string {
+  return String(v ?? "").slice(0, 10);
+}
+
+function paxFromRooms(rooms: Array<{ adults?: unknown }>, fallback = 2): { rooms: number; guests: number } {
+  if (!rooms.length) return { rooms: 1, guests: fallback };
+  const guests = rooms.reduce((s, r) => {
+    const n = Number(r.adults);
+    return s + (Number.isFinite(n) && n > 0 ? n : 1);
+  }, 0);
+  return { rooms: rooms.length, guests };
+}
+
+function addPair(a: { rooms: number; guests: number }, b: { rooms: number; guests: number }) {
+  a.rooms += b.rooms;
+  a.guests += b.guests;
+}
+
+export function classifySuiteOccupancy(
+  guests: GuestRow[],
+  roomsByGuest: Map<number, Array<{ adults?: unknown }>>,
+  targetDate: string,
+): {
+  arrivals: { rooms: number; guests: number };
+  departures: { rooms: number; guests: number };
+  stayovers: { rooms: number; guests: number };
+  capsules: { rooms: number; guests: number };
+  suiteOrderNumbers: Set<string>;
+  breakfast: number;
+  dinner: number;
+} {
+  const arrivals = { rooms: 0, guests: 0 };
+  const departures = { rooms: 0, guests: 0 };
+  const stayovers = { rooms: 0, guests: 0 };
+  const capsules = { rooms: 0, guests: 0 };
+  const suiteOrderNumbers = new Set<string>();
+  let breakfast = 0;
+  let dinner = 0;
+
+  for (const g of guests) {
+    if (String(g.status ?? "") === "cancelled") continue;
+    const arr = ymd(g.arrival_date);
+    const dep = ymd(g.departure_date);
+    const pair = paxFromRooms(roomsByGuest.get(g.id) ?? [], 2);
+    const plan = String(g.meal_plan ?? "");
+    const eatsDinner = plan === "half_board" || plan === "full_board" || plan === "dinner_only";
+
+    if (isEffectiveDayPassGuest(g) && arr === targetDate) {
+      addPair(capsules, pair);
+      continue;
+    }
+    if (!isEffectiveSuiteGuest(g)) continue;
+    if (g.order_number) suiteOrderNumbers.add(String(g.order_number));
+
+    if (arr === targetDate) {
+      addPair(arrivals, pair);
+      if (eatsDinner) dinner += pair.guests;
+      continue;
+    }
+    if (dep === targetDate) {
+      addPair(departures, pair);
+      breakfast += pair.guests;
+      continue;
+    }
+    if (arr && arr < targetDate && (!dep || dep > targetDate)) {
+      addPair(stayovers, pair);
+      breakfast += pair.guests;
+      if (eatsDinner) dinner += pair.guests;
+    }
+  }
+
+  return { arrivals, departures, stayovers, capsules, suiteOrderNumbers, breakfast, dinner };
+}
+
+function sumSpaTreatmentsFromOps(rows: OpsPackageRow[]): number {
+  let n = 0;
+  for (const row of rows) n += sumSpaTreatmentsFromExtras(row.extras);
+  return n;
+}
+
+function rollPackages(rows: OpsPackageRow[], dayPart: "morning" | "evening"): ForecastPackageCount[] {
+  const map = new Map<string, ForecastPackageCount>();
+  for (const row of rows) {
+    if (row.dayPart !== dayPart) continue;
+    const prev = map.get(row.bucket);
+    if (prev) prev.guests += row.guests;
+    else map.set(row.bucket, { label: row.label, guests: row.guests });
+  }
+  return [...map.values()].sort((a, b) => b.guests - a.guests);
+}
+
+export function shouldDispatchForecastPing(
+  cfg: ForecastDailyConfig,
+  now: Date,
+): { due: boolean; reason: string } {
+  if (!cfg.enabled) return { due: false, reason: "disabled" };
+  const phone = cleanPhoneForMention(cfg.yelena_phone);
+  if (phone.length < 10) return { due: false, reason: "missing_phone" };
+  if (israelLocalHour(now) !== cfg.send_hour) return { due: false, reason: "wrong_hour" };
+  const today = israelYmd(now);
+  if (cfg.last_sent_ymd === today) return { due: false, reason: "already_sent" };
+  return { due: true, reason: "due" };
+}
+
+async function loadConfig(supabase: SupabaseClient): Promise<ForecastDailyConfig> {
+  const { data } = await supabase
+    .from("bot_config")
+    .select("config_value")
+    .eq("config_key", FORECAST_CONFIG_KEY)
+    .maybeSingle();
+  let raw: unknown = data?.config_value;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { raw = {}; }
+  }
+  return parseForecastConfig(raw);
+}
+
+export async function saveForecastConfig(
+  supabase: SupabaseClient,
+  patch: Partial<ForecastDailyConfig>,
+): Promise<ForecastDailyConfig> {
+  const current = await loadConfig(supabase);
+  const next: ForecastDailyConfig = {
+    ...current,
+    ...patch,
+    yelena_phone: patch.yelena_phone != null
+      ? String(patch.yelena_phone).replace(/\D/g, "")
+      : current.yelena_phone,
+    groups_by_date: patch.groups_by_date ?? current.groups_by_date,
+  };
+  const { error } = await supabase.from("bot_config").upsert(
+    { config_key: FORECAST_CONFIG_KEY, config_value: JSON.stringify(next) },
+    { onConflict: "config_key" },
+  );
+  if (error) throw new Error(error.message);
+  return next;
+}
+
+async function fetchAllGuests(supabase: SupabaseClient): Promise<GuestRow[]> {
+  const out: GuestRow[] = [];
+  const page = 500;
+  let from = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from("guests")
+      .select("id, room, room_type, status, arrival_date, departure_date, order_number, meal_plan")
+      .neq("status", "cancelled")
+      .range(from, from + page - 1);
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as GuestRow[];
+    out.push(...rows);
+    if (rows.length < page) break;
+    from += page;
+  }
+  return out;
+}
+
+async function fetchRoomsByGuest(
+  supabase: SupabaseClient,
+  guestIds: number[],
+): Promise<Map<number, Array<{ adults?: unknown }>>> {
+  const map = new Map<number, Array<{ adults?: unknown }>>();
+  if (!guestIds.length) return map;
+  const chunk = 200;
+  for (let i = 0; i < guestIds.length; i += chunk) {
+    const slice = guestIds.slice(i, i + chunk);
+    const { data, error } = await supabase
+      .from("suite_rooms")
+      .select("guest_id, adults")
+      .in("guest_id", slice);
+    if (error) throw new Error(error.message);
+    for (const row of data ?? []) {
+      const gid = Number(row.guest_id);
+      const list = map.get(gid) ?? [];
+      list.push({ adults: row.adults });
+      map.set(gid, list);
+    }
+  }
+  return map;
+}
+
+export async function computeForecastReport(
+  supabase: SupabaseClient,
+  opts?: { targetDate?: string; now?: Date },
+): Promise<{ report: ForecastReport; config: ForecastDailyConfig }> {
+  const now = opts?.now ?? new Date();
+  const dates = defaultForecastDates(now);
+  const targetDate = opts?.targetDate || dates.targetDate;
+  const prepDate = addYmd(targetDate, -1);
+  const config = await loadConfig(supabase);
+
+  const guests = await fetchAllGuests(supabase);
+  const relevant = guests.filter((g) => {
+    const arr = ymd(g.arrival_date);
+    const dep = ymd(g.departure_date);
+    if (arr === targetDate || dep === targetDate) return true;
+    if (arr && arr < targetDate && (!dep || dep > targetDate)) return true;
+    return false;
+  });
+  const roomsByGuest = await fetchRoomsByGuest(supabase, relevant.map((g) => g.id));
+  const occ = classifySuiteOccupancy(relevant, roomsByGuest, targetDate);
+
+  const { data: ingest } = await supabase
+    .from("ezgo_mail_ingest")
+    .select("id, body_html, received_at, report_date_ymd")
+    .eq("report_type", "doc1_html")
+    .eq("report_date_ymd", targetDate)
+    .eq("parse_status", "parsed")
+    .order("received_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const notes: string[] = [];
+  let morning: ForecastPackageCount[] = [];
+  let evening: ForecastPackageCount[] = [];
+  let morningTotal = 0;
+  let eveningTotal = 0;
+  let spaTreatments: number | null = null;
+  let resortLunch: number | null = null;
+  let resortDinner: number | null = null;
+
+  if (ingest?.body_html) {
+    const rawRows = extractOpsTableRows(String(ingest.body_html));
+    const classified = rawRows.map((r) => classifyOpsRow(r, occ.suiteOrderNumbers));
+    morning = rollPackages(classified, "morning");
+    evening = rollPackages(classified, "evening");
+    morningTotal = morning.reduce((s, p) => s + p.guests, 0);
+    eveningTotal = evening.reduce((s, p) => s + p.guests, 0);
+    resortLunch = classified
+      .filter((r) => r.dayPart === "morning" && r.lunch)
+      .reduce((s, r) => s + r.guests, 0);
+    resortDinner = classified
+      .filter((r) => r.dayPart === "evening")
+      .reduce((s, r) => s + r.guests, 0);
+    spaTreatments = sumSpaTreatmentsFromOps(classified);
+  } else {
+    notes.push("לא נמצא מייל Operations ליום היעד — ריזורט/ספא ריקים.");
+  }
+
+  const groups = (config.groups_by_date[targetDate] ?? []).filter((g) => g.qty > 0 || g.name);
+  const groupsTotal = groups.reduce((s, g) => s + (g.qty || 0), 0);
+  const groupsLunch = groups.reduce((s, g) => {
+    if (!g.meals || /לא נמצא/.test(g.meals)) return s;
+    if (/ערב/.test(g.meals) && !/צהר/.test(g.meals)) return s;
+    return s + (g.qty || 0);
+  }, 0);
+
+  const totalWithDepartures = morningTotal + eveningTotal + groupsTotal
+    + occ.arrivals.guests + occ.departures.guests + occ.stayovers.guests + occ.capsules.guests;
+  const totalOnSite = totalWithDepartures - occ.departures.guests;
+
+  const report: ForecastReport = {
+    prepDate,
+    targetDate,
+    morning,
+    morningTotal,
+    evening,
+    eveningTotal,
+    groups,
+    groupsTotal,
+    arrivals: occ.arrivals,
+    departures: occ.departures,
+    stayovers: occ.stayovers,
+    capsules: occ.capsules,
+    totalWithDepartures,
+    totalOnSite,
+    spaTreatments,
+    meals: {
+      breakfast: { suites: occ.breakfast || null, resort: null, groups: null },
+      lunch: { suites: null, resort: resortLunch, groups: groupsLunch || null },
+      dinner: { suites: occ.dinner || null, resort: resortDinner, groups: null },
+    },
+    sources: {
+      operationsIngestId: ingest?.id ?? null,
+      operationsReceivedAt: ingest?.received_at ?? null,
+      guestsScanned: relevant.length,
+      missingOperations: !ingest?.body_html,
+    },
+    notes,
+  };
+  return { report, config };
+}
+
+export async function sendForecastPing(
+  supabase: SupabaseClient,
+  report: ForecastReport,
+  phoneRaw: string,
+): Promise<{ sent: boolean; error?: string }> {
+  const phone = cleanPhoneForMention(phoneRaw);
+  if (phone.length < 10) return { sent: false, error: "חסר טלפון של ילנה" };
+  const body = composeForecastPingText(report);
+  try {
+    const wamid = await sendWhapiTextGuarded(supabase, phone, body, {
+      sendClass: "staff",
+      trigger: "forecast_daily",
+      source: "forecast-daily",
+      noLinkPreview: true,
+    });
+    if (!wamid) return { sent: false, error: "שליחת Whapi נכשלה" };
+    const urlId = await sendWhapiTextGuarded(supabase, phone, forecastDeepLink(), {
+      sendClass: "staff",
+      trigger: "forecast_daily_link",
+      source: "forecast-daily",
+      noLinkPreview: true,
+    });
+    if (!urlId) return { sent: false, error: "הטקסט נשלח אך הקישור נכשל" };
+    return { sent: true };
+  } catch (e) {
+    return { sent: false, error: (e as Error).message };
+  }
+}
+
+export async function dispatchForecastEveningIfDue(
+  supabase: SupabaseClient,
+  now = new Date(),
+): Promise<{ attempted: boolean; sent: boolean; reason: string }> {
+  const cfg = await loadConfig(supabase);
+  const gate = shouldDispatchForecastPing(cfg, now);
+  if (!gate.due) return { attempted: false, sent: false, reason: gate.reason };
+  const { report } = await computeForecastReport(supabase, { now });
+  const result = await sendForecastPing(supabase, report, cfg.yelena_phone);
+  if (result.sent) {
+    await saveForecastConfig(supabase, { last_sent_ymd: israelYmd(now) });
+  }
+  return { attempted: true, sent: result.sent, reason: result.error || "sent" };
+}

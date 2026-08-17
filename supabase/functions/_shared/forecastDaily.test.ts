@@ -1,0 +1,112 @@
+import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import {
+  addYmd,
+  classifySuiteOccupancy,
+  composeForecastPingText,
+  parseForecastConfig,
+  shouldDispatchForecastPing,
+  type ForecastReport,
+} from "./forecastDaily.ts";
+import { israelLocalHour, israelYmd } from "./automationSchedule.ts";
+import { classifyOpsRow, opsGuestQty, sumGroupSpaTreatments } from "./forecastOpsClassify.ts";
+
+Deno.test("addYmd rolls month", () => {
+  assertEquals(addYmd("2026-08-17", 1), "2026-08-18");
+  assertEquals(addYmd("2026-08-31", 1), "2026-09-01");
+});
+
+Deno.test("suite occupancy buckets by dates", () => {
+  const guests = [
+    { id: 1, room: "אמטיסט 8", room_type: "suite", status: "expected", arrival_date: "2026-08-18", departure_date: "2026-08-19", order_number: "1", meal_plan: "half_board" },
+    { id: 2, room: "אמטיסט 9", room_type: "suite", status: "checked_in", arrival_date: "2026-08-17", departure_date: "2026-08-18", order_number: "2", meal_plan: "half_board" },
+    { id: 3, room: "ג׳ספר 1", room_type: "suite", status: "checked_in", arrival_date: "2026-08-16", departure_date: "2026-08-20", order_number: "3", meal_plan: "half_board" },
+    { id: 4, room: "Premium Day 1", room_type: "day_guest", status: "expected", arrival_date: "2026-08-18", departure_date: "2026-08-18", order_number: "4", meal_plan: "none" },
+    { id: 5, room: "אמטיסט 10", room_type: "suite", status: "cancelled", arrival_date: "2026-08-18", departure_date: "2026-08-19", order_number: "5", meal_plan: "half_board" },
+  ];
+  const rooms = new Map([
+    [1, [{ adults: 2 }]],
+    [2, [{ adults: 2 }]],
+    [3, [{ adults: 2 }]],
+    [4, [{ adults: 2 }]],
+  ]);
+  const occ = classifySuiteOccupancy(guests, rooms, "2026-08-18");
+  assertEquals(occ.arrivals, { rooms: 1, guests: 2 });
+  assertEquals(occ.departures, { rooms: 1, guests: 2 });
+  assertEquals(occ.stayovers, { rooms: 1, guests: 2 });
+  assertEquals(occ.capsules, { rooms: 1, guests: 2 });
+  assertEquals(occ.suiteOrderNumbers.has("1"), true);
+  assertEquals(occ.suiteOrderNumbers.has("5"), false);
+  assertEquals(occ.breakfast, 4);
+  assertEquals(occ.dinner, 4);
+});
+
+Deno.test("ops qty: כניסה people, evening meals, EZGO tiling dump", () => {
+  assertEquals(opsGuestQty("2 - קלאסיק", "ארוחת ערב בחבילה כמות: 2", "evening"), 2);
+  const dumped = Array(14).fill("1 - קלאסיק עם א. צהרים 1 - כניסה 1 - פוד טראק").join(" ");
+  assertEquals(opsGuestQty(dumped, "ארוחת צהרים בחבילה כמות: 1", "morning"), 1);
+  assertEquals(opsGuestQty("1 - דלאקס 45 וצהריים 2 - כניסה", "ארוחת צהרים בחבילה כמות: 1", "morning"), 2);
+  const eveDump = "2 - קלאסיק וא.ערב מ- 16:00 א-ד 2 - כניסה 2 - פוד טראק 2 - קלאסיק וא.ערב מ- 16:00 א-ד 2 - כניסה 2 - פוד טראק 1 - קלאסיק וא.ערב מ- 16:00 א-ד 1 - כניסה 1 - פוד טראק";
+  assertEquals(opsGuestQty(eveDump, "ארוחת ערב בחבילה כמות: 2", "evening"), 2);
+  const eve = classifyOpsRow({
+    orderNumber: "9",
+    extras: "2 - קלאסיק וא.ערב מ- 16:00 א-ד 2 - כניסה",
+    board: "",
+    meals: "ארוחת ערב בחבילה כמות: 2",
+  }, new Set());
+  assertEquals(eve.dayPart, "evening");
+  assertEquals(eve.bucket, "classic_16");
+  const morn = classifyOpsRow({
+    orderNumber: "8",
+    extras: "2 - דלאקס 45 וצהריים 2 - כניסה",
+    board: "",
+    meals: "ארוחת צהרים בחבילה כמות: 2",
+  }, new Set());
+  assertEquals(morn.dayPart, "morning");
+  assertEquals(morn.bucket, "deluxe_45_lunch");
+  const suiteBoard = classifyOpsRow({
+    orderNumber: "1",
+    extras: "",
+    board: "BB",
+    meals: "",
+  }, new Set());
+  assertEquals(suiteBoard.dayPart, "suite");
+  const suite = classifyOpsRow({
+    orderNumber: "271439",
+    extras: "",
+    board: "BB",
+    meals: "",
+  }, new Set(["271439"]));
+  assertEquals(suite.dayPart, "suite");
+});
+
+Deno.test("group spa treatments from extras parts", () => {
+  const row = classifyOpsRow({
+    orderNumber: "100",
+    extras: "6 - דלאקס+ט.30 דק+צהרים לקבוצות 6 - כניסה 1 - קלאסיק וטיפול 30 דקות",
+    board: "",
+    meals: "ארוחת צהרים בחבילה כמות: 6",
+  }, new Set());
+  assertEquals(row.dayPart, "group");
+  assertEquals(sumGroupSpaTreatments([row]), 7);
+});
+
+Deno.test("ping has no URL; send gate needs phone and hour", () => {
+  const report = {
+    targetDate: "2026-08-18",
+    totalOnSite: 10,
+    totalWithDepartures: 12,
+    spaTreatments: 3,
+    sources: { missingOperations: false },
+  } as ForecastReport;
+  const text = composeForecastPingText(report);
+  assertEquals(text.includes("http"), false);
+  const now = new Date();
+  const cfg = parseForecastConfig({
+    enabled: true,
+    send_hour: israelLocalHour(now),
+    yelena_phone: "0500000000",
+  });
+  assertEquals(shouldDispatchForecastPing(cfg, now).due, true);
+  assertEquals(shouldDispatchForecastPing({ ...cfg, last_sent_ymd: israelYmd(now) }, now).due, false);
+  assertEquals(shouldDispatchForecastPing({ ...cfg, yelena_phone: "" }, now).reason, "missing_phone");
+});

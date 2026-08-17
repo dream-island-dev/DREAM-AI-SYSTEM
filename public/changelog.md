@@ -1,3 +1,5 @@
+2026-08-17 | Forecast occupancy matches reception Excel method | Morning heads from Operations `כניסה` after collapsing EZGO duplicate voucher dumps (not meals `כמות` packages). Evening copies meals `כמות`. Groups listed separately are not subtracted from morning. Suite breakfast = all departures+stayovers. Deploy: `forecast-daily` `whatsapp-cron`.
+
 2026-08-17 | Ops task card footer restored to react instruction | Last line is `👉 Please react with 👍🏼 to complete this task.` (was `👍🏼 done`). Deploy: `whapi-webhook` `notify-manual-task`.
 
 2026-08-17 | Ops group `no answer` pings the guest at the door | Staff type `5 no answer` / `אין מענה` or reply on the task card — XOS texts the in-room guest (Whapi) that we knocked and nobody answered. Compact task card + DENTAL KIT from the same session. Deploy: `whapi-webhook` `notify-manual-task` `task-action` `sla-escalation-cron` + frontend.

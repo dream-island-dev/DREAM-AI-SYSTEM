@@ -419,7 +419,18 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
-### 2026-08-17 — Ops `no answer` is a guest ping, not a new task
+### 2026-08-17 — Occupancy forecast must not trust the last Doc2 mail
+- **Symptom:** Reception filled דוח צפי from the latest scanned arrivals email; that file was already stale vs EZGO.
+- **Fix:** Live `forecast_daily` board: suite arrivals/departures/stayovers from `guests` (API sync); day packages from the Operations mail for the *target* date; groups stay manual.
+- **Lesson:** Doc2 mail is a snapshot. Golden occupancy for a live board is `guests` + `suite_rooms`.
+
+### 2026-08-17 — Reception forecast Excel is people, not voucher `כמות`
+- **Symptom:** First AI fill had morning 272 vs reception 415 on 18.08.26.xlsx.
+- **Root:** Used meals `כמות` (packages). Subtracted Leumi/Strauss from morning. Summed EZGO extras that paste the same voucher 10+ times.
+- **Fix:** Morning = `N - כניסה` after exact-tiling collapse. Evening = first meals `כמות`. Groups stay in C5 without subtracting C3. Breakfast suites = all departure+stayover pax.
+- **Lesson:** Reception copies Operations columns as-is, including group-as-individuals still inside morning. Do not "clean" double-count vs her 588 formula.
+
+
 - **Symptom:** Field staff knock, nobody opens, they type `5 no answer` (or reply on the card). LLM used to treat that as a new ticket or ignore it as chitchat.
 - **Fix:** Tier-0 in `whapi-webhook` before classify — resolve room from digits or quoted task card, Whapi the in-stay guest, ack the ops group. Do not mark the task done.
 - **Lesson:** Door-miss is guest comms, not a second ops ticket. Keep 👍🏼 as the only complete signal.

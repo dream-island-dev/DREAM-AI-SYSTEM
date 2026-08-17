@@ -43,6 +43,7 @@ import RequestsAlertWidget from "./components/RequestsAlertWidget";
 import AiFailoverWidget from "./components/AiFailoverWidget";
 import SuitesDashboard from "./components/SuitesDashboard";
 import DataSyncPage from "./components/DataSyncPage";
+import ForecastBoard from "./components/ForecastBoard";
 import SpaLeadsPage from "./components/SpaLeadsPage";
 import PortalSettingsPanel from "./components/PortalSettingsPanel";
 import CMSGate from "./components/cms/CMSGate";
@@ -1393,6 +1394,7 @@ const ALL_NAV_ITEMS = [
   { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
   { id: "agent",      icon: "📦", label: "ניהול מלאי" },
   { id: "data_sync",  icon: "📥", label: "סנכרון נתונים",                          managerOnly: true, receptionistOk: true },
+  { id: "forecast_daily", icon: "📈", label: "דוח צפי",                            managerOnly: true, receptionistOk: true },
   { id: "voucher_reconciliation", icon: "🧾", label: "התאמת שוברים",               managerOnly: true, receptionistOk: true },
 ];
 
@@ -2298,6 +2300,7 @@ export default function App({ initialPage = "dashboard" }) {
     executive_playbook: "🧬 סוכנים חכמים",
     routing_control_center: "🔀 מרכז ניתוב",
     data_sync:  "📥 סנכרון נתונים",
+    forecast_daily: "📈 דוח צפי",
     portal_settings: "🎨 הגדרות פורטל",
     cms_security: "🔐 אבטחת CMS",
     agent:      "📦 ניהול מלאי",
@@ -2614,6 +2617,11 @@ export default function App({ initialPage = "dashboard" }) {
         return guardPage(
           "data_sync",
           <DataSyncPage />
+        );
+      case "forecast_daily":
+        return guardPage(
+          "forecast_daily",
+          <ForecastBoard />
         );
       case "portal_settings":
         return guardPage(

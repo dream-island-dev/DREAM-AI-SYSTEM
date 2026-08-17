@@ -55,6 +55,7 @@ import { runWeeklyGuestHallucinationAudit } from "../_shared/guestHallucinationA
 import { managerMailEnabled } from "../_shared/oritAgentMail.ts";
 import { runSigalUrgentComplaintLoop } from "../_shared/oritAgentWorkflow.ts";
 import { dispatchDueOritScheduledSends } from "../_shared/oritScheduleSend.ts";
+import { dispatchForecastEveningIfDue } from "../_shared/forecastDaily.ts";
 import { dispatchDueSpaUpsellScheduledTasks } from "../_shared/spaUpsellSchedule.ts";
 import { shouldInvokeEzgoMailFromCron } from "../_shared/ezgoMailImap.ts";
 
@@ -347,13 +348,37 @@ Deno.serve(async (req: Request) => {
     const GUEST_SELECT =
       "id, name, phone, arrival_date, departure_date, room, room_type, status, checkin_time, needs_callback, automation_muted, automation_scope, claimed_by, claimed_at, guest_profile, arrival_confirmed, arrival_confirmed_at, spa_date, spa_time, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent, msg_spa_warmup_sent, msg_survey_invite_sent";
 
-    const { data: guests = [] } = await supabase
-      .from("guests")
-      .select(GUEST_SELECT)
-      .neq("status", "cancelled")
-      .gte("arrival_date", guestScanCutoffYmd);
+    // P0 2026-08-10: PostgREST caps an unranged select at 1000 rows — live
+    // scan window was ~1663 guests, so every plain select above was silently
+    // truncating ~40% of the guests this cron is supposed to reach. Paginate
+    // past the cap (same pattern as src/utils/inboxGuestMap.js's
+    // fetchPaginatedGuests) instead of a single unranged select.
+    const CRON_GUEST_PAGE_SIZE = 1000;
+    async function fetchActiveGuestsSinceScanCutoff(): Promise<GuestForSchedule[]> {
+      const all: GuestForSchedule[] = [];
+      for (let from = 0; ; from += CRON_GUEST_PAGE_SIZE) {
+        const { data, error } = await supabase
+          .from("guests")
+          .select(GUEST_SELECT)
+          .neq("status", "cancelled")
+          .gte("arrival_date", guestScanCutoffYmd)
+          .order("id", { ascending: true })
+          .range(from, from + CRON_GUEST_PAGE_SIZE - 1);
+        if (error) throw new Error(`guests_lookup_error: ${error.message}`);
+        const batch = (data ?? []) as GuestForSchedule[];
+        // FAIL VISIBLE: an empty page before the loop even starts (from=0)
+        // means the query itself returned nothing — worth a log line so a
+        // silent scope/filter regression isn't mistaken for "no guests due".
+        if (from === 0 && batch.length === 0) {
+          console.warn("[whatsapp-cron] guest scan returned 0 rows on first page — verify guestScanCutoffYmd/status filter is correct, not a truncation.");
+        }
+        all.push(...batch);
+        if (batch.length < CRON_GUEST_PAGE_SIZE) break;
+      }
+      return all;
+    }
 
-    let guestsList = (guests ?? []) as GuestForSchedule[];
+    let guestsList = await fetchActiveGuestsSinceScanCutoff();
 
     const guestIdsForSuppress = guestsList.map((g) => g.id as number);
     const { data: suppressionRows } = await supabase
@@ -406,15 +431,13 @@ Deno.serve(async (req: Request) => {
     const missedConfirmFixed = await reconcileMissedArrivalConfirmations(supabase, guestsList);
     if (missedConfirmFixed > 0) {
       console.log(`[whatsapp-cron] arrival_confirm_reconcile fixed=${missedConfirmFixed}`);
-      const { data: refreshed, error: refreshErr } = await supabase
-        .from("guests")
-        .select(GUEST_SELECT)
-        .neq("status", "cancelled")
-        .gte("arrival_date", guestScanCutoffYmd);
-      if (refreshErr) {
-        console.warn("[whatsapp-cron] guest refresh after confirm reconcile failed:", refreshErr.message);
-      } else {
-        guestsList = (refreshed ?? []) as GuestForSchedule[];
+      try {
+        guestsList = await fetchActiveGuestsSinceScanCutoff();
+      } catch (refreshErr) {
+        console.warn(
+          "[whatsapp-cron] guest refresh after confirm reconcile failed:",
+          refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
+        );
       }
     }
 
@@ -723,9 +746,19 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    let forecastPing = { attempted: false, sent: false, reason: "skipped" };
+    try {
+      forecastPing = await dispatchForecastEveningIfDue(supabase, now);
+      if (forecastPing.attempted) {
+        console.log(`[whatsapp-cron] forecast ping sent=${forecastPing.sent} reason=${forecastPing.reason}`);
+      }
+    } catch (forecastErr) {
+      console.warn("[whatsapp-cron] forecast ping failed (non-blocking):", (forecastErr as Error).message);
+    }
+
     return new Response(JSON.stringify({
       ok: true,
-      scanned: guests?.length ?? 0,
+      scanned: guestsList.length,
       auto_checkout_archived: autoCheckoutCount,
       fired: results.length,
       stage2_reconcile_queued: stage2ReconcileQueued,
@@ -735,6 +768,7 @@ Deno.serve(async (req: Request) => {
       inter_send_delay_ms: INTER_SEND_DELAY_MS,
       dispatch_cut_short: dispatchCutShort,
       guest_scan_lookback_days: GUEST_SCAN_LOOKBACK_DAYS,
+      forecast_ping: forecastPing,
       results,
     }), {
       headers: { ...CORS, "Content-Type": "application/json" },

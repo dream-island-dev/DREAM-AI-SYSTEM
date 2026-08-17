@@ -46,6 +46,7 @@ export const RECEPTIONIST_FOCUS_NAV_IDS = new Set([
   "ops_board",
   "feedback_dashboard",
   "data_sync",
+  "forecast_daily",
   "spa_board",
   "voucher_reconciliation",
 ]);
@@ -104,6 +105,7 @@ const ROUTE_ACCESS = {
   cms_security:           ["admin", "super_admin"],
   users_mgmt:             ["super_admin"],
   data_sync:              ["admin", "super_admin", "receptionist"],
+  forecast_daily:         ["admin", "super_admin", "manager", "receptionist"],
   voucher_reconciliation: ["admin", "super_admin", "receptionist"],
   routing_control_center: ["admin", "super_admin"],
 };
