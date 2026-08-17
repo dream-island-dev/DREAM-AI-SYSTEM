@@ -419,10 +419,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
-### 2026-08-17 — Occupancy forecast must not trust the last Doc2 mail
-- **Symptom:** Reception filled דוח צפי from the latest scanned arrivals email; that file was already stale vs EZGO.
-- **Fix:** Live `forecast_daily` board: suite arrivals/departures/stayovers from `guests` (API sync); day packages from the Operations mail for the *target* date; groups stay manual.
-- **Lesson:** Doc2 mail is a snapshot. Golden occupancy for a live board is `guests` + `suite_rooms`.
+### 2026-08-17 — Occupancy forecast: guests are truth, Doc2 mail is the audit
+- **Symptom:** Reception said suites/morning/groups were empty vs `18.08.26.pdf` (415 / 21·42 / 23).
+- **Root:** Morning needs Operations ingest; groups were classified then dropped; suites only from `guests` with no Doc2 compare.
+- **Fix:** Auto `ezgo-mail-sync` when ops/Doc2 missing. Groups from `לקבוצות` (keep saved names if totals match). Show Doc2 arrival rooms/pax vs XOS; ⚠ + HITL mail tab; never auto-create guests.
+- **Also:** Reception group card (`קבלת הקבוצה מהקבלה`) is the name/time source — paste or photo on the forecast board, HITL save, never create guests.
 
 ### 2026-08-17 — Reception forecast Excel is people, not voucher `כמות`
 - **Symptom:** First AI fill had morning 272 vs reception 415 on 18.08.26.xlsx.

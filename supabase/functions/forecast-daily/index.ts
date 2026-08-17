@@ -9,6 +9,7 @@ import {
   sendForecastPing,
   type ForecastDailyConfig,
 } from "../_shared/forecastDaily.ts";
+import { parseReceptionGroupCardInput } from "../_shared/forecastGroupCard.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -40,6 +41,15 @@ serve(async (req: Request) => {
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const action = String(body.action ?? "compute");
     const targetDate = typeof body.target_date === "string" ? body.target_date : undefined;
+
+    if (action === "parse_groups") {
+      const groups = await parseReceptionGroupCardInput({
+        text: typeof body.text === "string" ? body.text : "",
+        imageBase64: typeof body.image_base64 === "string" ? body.image_base64 : "",
+        mime: typeof body.mime === "string" ? body.mime : "image/png",
+      });
+      return json({ ok: true, groups });
+    }
 
     if (action === "save_config") {
       const patch = (body.config && typeof body.config === "object")

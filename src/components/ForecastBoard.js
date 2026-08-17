@@ -1,5 +1,5 @@
 // Live occupancy forecast board — reception evening report for Yelena.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { israelTodayYmd } from "../utils/spaUpsellAudience";
 
@@ -54,7 +54,7 @@ function Cell({ n, strong }) {
   );
 }
 
-export default function ForecastBoard() {
+export default function ForecastBoard({ onOpenMailSync }) {
   const [targetDate, setTargetDate] = useState(() => addYmd(israelTodayYmd(), 1));
   const [report, setReport] = useState(null);
   const [config, setConfig] = useState(null);
@@ -64,6 +64,8 @@ export default function ForecastBoard() {
   const [hour, setHour] = useState(21);
   const [enabled, setEnabled] = useState(true);
   const [groups, setGroups] = useState([]);
+  const [groupPaste, setGroupPaste] = useState("");
+  const groupFileRef = useRef(null);
 
   const show = (msg, type = "ok") => {
     setToast({ msg, type });
@@ -83,7 +85,9 @@ export default function ForecastBoard() {
       setPhone(data.config?.yelena_phone || "");
       setHour(data.config?.send_hour ?? 21);
       setEnabled(data.config?.enabled !== false);
-      const raw = data.config?.groups_by_date?.[targetDate] || data.report?.groups || [];
+      const raw = (data.report?.groups?.length
+        ? data.report.groups
+        : data.config?.groups_by_date?.[targetDate]) || [];
       setGroups(raw.map(normalizeGroup));
     } catch (e) {
       show(e.message, "err");
@@ -93,6 +97,16 @@ export default function ForecastBoard() {
   }, [targetDate]);
 
   useEffect(() => { load(); }, [load]);
+
+  const autoSyncKey = useRef("");
+  useEffect(() => {
+    if (!report) return;
+    const need = report.sources?.missingOperations || report.sources?.missingDoc2;
+    if (!need) return;
+    if (autoSyncKey.current === targetDate) return;
+    autoSyncKey.current = targetDate;
+    syncMail();
+  }, [report, targetDate]);
 
   async function syncMail() {
     setBusy(true);
@@ -158,6 +172,48 @@ export default function ForecastBoard() {
     }
   }
 
+  async function applyGroupCard({ text, imageBase64, mime }) {
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("forecast-daily", {
+        body: {
+          action: "parse_groups",
+          text: text || "",
+          image_base64: imageBase64 || "",
+          mime: mime || "image/png",
+        },
+      });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "קריאת הכרטיס נכשלה");
+      const parsed = (data.groups || []).map(normalizeGroup).filter((g) => g.name || g.qty);
+      if (!parsed.length) throw new Error("לא זוהו קבוצות בכרטיס — נסי הדבקה או תמונה ברורה יותר");
+      setGroups(parsed);
+      setGroupPaste("");
+      const n = parsed.reduce((s, g) => s + (Number(g.qty) || 0), 0);
+      show(`${parsed.length} קבוצות · ${n} אורחים — לחצי שמור הגדרות`);
+    } catch (e) {
+      show(e.message, "err");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onGroupImage(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) {
+      show("התמונה גדולה מדי (מקסימום 4MB)", "err");
+      return;
+    }
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    const b64 = btoa(bin);
+    await applyGroupCard({ imageBase64: b64, mime: file.type || "image/png" });
+  }
+
   function patchGroup(i, field, value) {
     const next = [...groups];
     next[i] = { ...next[i], [field]: value };
@@ -197,7 +253,7 @@ export default function ForecastBoard() {
             letterSpacing: "-0.02em",
           }}>{r ? hebrewDayTitle(r.targetDate) : "📈 דוח צפי"}</h2>
           <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4, fontWeight: 600 }}>
-            סוויטות מפרופילים · ריזורט ממייל תפעול · כמו דוח הקבלה
+            סוויטות מפרופילים · ריזורט+קבוצות ממייל תפעול · כניסות ממייל להשוואה (בלי יצירה אוטומטית)
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -265,6 +321,19 @@ export default function ForecastBoard() {
                   <td><Cell n={r.arrivals.rooms} /></td>
                   <td><Cell n={r.arrivals.guests} /></td>
                 </tr>
+                {r.sources?.doc2Arrivals && (
+                  <tr>
+                    <td colSpan={3} style={{
+                      color: r.sources.suiteArrivalGap ? "var(--status-warning)" : "var(--text-muted)",
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}>
+                      {r.sources.suiteArrivalGap ? "⚠ " : "✓ "}
+                      דוח כניסות במייל: {r.sources.doc2Arrivals.rooms} חדרים / {r.sources.doc2Arrivals.guests} אורחים
+                      {r.sources.doc2PendingLines > 0 ? ` · ${r.sources.doc2PendingLines} שורות ממתינות לאישור` : ""}
+                    </td>
+                  </tr>
+                )}
                 <tr>
                   <td>עזיבות סוויטות</td>
                   <td><Cell n={r.departures.rooms} /></td>
@@ -296,7 +365,30 @@ export default function ForecastBoard() {
             </table>
             {r.sources?.missingOperations && (
               <div className="dash-empty-state" style={{ color: "var(--status-warning)" }}>
-                ⚠ אין מייל תפעול ליום הזה — לחצי סנכרן מייל.
+                ⚠ אין מייל תפעול ליום הזה — הסנכרון רץ אוטומטית. אם נשאר ריק, לחצי סנכרן מייל.
+              </div>
+            )}
+            {r.sources?.missingDoc2 && (
+              <div className="dash-empty-state" style={{ color: "var(--status-warning)" }}>
+                ⚠ אין דוח כניסות במייל ליום הזה — בלי זה אי אפשר לאמת הגעות סוויטות.
+              </div>
+            )}
+            {r.sources?.suiteArrivalGap && (
+              <div className="dash-empty-state" style={{ color: "var(--status-warning)" }}>
+                ⚠ פער מול דוח כניסות — אשרי שורות במייל EZGO. XOS לא יוצר אורחים לבד.
+                {onOpenMailSync && (
+                  <div style={{ marginTop: 8 }}>
+                    <button type="button" className="btn btn-primary" onClick={() => {
+                      try { sessionStorage.setItem("xos_data_sync_tab", "ezgo_mail"); } catch { /* ignore */ }
+                      onOpenMailSync();
+                    }}>פתחי מייל EZGO לאישור</button>
+                  </div>
+                )}
+              </div>
+            )}
+            {Array.isArray(r.notes) && r.notes.length > 0 && !r.sources?.suiteArrivalGap && (
+              <div className="dash-empty-state" style={{ color: "var(--text-muted)" }}>
+                {r.notes[0]}
               </div>
             )}
           </div>
@@ -348,6 +440,28 @@ export default function ForecastBoard() {
           <div className="card-title">קבוצות</div>
           <span className="badge badge-gold">סהכ {groupsTotal}</span>
         </div>
+        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ fontSize: 13, color: "var(--text-muted)", fontWeight: 600, marginBottom: 8 }}>
+            כרטיס «קבלת הקבוצה מהקבלה» — ממלא שמות ושעות. לא יוצר אורחים.
+          </div>
+          <textarea
+            value={groupPaste}
+            onChange={(e) => setGroupPaste(e.target.value)}
+            placeholder="הדביקי כאן את הכרטיס, או העלי תמונה"
+            rows={3}
+            style={{ ...fieldInput, minHeight: 72, resize: "vertical" }}
+          />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+            <button type="button" className="btn btn-primary" disabled={busy || !groupPaste.trim()}
+              onClick={() => applyGroupCard({ text: groupPaste })}>
+              קראי כרטיס
+            </button>
+            <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => groupFileRef.current?.click()}>
+              העלי תמונה
+            </button>
+            <input ref={groupFileRef} type="file" accept="image/*" hidden onChange={onGroupImage} />
+          </div>
+        </div>
         <div style={{ overflowX: "auto" }}>
           <table className="table" style={{ minWidth: 640 }}>
             <thead>
@@ -374,7 +488,7 @@ export default function ForecastBoard() {
                 </tr>
               ))}
               {groups.length === 0 && (
-                <tr><td colSpan={6} className="dash-empty-state">אין קבוצות ליום הזה — הוסיפי למטה</td></tr>
+                <tr><td colSpan={6} className="dash-empty-state">אין קבוצות במייל תפעול ליום הזה — הוסיפי ידנית או סנכרני מייל</td></tr>
               )}
             </tbody>
           </table>

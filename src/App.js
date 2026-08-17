@@ -2621,7 +2621,7 @@ export default function App({ initialPage = "dashboard" }) {
       case "forecast_daily":
         return guardPage(
           "forecast_daily",
-          <ForecastBoard />
+          <ForecastBoard onOpenMailSync={() => setActivePage("data_sync")} />
         );
       case "portal_settings":
         return guardPage(

@@ -3,8 +3,10 @@ import {
   addYmd,
   classifySuiteOccupancy,
   composeForecastPingText,
+  mergeForecastGroups,
   parseForecastConfig,
   shouldDispatchForecastPing,
+  summarizeDoc2MailOccupancy,
   type ForecastReport,
 } from "./forecastDaily.ts";
 import { israelLocalHour, israelYmd } from "./automationSchedule.ts";
@@ -96,7 +98,7 @@ Deno.test("ping has no URL; send gate needs phone and hour", () => {
     totalOnSite: 10,
     totalWithDepartures: 12,
     spaTreatments: 3,
-    sources: { missingOperations: false },
+    sources: { missingOperations: false, suiteArrivalGap: false },
   } as ForecastReport;
   const text = composeForecastPingText(report);
   assertEquals(text.includes("http"), false);
@@ -109,6 +111,40 @@ Deno.test("ping has no URL; send gate needs phone and hour", () => {
   assertEquals(shouldDispatchForecastPing(cfg, now).due, true);
   assertEquals(shouldDispatchForecastPing({ ...cfg, last_sent_ymd: israelYmd(now) }, now).due, false);
   assertEquals(shouldDispatchForecastPing({ ...cfg, yelena_phone: "" }, now).reason, "missing_phone");
+});
+
+Deno.test("merge groups: ops qty + saved names when totals match", () => {
+  const merged = mergeForecastGroups(
+    [{ qty: 23 }],
+    [
+      { name: "בנק לאומי", arrival: "09:00", entry: "קבלה", meals: "התנהלות כבודדים", qty: 7 },
+      { name: "אפ מרימים", arrival: "09:00", entry: "קבלה", meals: "15:30", qty: 7 },
+      { name: "שטראוס גרופ", arrival: "09:00", entry: "קבלה", meals: "17:00", qty: 9 },
+    ],
+  );
+  assertEquals(merged.length, 3);
+  assertEquals(merged.reduce((s, g) => s + g.qty, 0), 23);
+  assertEquals(merged[0].name, "בנק לאומי");
+});
+
+Deno.test("merge groups: empty saved → one row per ops order", () => {
+  const merged = mergeForecastGroups([{ qty: 7 }, { qty: 7 }, { qty: 9 }], []);
+  assertEquals(merged.map((g) => g.qty), [7, 7, 9]);
+  assertEquals(merged[0].name, "");
+  assertEquals(merged[0].entry, "קבלה");
+});
+
+Deno.test("doc2 mail occupancy counts unique rooms, not guests rows", () => {
+  const sum = summarizeDoc2MailOccupancy([
+    { section: "arrival", room: "אמטיסט 8", guest_count: "2" },
+    { section: "arrival", room: "אמטיסט 8", guest_count: "2" },
+    { section: "arrival", room: "וילה 3", guest_count: "2" },
+    { section: "arrival", room: "Premium Day 1", guest_count: "2", is_day_guest: true },
+    { section: "departure", room: "ג׳ספר 1", guest_count: "2" },
+  ]);
+  assertEquals(sum.arrivals, { rooms: 2, guests: 4 });
+  assertEquals(sum.capsules, { rooms: 1, guests: 2 });
+  assertEquals(sum.departures, { rooms: 1, guests: 2 });
 });
 
 Deno.test("group entry maps from legacy spa field", () => {

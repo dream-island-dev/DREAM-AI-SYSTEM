@@ -106,7 +106,16 @@ function SpaActivitiesSyncSection() {
 }
 
 export default function DataSyncPage() {
-  const [activeTab, setActiveTab] = useState("import");
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const tab = sessionStorage.getItem("xos_data_sync_tab");
+      if (tab === "ezgo_mail") {
+        sessionStorage.removeItem("xos_data_sync_tab");
+        return "ezgo_mail";
+      }
+    } catch { /* ignore */ }
+    return "import";
+  });
   const [spaUpsellDate, setSpaUpsellDate] = useState(todayYmd());
   const [spaUpsellRefreshKey, setSpaUpsellRefreshKey] = useState(0);
   const [toast, setToast] = useState(null);

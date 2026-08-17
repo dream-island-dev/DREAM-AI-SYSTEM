@@ -1,4 +1,6 @@
-2026-08-17 | Forecast board uses XOS light theme | Occupancy report restyled with `card`/`table`/`stat-card`/`btn-primary` (ivory, black titles, gold buttons) instead of a dark overlay. Deploy: frontend.
+2026-08-17 | Forecast groups — paste/photo of reception group card | «קבלת הקבוצה מהקבלה» fills name/arrival/entry/meals/qty (Leumi 7 individuals, Merimim 15:30, Strauss 17:00). Text parser first; image uses Gemini OCR. Does not create guests. Deploy: `forecast-daily` + frontend.
+
+
 
 2026-08-17 | Ops task card footer restored to react instruction | Last line is `👉 Please react with 👍🏼 to complete this task.` (was `👍🏼 done`). Deploy: `whapi-webhook` `notify-manual-task`.
 

@@ -62,6 +62,13 @@ export type ForecastReport = {
     operationsReceivedAt: string | null;
     guestsScanned: number;
     missingOperations: boolean;
+    missingDoc2: boolean;
+    doc2IngestId: string | null;
+    doc2PendingLines: number;
+    doc2Arrivals: { rooms: number; guests: number } | null;
+    doc2Departures: { rooms: number; guests: number } | null;
+    doc2Capsules: { rooms: number; guests: number } | null;
+    suiteArrivalGap: boolean;
   };
   notes: string[];
 };
@@ -115,18 +122,106 @@ export function parseForecastConfig(raw: unknown): ForecastDailyConfig {
   };
 }
 
+function addPair(a: { rooms: number; guests: number }, b: { rooms: number; guests: number }) {
+  a.rooms += b.rooms;
+  a.guests += b.guests;
+}
+
 export function forecastDeepLink(): string {
   return `${FORECAST_APP_ORIGIN}${FORECAST_PAGE_PATH}`;
 }
 
+export function paxFromDoc2GuestCount(raw: unknown, fallback = 2): number {
+  const n = parseInt(String(raw ?? "").replace(/[^\d]/g, ""), 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+export function summarizeDoc2MailOccupancy(
+  records: Array<{
+    section?: string | null;
+    room?: string | null;
+    room_raw?: string | null;
+    guest_count?: string | null;
+    is_day_guest?: boolean;
+    is_premium_day?: boolean;
+  }>,
+): {
+  arrivals: { rooms: number; guests: number };
+  departures: { rooms: number; guests: number };
+  capsules: { rooms: number; guests: number };
+} {
+  const arrivals = { rooms: 0, guests: 0 };
+  const departures = { rooms: 0, guests: 0 };
+  const capsules = { rooms: 0, guests: 0 };
+  const seenArr = new Set<string>();
+  const seenDep = new Set<string>();
+  const seenCap = new Set<string>();
+  records.forEach((rec, i) => {
+    const section = String(rec.section ?? "arrival");
+    const pax = paxFromDoc2GuestCount(rec.guest_count);
+    const key = String(rec.room || rec.room_raw || `line-${i}`).trim() || `line-${i}`;
+    const day = rec.is_day_guest === true || rec.is_premium_day === true;
+    if (section === "departure") {
+      if (seenDep.has(key)) return;
+      seenDep.add(key);
+      addPair(departures, { rooms: 1, guests: pax });
+      return;
+    }
+    if (day) {
+      if (seenCap.has(key)) return;
+      seenCap.add(key);
+      addPair(capsules, { rooms: 1, guests: pax });
+      return;
+    }
+    if (seenArr.has(key)) return;
+    seenArr.add(key);
+    addPair(arrivals, { rooms: 1, guests: pax });
+  });
+  return { arrivals, departures, capsules };
+}
+
+export function mergeForecastGroups(
+  opsGroups: Array<{ qty: number }>,
+  saved: ForecastGroupRow[],
+): ForecastGroupRow[] {
+  const blank = (qty: number): ForecastGroupRow => ({
+    name: "",
+    arrival: "09:00",
+    entry: "קבלה",
+    meals: "",
+    qty,
+  });
+  const opsTotal = opsGroups.reduce((s, g) => s + (g.qty || 0), 0);
+  const savedNamed = saved.filter((g) => g.name || g.qty);
+  const savedTotal = savedNamed.reduce((s, g) => s + (g.qty || 0), 0);
+  if (opsGroups.length === 0) return savedNamed;
+  if (savedNamed.length > 0 && savedTotal === opsTotal) return savedNamed;
+  if (savedNamed.length === opsGroups.length) {
+    return opsGroups.map((o, i) => ({ ...savedNamed[i], qty: o.qty }));
+  }
+  if (savedNamed.length === 0) return opsGroups.map((o) => blank(o.qty));
+  const n = Math.max(savedNamed.length, opsGroups.length);
+  const out: ForecastGroupRow[] = [];
+  for (let i = 0; i < n; i++) {
+    const o = opsGroups[i];
+    const s = savedNamed[i];
+    if (o && s) out.push({ ...s, qty: o.qty });
+    else if (o) out.push(blank(o.qty));
+    else if (s) out.push(s);
+  }
+  return out;
+}
+
 export function composeForecastPingText(report: ForecastReport): string {
   const missing = report.sources.missingOperations ? "\n⚠ דוח תפעול ליום היעד לא נמצא במייל — בדקי בלוח." : "";
+  const gap = report.sources.suiteArrivalGap ? "\n⚠ פער הגעות סוויטות מול דוח כניסות — אשרי שורות במייל EZGO." : "";
   return [
     `דוח צפי ל-${report.targetDate}`,
     `סה״כ במתחם: ${report.totalOnSite} · כולל עזיבות: ${report.totalWithDepartures}`,
     report.spaTreatments == null ? "ספא: לא נמצא מידע" : `ספא (טיפולים): ${report.spaTreatments}`,
     "לצפייה בדוח החי בממשק — ההודעה הבאה היא הקישור.",
     missing,
+    gap,
   ].filter(Boolean).join("\n");
 }
 
@@ -152,11 +247,6 @@ function paxFromRooms(rooms: Array<{ adults?: unknown }>, fallback = 2): { rooms
     return s + (Number.isFinite(n) && n > 0 ? n : 1);
   }, 0);
   return { rooms: rooms.length, guests };
-}
-
-function addPair(a: { rooms: number; guests: number }, b: { rooms: number; guests: number }) {
-  a.rooms += b.rooms;
-  a.guests += b.guests;
 }
 
 export function classifySuiteOccupancy(
@@ -343,15 +433,25 @@ export async function computeForecastReport(
   const roomsByGuest = await fetchRoomsByGuest(supabase, relevant.map((g) => g.id));
   const occ = classifySuiteOccupancy(relevant, roomsByGuest, targetDate);
 
-  const { data: ingest } = await supabase
+  const { data: ingestRows } = await supabase
     .from("ezgo_mail_ingest")
     .select("id, body_html, received_at, report_date_ymd")
-    .eq("report_type", "doc1_html")
+    .in("report_type", ["doc1_html", "doc1_excel", "doc1_tsv"])
     .eq("report_date_ymd", targetDate)
     .eq("parse_status", "parsed")
     .order("received_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+  const ingest = ingestRows?.[0] ?? null;
+
+  const { data: doc2Rows } = await supabase
+    .from("ezgo_mail_ingest")
+    .select("id, pending_count")
+    .eq("report_type", "doc2_arrivals")
+    .eq("report_date_ymd", targetDate)
+    .eq("parse_status", "parsed")
+    .order("received_at", { ascending: false })
+    .limit(1);
+  const doc2Ingest = doc2Rows?.[0] ?? null;
 
   const notes: string[] = [];
   let morning: ForecastPackageCount[] = [];
@@ -361,6 +461,7 @@ export async function computeForecastReport(
   let spaTreatments: number | null = null;
   let resortLunch: number | null = null;
   let resortDinner: number | null = null;
+  let opsGroupRows: Array<{ qty: number }> = [];
 
   if (ingest?.body_html) {
     const rawRows = extractOpsTableRows(String(ingest.body_html));
@@ -376,13 +477,47 @@ export async function computeForecastReport(
       .filter((r) => r.dayPart === "evening")
       .reduce((s, r) => s + r.guests, 0);
     spaTreatments = sumSpaTreatmentsFromOps(classified);
+    opsGroupRows = classified
+      .filter((r) => r.dayPart === "group")
+      .map((r) => ({ qty: r.guests }));
   } else {
     notes.push("לא נמצא מייל Operations ליום היעד — ריזורט/ספא ריקים.");
   }
 
-  const groups = (config.groups_by_date[targetDate] ?? []).filter((g) => g.qty > 0 || g.name);
+  const savedGroups = (config.groups_by_date[targetDate] ?? []).filter((g) => g.qty > 0 || g.name);
+  const groups = mergeForecastGroups(opsGroupRows, savedGroups);
   const groupsTotal = groups.reduce((s, g) => s + (g.qty || 0), 0);
   const groupsLunch = groupsTotal || null;
+
+  let doc2Mail = {
+    arrivals: { rooms: 0, guests: 0 },
+    departures: { rooms: 0, guests: 0 },
+    capsules: { rooms: 0, guests: 0 },
+  };
+  let doc2PendingLines = Number(doc2Ingest?.pending_count) || 0;
+  if (doc2Ingest?.id) {
+    const { data: lines } = await supabase
+      .from("ezgo_mail_import_lines")
+      .select("parsed_json, status")
+      .eq("ingest_id", doc2Ingest.id);
+    const recs = (lines ?? []).map((row: { parsed_json?: unknown }) => row.parsed_json ?? {});
+    doc2Mail = summarizeDoc2MailOccupancy(recs as Parameters<typeof summarizeDoc2MailOccupancy>[0]);
+    if (!doc2PendingLines) {
+      doc2PendingLines = (lines ?? []).filter((row: { status?: string }) => row.status === "pending_review").length;
+    }
+  } else {
+    notes.push("לא נמצא דוח כניסות במייל ליום היעד.");
+  }
+
+  const suiteArrivalGap = Boolean(doc2Ingest?.id) && (
+    doc2Mail.arrivals.rooms !== occ.arrivals.rooms
+    || doc2Mail.arrivals.guests !== occ.arrivals.guests
+  );
+  if (suiteArrivalGap) {
+    notes.push(
+      `פער הגעות: XOS ${occ.arrivals.rooms}/${occ.arrivals.guests} · מייל כניסות ${doc2Mail.arrivals.rooms}/${doc2Mail.arrivals.guests} — אשרי שורות, בלי יצירה אוטומטית.`,
+    );
+  }
 
   const totalWithDepartures = morningTotal + eveningTotal + groupsTotal
     + occ.arrivals.guests + occ.departures.guests + occ.stayovers.guests + occ.capsules.guests;
@@ -414,6 +549,13 @@ export async function computeForecastReport(
       operationsReceivedAt: ingest?.received_at ?? null,
       guestsScanned: relevant.length,
       missingOperations: !ingest?.body_html,
+      missingDoc2: !doc2Ingest?.id,
+      doc2IngestId: doc2Ingest?.id ?? null,
+      doc2PendingLines,
+      doc2Arrivals: doc2Ingest?.id ? doc2Mail.arrivals : null,
+      doc2Departures: doc2Ingest?.id ? doc2Mail.departures : null,
+      doc2Capsules: doc2Ingest?.id ? doc2Mail.capsules : null,
+      suiteArrivalGap,
     },
     notes,
   };
