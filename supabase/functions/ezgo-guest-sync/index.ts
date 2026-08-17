@@ -81,6 +81,7 @@ import {
   extractOrderRoomsCount,
   extractReservation,
   resolveApiRoomOccupantIdentity,
+  selectPrioritizedBatch,
 } from "../_shared/ezgoGuestSyncLogic.ts";
 import { resolveDoc2ImportAutomationScope } from "../_shared/importAutomationScope.ts";
 import type { Doc2Record } from "../_shared/ezgoDoc2Parser.ts";
@@ -146,6 +147,13 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "
 // the same pressure. 100 keeps steady throughput (6,000 orders/hour) while
 // cutting peak per-tick query volume 5x.
 const BATCH_LIMIT = 100;
+
+// Candidate pool fetched (oldest-first) BEFORE picking the actual claimed
+// batch — wider than BATCH_LIMIT so selectPrioritizedBatch can see a
+// Reservations row's Orders/Client sibling even when a room-less/day-pass
+// backlog is older by created_at. One extra lightweight SELECT (no per-row
+// processing), capped regardless of BATCH_LIMIT drift.
+const CANDIDATE_POOL_LIMIT = Math.min(BATCH_LIMIT * 5, 1000);
 
 /** Cancels every non-cancelled guests row for this order_number. Returns
  * how many were affected — 0 is a normal outcome (order cancelled before
@@ -517,16 +525,26 @@ serve(async (req) => {
     // that let the day-pass/spa-only backlog (see extractOrderRoomsCount doc)
     // sit unprocessed for 3 days despite the cron running every minute the
     // whole time.
-    const { data: candidateRows, error: candidateError } = await supabase
+    //
+    // Prioritized (Mike, 2026-08-17, live incident): fetch a wider pool than
+    // BATCH_LIMIT so selectPrioritizedBatch can put orders that already have
+    // a Reservations row ahead of pure room-less/day-pass Orders snapshots —
+    // a real suite order must not wait ticks behind an older day-pass
+    // backlog. Still oldest-first within each tier; nothing is dropped, only
+    // reordered (Zero Data Loss).
+    const { data: candidatePool, error: candidateError } = await supabase
       .from("ezgo_api_ingest")
-      .select("id")
+      .select("id, created_at, raw_payload")
       .eq("status", "staged")
       .order("created_at", { ascending: true })
-      .limit(BATCH_LIMIT);
+      .limit(CANDIDATE_POOL_LIMIT);
     if (candidateError) {
       console.error("[ezgo-guest-sync] candidate staged-row query failed:", candidateError.message);
     }
-    const candidateIds = (candidateRows ?? []).map((r) => r.id);
+    const candidateIds = selectPrioritizedBatch(
+      (candidatePool ?? []) as { id: string; created_at: string; raw_payload: Record<string, unknown> }[],
+      BATCH_LIMIT,
+    );
 
     let claimedRows: { id: string; raw_payload: Record<string, unknown>; created_at: string }[] = [];
     if (candidateIds.length) {

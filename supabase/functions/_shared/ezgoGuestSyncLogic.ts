@@ -300,6 +300,56 @@ export type OrderResolutionAction =
  *     stays claimed, released back to 'staged' by the caller, tried again
  *     next run.
  */
+export interface IngestCandidateRow {
+  id: string;
+  created_at: string;
+  raw_payload: Record<string, unknown>;
+}
+
+/**
+ * Batch claim prioritization (Mike, 2026-08-17, live incident): oldest-first
+ * alone lets a large volume of room-less/day-pass Orders snapshots (which
+ * only ever cost a cheap grace-period check + eventual park — never
+ * processRoomLine's full multi-query chain) crowd real suite orders out of
+ * a batch when the staged queue backs up. A real suite Reservations row
+ * sitting behind thousands of day-pass rows by created_at would otherwise
+ * wait ticks longer than necessary while the DB connection budget is spent
+ * on room-less housekeeping instead.
+ *
+ * Zero Data Loss: this never drops or skips a row — every candidate is
+ * still eventually claimed, oldest-first within its own tier. It only
+ * REORDERS which rows a size-limited batch picks first. Rows belonging to
+ * an OrderId that has at least one Entity=Reservations row IN THIS
+ * CANDIDATE POOL go first (still oldest-first within that group);
+ * everything else (pure Orders-only/room-less snapshots, Delete/Activities
+ * rows, or an order whose Reservations row fell outside the pool) fills
+ * whatever's left, also oldest-first. Caller is expected to fetch a
+ * candidate pool larger than batchLimit so a Reservations row has a chance
+ * to be visible in the same pool as its Orders/Client sibling.
+ */
+export function selectPrioritizedBatch(
+  candidates: IngestCandidateRow[],
+  batchLimit: number,
+): string[] {
+  const orderIdsWithReservation = new Set<string>();
+  for (const row of candidates) {
+    const rp = row.raw_payload || {};
+    if (rp.Entity === "Reservations") {
+      const oid = rp.OrderId != null ? String(rp.OrderId).trim() : "";
+      if (oid) orderIdsWithReservation.add(oid);
+    }
+  }
+  const priority: IngestCandidateRow[] = [];
+  const rest: IngestCandidateRow[] = [];
+  for (const row of candidates) {
+    const rp = row.raw_payload || {};
+    const oid = rp.OrderId != null ? String(rp.OrderId).trim() : "";
+    if (oid && orderIdsWithReservation.has(oid)) priority.push(row);
+    else rest.push(row);
+  }
+  return [...priority, ...rest].slice(0, batchLimit).map((r) => r.id);
+}
+
 export function classifyOrderResolution(lines: OrderLineResolution[]): OrderResolutionAction {
   if (lines.every((l) => l.kind === "created" || l.kind === "enriched")) {
     return { action: "parsed" };

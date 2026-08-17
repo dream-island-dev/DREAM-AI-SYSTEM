@@ -10,6 +10,7 @@ import {
   extractReservation,
   pickFillEmpty,
   resolveApiRoomOccupantIdentity,
+  selectPrioritizedBatch,
 } from "./ezgoGuestSyncLogic.ts";
 
 // ── ddmmyyyyToIso ──────────────────────────────────────────────────────────
@@ -383,4 +384,43 @@ Deno.test("classifyOrderResolution: one created line + one parkable unresolved l
     ]),
     { action: "park", notes: "unresolved_room_not_mapped" },
   );
+});
+
+// ── selectPrioritizedBatch — batch claim prioritization (Mike, 2026-08-17,
+// live incident): a real suite Reservations row must not wait behind a
+// large room-less/day-pass backlog just because the backlog is older by
+// created_at. Zero Data Loss: nothing is ever dropped, only reordered. ────
+
+Deno.test("selectPrioritizedBatch: order with a Reservations row in the pool goes first, even if an unrelated day-pass row is older", () => {
+  const rows = [
+    { id: "old-daypass", created_at: "2026-08-17T08:00:00Z", raw_payload: { Entity: "Orders", OrderId: "1", Value: JSON.stringify({ Order: { Rooms: [] }, Client: {} }) } },
+    { id: "newer-suite-order", created_at: "2026-08-17T08:05:00Z", raw_payload: { Entity: "Orders", OrderId: "2", Value: JSON.stringify({ Order: {}, Client: {} }) } },
+    { id: "newer-suite-res", created_at: "2026-08-17T08:06:00Z", raw_payload: { Entity: "Reservations", OrderId: "2", Value: JSON.stringify({ Room: { RoomId: 3 } }) } },
+  ];
+  assertEquals(selectPrioritizedBatch(rows, 2), ["newer-suite-order", "newer-suite-res"]);
+});
+
+Deno.test("selectPrioritizedBatch: with room for everyone, still oldest-first within each tier (only reorders across tiers)", () => {
+  const rows = [
+    { id: "a", created_at: "1", raw_payload: { Entity: "Orders", OrderId: "1", Value: JSON.stringify({ Order: {}, Client: {} }) } },
+    { id: "b", created_at: "2", raw_payload: { Entity: "Reservations", OrderId: "1", Value: JSON.stringify({ Room: { RoomId: 1 } }) } },
+    { id: "c", created_at: "3", raw_payload: { Entity: "Orders", OrderId: "2", Value: JSON.stringify({ Order: { Rooms: [] }, Client: {} }) } },
+  ];
+  assertEquals(selectPrioritizedBatch(rows, 10), ["a", "b", "c"]);
+});
+
+Deno.test("selectPrioritizedBatch: nothing dropped -- batchLimit >= pool size still returns every id", () => {
+  const rows = [
+    { id: "a", created_at: "1", raw_payload: { Entity: "Orders", OrderId: "1" } },
+    { id: "b", created_at: "2", raw_payload: { Entity: "Activities", OrderId: "1" } },
+  ];
+  assertEquals(new Set(selectPrioritizedBatch(rows, 10)), new Set(["a", "b"]));
+});
+
+Deno.test("selectPrioritizedBatch: a row with no readable OrderId falls into the non-priority tier, never throws", () => {
+  const rows = [
+    { id: "no-order-id", created_at: "1", raw_payload: {} },
+    { id: "has-res", created_at: "2", raw_payload: { Entity: "Reservations", OrderId: "1" } },
+  ];
+  assertEquals(selectPrioritizedBatch(rows, 1), ["has-res"]);
 });
