@@ -10,6 +10,25 @@ function addYmd(ymd, days) {
   return dt.toISOString().slice(0, 10);
 }
 
+function hebrewDayTitle(ymd) {
+  const [y, m, d] = String(ymd).split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  const names = ["יום ראשון", "יום שני", "יום שלישי", "יום רביעי", "יום חמישי", "יום שישי", "שבת"];
+  const dd = String(d).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  return `${names[dt.getUTCDay()]}- ${dd}/${mm}/${y}`;
+}
+
+function normalizeGroup(g) {
+  return {
+    name: g?.name || "",
+    arrival: g?.arrival || "",
+    entry: g?.entry || g?.spa || "",
+    meals: g?.meals || "",
+    qty: Number(g?.qty) || 0,
+  };
+}
+
 const card = {
   background: "rgba(0,0,0,0.28)",
   border: "1px solid rgba(201,169,110,0.28)",
@@ -17,10 +36,20 @@ const card = {
   padding: 14,
 };
 
-function Num({ n, empty }) {
-  if (n == null || n === "") {
-    return <span style={{ color: "#C9A96E" }}>{empty || "לא נמצא"}</span>;
-  }
+const th = { textAlign: "right", padding: "6px 8px", color: "var(--gold)", fontWeight: 700, fontSize: 13 };
+const td = { padding: "6px 8px", borderTop: "1px solid rgba(201,169,110,0.18)", fontSize: 14 };
+const inp = {
+  width: "100%",
+  boxSizing: "border-box",
+  background: "rgba(0,0,0,0.35)",
+  color: "inherit",
+  border: "1px solid rgba(201,169,110,0.35)",
+  borderRadius: 6,
+  padding: "6px 8px",
+};
+
+function Cell({ n }) {
+  if (n == null || n === "") return <span style={{ opacity: 0.35 }}>—</span>;
   return <strong>{n}</strong>;
 }
 
@@ -53,7 +82,8 @@ export default function ForecastBoard() {
       setPhone(data.config?.yelena_phone || "");
       setHour(data.config?.send_hour ?? 21);
       setEnabled(data.config?.enabled !== false);
-      setGroups(data.config?.groups_by_date?.[targetDate] || data.report?.groups || []);
+      const raw = data.config?.groups_by_date?.[targetDate] || data.report?.groups || [];
+      setGroups(raw.map(normalizeGroup));
     } catch (e) {
       show(e.message, "err");
     } finally {
@@ -83,7 +113,7 @@ export default function ForecastBoard() {
     setBusy(true);
     try {
       const groups_by_date = { ...(config?.groups_by_date || {}) };
-      groups_by_date[targetDate] = groups;
+      groups_by_date[targetDate] = groups.map(normalizeGroup);
       const { data, error } = await supabase.functions.invoke("forecast-daily", {
         body: {
           action: "save_config",
@@ -127,22 +157,36 @@ export default function ForecastBoard() {
     }
   }
 
+  function patchGroup(i, field, value) {
+    const next = [...groups];
+    next[i] = { ...next[i], [field]: value };
+    setGroups(next);
+  }
+
   const r = report;
-  const mealSum = (slot) => {
-    if (!r) return null;
-    const m = r.meals[slot];
-    const parts = [m.suites, m.resort, m.groups].filter((x) => x != null);
-    if (!parts.length) return null;
-    return parts.reduce((s, n) => s + n, 0);
-  };
+  const groupsTotal = groups.reduce((s, g) => s + (Number(g.qty) || 0), 0);
+  const breakfastTotal = r?.meals.breakfast.suites ?? null;
+  const lunchTotal = r
+    ? (r.meals.lunch.resort || 0) + groupsTotal
+    : null;
+  const dinnerTotal = r
+    ? (r.meals.dinner.suites || 0) + (r.meals.dinner.resort || 0)
+    : null;
+  const totalWithDepartures = r
+    ? r.morningTotal + r.eveningTotal + groupsTotal
+      + r.arrivals.guests + r.departures.guests + r.stayovers.guests + r.capsules.guests
+    : null;
+  const totalOnSite = r && totalWithDepartures != null
+    ? totalWithDepartures - r.departures.guests
+    : null;
 
   return (
-    <div style={{ padding: 16, maxWidth: 1100, margin: "0 auto", color: "var(--text, #eee)" }}>
+    <div style={{ padding: 16, maxWidth: 1180, margin: "0 auto", color: "var(--text, #eee)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
         <div>
-          <h2 style={{ margin: 0, color: "var(--gold)" }}>📈 דוח צפי חי</h2>
+          <h2 style={{ margin: 0, color: "var(--gold)" }}>{r ? hebrewDayTitle(r.targetDate) : "📈 דוח צפי"}</h2>
           <div style={{ fontSize: 13, opacity: 0.75, marginTop: 4 }}>
-            סוויטות מפרופילי אורחים (API) · ריזורט ממייל Operations · קישור לילנה בערב
+            כמו דוח הקבלה — סוויטות מפרופילים · ריזורט ממייל תפעול
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -163,89 +207,147 @@ export default function ForecastBoard() {
       )}
 
       {r && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 10, marginBottom: 14 }}>
-          <div style={card}><div>ריזורט בוקר</div><div style={{ fontSize: 28 }}><Num n={r.morningTotal} /></div></div>
-          <div style={card}><div>ריזורט ערב</div><div style={{ fontSize: 28 }}><Num n={r.eveningTotal} /></div></div>
-          <div style={card}><div>קבוצות</div><div style={{ fontSize: 28 }}><Num n={r.groupsTotal} /></div></div>
-          <div style={card}><div>סה״כ במתחם</div><div style={{ fontSize: 28 }}><Num n={r.totalOnSite} /></div></div>
-          <div style={card}><div>כולל עזיבות</div><div style={{ fontSize: 28 }}><Num n={r.totalWithDepartures} /></div></div>
-          <div style={card}><div>ספא (טיפולים)</div><div style={{ fontSize: 28 }}><Num n={r.spaTreatments} /></div></div>
-        </div>
-      )}
-
-      {r && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12, marginBottom: 14 }}>
           <div style={card}>
-            <h3 style={{ marginTop: 0, color: "var(--gold)" }}>סוויטות {r.targetDate}</h3>
-            <table style={{ width: "100%", fontSize: 14 }}>
-              <thead><tr><th></th><th>חדרים</th><th>אורחים</th></tr></thead>
+            <div style={{ fontWeight: 700, color: "var(--gold)", marginBottom: 8 }}>צפי</div>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <tbody>
-                <tr><td>הגעות</td><td>{r.arrivals.rooms}</td><td>{r.arrivals.guests}</td></tr>
-                <tr><td>עזיבות</td><td>{r.departures.rooms}</td><td>{r.departures.guests}</td></tr>
-                <tr><td>ממשיכי שהייה</td><td>{r.stayovers.rooms}</td><td>{r.stayovers.guests}</td></tr>
-                <tr><td>קפסולות</td><td>{r.capsules.rooms}</td><td>{r.capsules.guests}</td></tr>
+                <tr>
+                  <td style={td}>אורחי ריזורט בוקר</td>
+                  <td style={{ ...td, textAlign: "left" }}><Cell n={r.morningTotal} /></td>
+                  <td style={td} />
+                </tr>
+                <tr>
+                  <td style={td}>אורחי ריזורט ערב</td>
+                  <td style={{ ...td, textAlign: "left" }}><Cell n={r.eveningTotal} /></td>
+                  <td style={td} />
+                </tr>
+                <tr>
+                  <td style={td}>קבוצות</td>
+                  <td style={{ ...td, textAlign: "left" }}><Cell n={groupsTotal} /></td>
+                  <td style={td} />
+                </tr>
+                <tr>
+                  <td style={{ ...td, color: "#1a1a1a", fontWeight: 700 }}>סוויטות</td>
+                  <td style={{ ...td, color: "var(--gold)" }}>כמות חדרים</td>
+                  <td style={{ ...td, color: "var(--gold)" }}>כמות אורחים</td>
+                </tr>
+                <tr>
+                  <td style={td}>הגעות סוויטות</td>
+                  <td style={{ ...td, textAlign: "left" }}>{r.arrivals.rooms}</td>
+                  <td style={{ ...td, textAlign: "left" }}>{r.arrivals.guests}</td>
+                </tr>
+                <tr>
+                  <td style={td}>עזיבות סוויטות</td>
+                  <td style={{ ...td, textAlign: "left" }}>{r.departures.rooms}</td>
+                  <td style={{ ...td, textAlign: "left" }}>{r.departures.guests}</td>
+                </tr>
+                <tr>
+                  <td style={td}>ממשיכי שהייה</td>
+                  <td style={{ ...td, textAlign: "left" }}>{r.stayovers.rooms}</td>
+                  <td style={{ ...td, textAlign: "left" }}>{r.stayovers.guests}</td>
+                </tr>
+                <tr>
+                  <td style={td}>קפסולות</td>
+                  <td style={{ ...td, textAlign: "left" }}>{r.capsules.rooms}</td>
+                  <td style={{ ...td, textAlign: "left" }}>{r.capsules.guests}</td>
+                </tr>
+                <tr>
+                  <td style={{ ...td, fontWeight: 700 }}>סהכ אורחים כולל עזיבות</td>
+                  <td style={{ ...td, textAlign: "left" }} colSpan={2}><Cell n={totalWithDepartures} /></td>
+                </tr>
+                <tr>
+                  <td style={{ ...td, fontWeight: 700 }}>סהכ אורחים במתחם</td>
+                  <td style={{ ...td, textAlign: "left" }} colSpan={2}><Cell n={totalOnSite} /></td>
+                </tr>
+                <tr>
+                  <td style={td}>ספא</td>
+                  <td style={{ ...td, textAlign: "left" }} colSpan={2}><Cell n={r.spaTreatments} /></td>
+                </tr>
               </tbody>
             </table>
             {r.sources.missingOperations && (
               <div style={{ marginTop: 8, color: "#E8C98A" }}>⚠ אין מייל תפעול ליום הזה — לחצי סנכרן מייל.</div>
             )}
           </div>
-          <div style={card}>
-            <h3 style={{ marginTop: 0, color: "var(--gold)" }}>מסעדה</h3>
-            <div>בוקר: סוויטות <Num n={r.meals.breakfast.suites} /> · סה״כ <Num n={mealSum("breakfast")} /></div>
-            <div>צהריים: ריזורט <Num n={r.meals.lunch.resort} /> · קבוצות <Num n={r.meals.lunch.groups} /> · סה״כ <Num n={mealSum("lunch")} /></div>
-            <div>ערב: סוויטות <Num n={r.meals.dinner.suites} /> · ריזורט <Num n={r.meals.dinner.resort} /> · סה״כ <Num n={mealSum("dinner")} /></div>
-            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 8 }}>בוקר סוויטות = HB/FB לעזיבות+ממשיכים בלבד (BB לא נשמר ב־meal_plan).</div>
-          </div>
-        </div>
-      )}
 
-      {r && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
           <div style={card}>
-            <h3 style={{ marginTop: 0, color: "var(--gold)" }}>ריזורט בוקר</h3>
-            {(r.morning || []).map((p) => (
-              <div key={p.label} style={{ display: "flex", justifyContent: "space-between" }}>
-                <span>{p.label}</span><span>{p.guests}</span>
-              </div>
-            ))}
-            {!r.morning?.length && <div>לא נמצא מידע</div>}
-          </div>
-          <div style={card}>
-            <h3 style={{ marginTop: 0, color: "var(--gold)" }}>ריזורט ערב</h3>
-            {(r.evening || []).map((p) => (
-              <div key={p.label} style={{ display: "flex", justifyContent: "space-between" }}>
-                <span>{p.label}</span><span>{p.guests}</span>
-              </div>
-            ))}
-            {!r.evening?.length && <div>לא נמצא מידע</div>}
+            <h3 style={{ margin: "0 0 8px", fontWeight: 700, color: "#1a1a1a" }}>מסעדה</h3>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={th} />
+                  <th style={th}>א.בוקר</th>
+                  <th style={th}>א.צהריים</th>
+                  <th style={th}>א.ערב</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={td}>אורחי סוויטות</td>
+                  <td style={td}><Cell n={r.meals.breakfast.suites} /></td>
+                  <td style={td}><Cell n={null} /></td>
+                  <td style={td}><Cell n={r.meals.dinner.suites} /></td>
+                </tr>
+                <tr>
+                  <td style={td}>אורחי ריזורט</td>
+                  <td style={td}><Cell n={null} /></td>
+                  <td style={td}><Cell n={r.meals.lunch.resort} /></td>
+                  <td style={td}><Cell n={r.meals.dinner.resort} /></td>
+                </tr>
+                <tr>
+                  <td style={td}>קבוצות</td>
+                  <td style={td}><Cell n={null} /></td>
+                  <td style={td}><Cell n={groupsTotal || null} /></td>
+                  <td style={td}><Cell n={null} /></td>
+                </tr>
+                <tr>
+                  <td style={{ ...td, fontWeight: 700 }}>סהכ</td>
+                  <td style={{ ...td, fontWeight: 700 }}><Cell n={breakfastTotal} /></td>
+                  <td style={{ ...td, fontWeight: 700 }}><Cell n={lunchTotal} /></td>
+                  <td style={{ ...td, fontWeight: 700 }}><Cell n={dinnerTotal} /></td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       )}
 
       <div style={card}>
-        <h3 style={{ marginTop: 0, color: "var(--gold)" }}>קבוצות (ידני — אין מקור API)</h3>
-        {groups.map((g, i) => (
-          <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1.2fr 70px 32px", gap: 6, marginBottom: 6 }}>
-            <input value={g.name} placeholder="שם" onChange={(e) => {
-              const next = [...groups]; next[i] = { ...g, name: e.target.value }; setGroups(next);
-            }} />
-            <input value={g.arrival} placeholder="שעת הגעה" onChange={(e) => {
-              const next = [...groups]; next[i] = { ...g, arrival: e.target.value }; setGroups(next);
-            }} />
-            <input value={g.spa} placeholder="ספא" onChange={(e) => {
-              const next = [...groups]; next[i] = { ...g, spa: e.target.value }; setGroups(next);
-            }} />
-            <input value={g.meals} placeholder="ארוחות" onChange={(e) => {
-              const next = [...groups]; next[i] = { ...g, meals: e.target.value }; setGroups(next);
-            }} />
-            <input type="number" min="0" value={g.qty} onChange={(e) => {
-              const next = [...groups]; next[i] = { ...g, qty: Number(e.target.value) }; setGroups(next);
-            }} />
-            <button type="button" title="מחק" onClick={() => setGroups(groups.filter((_, j) => j !== i))}>×</button>
-          </div>
-        ))}
-        <button type="button" onClick={() => setGroups([...groups, { name: "", arrival: "09:00", spa: "", meals: "", qty: 0 }])}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          <h3 style={{ margin: 0, color: "#1a1a1a" }}>קבוצות</h3>
+          <span style={{ fontSize: 13, opacity: 0.75 }}>סהכ קבוצות: {groupsTotal}</span>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+            <thead>
+              <tr>
+                <th style={th}>שם הקבוצה</th>
+                <th style={th}>שעת הגעה</th>
+                <th style={th}>כניסה</th>
+                <th style={th}>ארוחות</th>
+                <th style={th}>כמות צפויה</th>
+                <th style={th} />
+              </tr>
+            </thead>
+            <tbody>
+              {groups.map((g, i) => (
+                <tr key={i}>
+                  <td style={td}><input style={inp} value={g.name} placeholder="שם" onChange={(e) => patchGroup(i, "name", e.target.value)} /></td>
+                  <td style={td}><input style={inp} value={g.arrival} placeholder="09:00" onChange={(e) => patchGroup(i, "arrival", e.target.value)} /></td>
+                  <td style={td}><input style={inp} value={g.entry} placeholder="קבלה" onChange={(e) => patchGroup(i, "entry", e.target.value)} /></td>
+                  <td style={td}><input style={inp} value={g.meals} placeholder="ארוחות / שעה" onChange={(e) => patchGroup(i, "meals", e.target.value)} /></td>
+                  <td style={td}><input style={{ ...inp, width: 80 }} type="number" min="0" value={g.qty} onChange={(e) => patchGroup(i, "qty", Number(e.target.value))} /></td>
+                  <td style={td}>
+                    <button type="button" title="מחק" onClick={() => setGroups(groups.filter((_, j) => j !== i))}>×</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button type="button" onClick={() => setGroups([...groups, { name: "", arrival: "09:00", entry: "קבלה", meals: "", qty: 0 }])}
+          style={{ marginTop: 8, background: "transparent", color: "var(--gold)", border: "1px solid var(--gold)", borderRadius: 8, padding: "6px 12px" }}>
           + קבוצה
         </button>
       </div>

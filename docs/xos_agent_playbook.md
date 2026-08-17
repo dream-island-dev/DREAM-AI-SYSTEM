@@ -430,6 +430,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 - **Fix:** Morning = `N - כניסה` after exact-tiling collapse. Evening = first meals `כמות`. Groups stay in C5 without subtracting C3. Breakfast suites = all departure+stayover pax.
 - **Lesson:** Reception copies Operations columns as-is, including group-as-individuals still inside morning. Do not "clean" double-count vs her 588 formula.
 
+### 2026-08-17 — Organized reception forecast (`דוח מסודר.xlsx`) is the layout contract
+- Same 18/08 numbers; new formulas: groups `B5=I23`, `I23=SUM(I11:I20)`, total `B12=B3+B4+B5+C8+C9+C10+C11`, on-site `B13=B12-C9`.
+- Groups table columns: name, arrival time, **כניסה** (קבלה — not spa), meals, qty. Restaurant groups lunch = full groups sum (23), not filtered by meal time.
+- Reception sheet has occupancy totals only — no morning/evening package split. Spa is one number, not in the groups table.
+
 
 - **Symptom:** Field staff knock, nobody opens, they type `5 no answer` (or reply on the card). LLM used to treat that as a new ticket or ignore it as chitchat.
 - **Fix:** Tier-0 in `whapi-webhook` before classify — resolve room from digits or quoted task card, Whapi the in-stay guest, ack the ops group. Do not mark the task done.

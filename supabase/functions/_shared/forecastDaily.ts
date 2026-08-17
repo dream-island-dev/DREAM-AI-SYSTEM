@@ -21,7 +21,7 @@ export const FORECAST_APP_ORIGIN = "https://dream-ai-system.vercel.app";
 export type ForecastGroupRow = {
   name: string;
   arrival: string;
-  spa: string;
+  entry: string;
   meals: string;
   qty: number;
 };
@@ -100,7 +100,7 @@ export function parseForecastConfig(raw: unknown): ForecastDailyConfig {
       return {
         name: String(row.name ?? "").trim(),
         arrival: String(row.arrival ?? "").trim(),
-        spa: String(row.spa ?? "").trim(),
+        entry: String(row.entry ?? row.spa ?? "").trim(),
         meals: String(row.meals ?? "").trim(),
         qty: Math.max(0, parseInt(String(row.qty ?? "0"), 10) || 0),
       };
@@ -382,11 +382,7 @@ export async function computeForecastReport(
 
   const groups = (config.groups_by_date[targetDate] ?? []).filter((g) => g.qty > 0 || g.name);
   const groupsTotal = groups.reduce((s, g) => s + (g.qty || 0), 0);
-  const groupsLunch = groups.reduce((s, g) => {
-    if (!g.meals || /לא נמצא/.test(g.meals)) return s;
-    if (/ערב/.test(g.meals) && !/צהר/.test(g.meals)) return s;
-    return s + (g.qty || 0);
-  }, 0);
+  const groupsLunch = groupsTotal || null;
 
   const totalWithDepartures = morningTotal + eveningTotal + groupsTotal
     + occ.arrivals.guests + occ.departures.guests + occ.stayovers.guests + occ.capsules.guests;

@@ -1,4 +1,4 @@
-2026-08-17 | Forecast occupancy matches reception Excel method | Morning heads from Operations `כניסה` after collapsing EZGO duplicate voucher dumps (not meals `כמות` packages). Evening copies meals `כמות`. Groups listed separately are not subtracted from morning. Suite breakfast = all departures+stayovers. Deploy: `forecast-daily` `whatsapp-cron`.
+2026-08-17 | Forecast board matches reception organized Excel | Two-column צפי/מסעדה layout, groups table is name/arrival/entry/meals/qty (`כניסה` not spa), live totals follow her formulas. Occupancy section titles מסעדה/קבוצות/סוויטות use dark `#1a1a1a`. Deploy: `forecast-daily` `whatsapp-cron` + frontend.
 
 2026-08-17 | Ops task card footer restored to react instruction | Last line is `👉 Please react with 👍🏼 to complete this task.` (was `👍🏼 done`). Deploy: `whapi-webhook` `notify-manual-task`.
 

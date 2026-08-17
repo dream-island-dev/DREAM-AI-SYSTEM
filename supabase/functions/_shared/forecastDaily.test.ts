@@ -110,3 +110,12 @@ Deno.test("ping has no URL; send gate needs phone and hour", () => {
   assertEquals(shouldDispatchForecastPing({ ...cfg, last_sent_ymd: israelYmd(now) }, now).due, false);
   assertEquals(shouldDispatchForecastPing({ ...cfg, yelena_phone: "" }, now).reason, "missing_phone");
 });
+
+Deno.test("group entry maps from legacy spa field", () => {
+  const cfg = parseForecastConfig({
+    groups_by_date: {
+      "2026-08-18": [{ name: "בנק לאומי", arrival: "09:00", spa: "קבלה", meals: "התנהלות כבודדים", qty: 7 }],
+    },
+  });
+  assertEquals(cfg.groups_by_date["2026-08-18"][0].entry, "קבלה");
+});
