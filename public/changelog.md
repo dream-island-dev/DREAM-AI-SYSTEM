@@ -1,4 +1,4 @@
-2026-08-17 | Forecast board matches reception organized Excel | Two-column צפי/מסעדה layout, groups table is name/arrival/entry/meals/qty (`כניסה` not spa), live totals follow her formulas. Occupancy section titles מסעדה/קבוצות/סוויטות use dark `#1a1a1a`. Deploy: `forecast-daily` `whatsapp-cron` + frontend.
+2026-08-17 | Forecast board uses XOS light theme | Occupancy report restyled with `card`/`table`/`stat-card`/`btn-primary` (ivory, black titles, gold buttons) instead of a dark overlay. Deploy: frontend.
 
 2026-08-17 | Ops task card footer restored to react instruction | Last line is `👉 Please react with 👍🏼 to complete this task.` (was `👍🏼 done`). Deploy: `whapi-webhook` `notify-manual-task`.
 
