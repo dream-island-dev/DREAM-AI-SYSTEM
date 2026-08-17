@@ -27,7 +27,7 @@ export function buildTaskCard(
     fromVoice ? "🎤 voice" : null,
     desc,
     assigneeLine,
-    "👍🏼 done",
+    "👉 Please react with 👍🏼 to complete this task.",
   ]);
 }
 
@@ -43,6 +43,6 @@ export function buildStaffDispatchedTaskCard(
     sourceTag(source),
     desc,
     assigneeLine,
-    "👍🏼 done",
+    "👉 Please react with 👍🏼 to complete this task.",
   ]);
 }

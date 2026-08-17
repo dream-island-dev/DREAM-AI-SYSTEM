@@ -1,3 +1,5 @@
+2026-08-17 | Ops task card footer restored to react instruction | Last line is `👉 Please react with 👍🏼 to complete this task.` (was `👍🏼 done`). Deploy: `whapi-webhook` `notify-manual-task`.
+
 2026-08-17 | Ops group `no answer` pings the guest at the door | Staff type `5 no answer` / `אין מענה` or reply on the task card — XOS texts the in-room guest (Whapi) that we knocked and nobody answered. Compact task card + DENTAL KIT from the same session. Deploy: `whapi-webhook` `notify-manual-task` `task-action` `sla-escalation-cron` + frontend.
 
 2026-08-17 | Compact ops Whapi card + DENTAL KIT | Task card is now 4 lines (`📌 Suite` / source tag / desc / `👍🏼 done`). Toothbrush/toothpaste → `DENTAL KIT` (qty kept as `N x DENTAL KIT`). Truncation fix from same session still in `fieldOpsTranslation.ts`. Deploy: `notify-manual-task` `task-action` `sla-escalation-cron` `whapi-webhook` + frontend.

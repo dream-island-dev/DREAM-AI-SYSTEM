@@ -9,7 +9,7 @@ Deno.test("buildStaffDispatchedTaskCard — compact layout + source tags", () =>
   assertEquals(desk.includes("[FRONT DESK]"), true);
   assertEquals(desk.includes("📍 Source:"), false);
   assertEquals(desk.includes("New Task Opened"), false);
-  assertEquals(desk.endsWith("👍🏼 done"), true);
+  assertEquals(desk.endsWith("👉 Please react with 👍🏼 to complete this task."), true);
 
   const guestWa = buildStaffDispatchedTaskCard("ג׳ספר 5", "DENTAL KIT", null, "inbox_routed");
   assertEquals(guestWa.includes("[GUEST WA]"), true);
