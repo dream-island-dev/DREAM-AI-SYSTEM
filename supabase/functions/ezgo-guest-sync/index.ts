@@ -132,7 +132,20 @@ async function findGuestByEzgoClientId(
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-const BATCH_LIMIT = 500;
+// Was 500 (Mike, 2026-08-17): each order in this batch fires ~10+ sequential
+// queries (findGuestByEzgoClientId / findGuestForDoc2SuiteCreate /
+// assertNoDuplicateGuest / create-or-merge / upsertDoc2SuiteRoomForGuest /
+// recomputeGuestCombinedRoom / bookings upsert / import hooks) — at 500
+// orders/minute that's thousands of round trips a minute against a project
+// with max_connections=60, shared with every other pg_cron job, PostgREST,
+// and live EZGO webhook traffic. Live incident 2026-08-17: pg_cron itself
+// started failing "job startup timeout" across multiple job ids (Postgres
+// logs), queries hit "statement timeout", and PostgREST's schema cache
+// reload failed (PGRST002) — root cause was DB connection/load exhaustion,
+// not a logic bug. EZGO paused sending after seeing our webhook fail under
+// the same pressure. 100 keeps steady throughput (6,000 orders/hour) while
+// cutting peak per-tick query volume 5x.
+const BATCH_LIMIT = 100;
 
 /** Cancels every non-cancelled guests row for this order_number. Returns
  * how many were affected — 0 is a normal outcome (order cancelled before
