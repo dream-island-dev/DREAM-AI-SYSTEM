@@ -33,6 +33,7 @@ export const SUITE_ARRIVALS_SCHEMA = {
   price:        { label: "מחיר",                                             required: "optional", defaultPolicy: "0", example: "1200" },
   arrivalDate:  { label: "תאריך הגעה",                                        required: "soft",     defaultPolicy: "היום (כשאין עמודת תאריך כלל)", example: "2026-06-18" },
   leadSource:   { label: "מקור הגעה (Lead Source)",                           required: "optional", example: "מחלקת מכירות" },
+  salesSegment: { label: "סגמנט מכירות (בודדים / קבוצות ישירות)",              required: "optional", example: "בודדים" },
   guestPhone:   { label: "טלפון אורח (עמודה ישירה, ללא הערות)",                required: "optional", example: "0522468207" },
 };
 
@@ -213,6 +214,7 @@ export function detectSuiteArrivalsPreset(headers) {
     price:       priceKey,
     arrivalDate: "ת. התחלה",
     leadSource:  "מקור הגעה",
+    salesSegment: set.has("סגמנט מכירות") ? "סגמנט מכירות" : undefined,
   };
 }
 

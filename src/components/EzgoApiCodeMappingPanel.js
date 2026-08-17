@@ -1,7 +1,5 @@
 // src/components/EzgoApiCodeMappingPanel.js
-// EZGO live API — one-time code mapping. Writes ONLY spa_therapists.ezgo_worker_id
-// and ezgo_suite_room_map. auto_bootstrap mappings are untrusted until staff
-// confirms against the EZGO room catalog (or a 1-room sample order).
+// EZGO live API — RoomId, worker ids, and SalesSegment mapping.
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
@@ -1178,6 +1176,86 @@ function RoomMappingSection({ showToast }) {
   );
 }
 
+function SalesSegmentMappingSection({ showToast }) {
+  const [rows, setRows] = useState([]);
+  const [choice, setChoice] = useState({});
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("ezgo_sales_segment_map")
+      .select("ezgo_segment_id, kind, label, matched_via")
+      .order("ezgo_segment_id");
+    if (error) showToast(error.message, "err");
+    setRows(data || []);
+    setLoading(false);
+  }, [showToast]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function save(id) {
+    const kind = choice[id];
+    if (!kind) return;
+    const label = kind === "individual" ? "בודדים" : kind === "direct_group" ? "קבוצות ישירות" : "אחר";
+    const { error } = await supabase.from("ezgo_sales_segment_map").upsert({
+      ezgo_segment_id: id,
+      kind,
+      label,
+      matched_via: "staff_verified",
+    });
+    if (error) {
+      showToast(error.message, "err");
+      return;
+    }
+    showToast(`סגמנט ${id} → ${label}`);
+    await load();
+  }
+
+  return (
+    <div style={cardBoxStyle}>
+      <div style={{ fontWeight: 800, color: "var(--gold-light)", marginBottom: 6 }}>סגמנט מכירות (בודדים / קבוצות ישירות)</div>
+      <div style={{ fontSize: 12, color: "rgba(232,201,138,0.65)", marginBottom: 10, lineHeight: 1.5 }}>
+        איזיגו שולח מספר ב-Order.SalesSegment. עד המיפוי — הקוד נשאר ⚠ unmapped. קבוצות ישירות = אוטומציה רק שלב 4.
+      </div>
+      {loading && <div style={{ fontSize: 12, color: "rgba(232,201,138,0.55)" }}>טוען…</div>}
+      {!loading && rows.length === 0 && (
+        <div style={{ fontSize: 12, color: "rgba(232,201,138,0.55)" }}>
+          עדיין אין קודים — יופיעו אחרי סנכרון EZGO API (הזמנות).
+        </div>
+      )}
+      {rows.map((row) => (
+        <div key={row.ezgo_segment_id} style={{ ...rowStyle, marginBottom: 8 }}>
+          <div>
+            <div style={{ fontWeight: 800, color: "var(--gold-light)" }}>קוד {row.ezgo_segment_id}</div>
+            <div style={{ fontSize: 12, color: row.kind === "unmapped" ? "#fbbf24" : "rgba(232,201,138,0.65)" }}>
+              {row.kind === "unmapped" ? "⚠ לא ממופה" : (row.label || row.kind)}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select
+              style={selectStyle}
+              value={choice[row.ezgo_segment_id] ?? row.kind ?? ""}
+              onChange={(e) => setChoice((prev) => ({ ...prev, [row.ezgo_segment_id]: e.target.value }))}
+            >
+              <option value="unmapped">— בחר/י —</option>
+              <option value="individual">בודדים (אוטומציה מלאה)</option>
+              <option value="direct_group">קבוצות ישירות (רק שלב 4)</option>
+              <option value="other">אחר</option>
+            </select>
+            <ConfirmButton
+              disabled={!choice[row.ezgo_segment_id] || choice[row.ezgo_segment_id] === "unmapped"}
+              onClick={() => save(row.ezgo_segment_id)}
+            >
+              ✓ אשר
+            </ConfirmButton>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function EzgoApiCodeMappingPanel({ showToast }) {
   const notify = showToast ?? (() => {});
   return (
@@ -1191,6 +1269,7 @@ export default function EzgoApiCodeMappingPanel({ showToast }) {
       <SuiteSyncStatusCard showToast={notify} />
       <NoPhoneGuestsCard />
       <SyncHealthCard showToast={notify} />
+      <SalesSegmentMappingSection showToast={notify} />
       <WorkerMappingSection showToast={notify} />
       <RoomMappingSection showToast={notify} />
     </div>

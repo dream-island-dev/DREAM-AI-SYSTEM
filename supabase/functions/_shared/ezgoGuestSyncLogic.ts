@@ -42,6 +42,8 @@ export interface OrderClientInfo {
    * OrderIds that all share this same ClientId (confirmed live, 2026-08-16 —
    * see migration 298). 0/absent means EZGO didn't set it. */
   clientId: number | null;
+  /** EZGO Order.SalesSegment numeric id (0 is a real id, not unset). */
+  salesSegment: number | null;
 }
 
 export interface ReservationInfo {
@@ -110,6 +112,12 @@ export function extractOrderClient(ingestRow: {
     tel1: client?.Tel1 ? String(client.Tel1).trim() : null,
     email: client?.Email ? String(client.Email).trim() : null,
     clientId,
+    salesSegment: (() => {
+      const seg = typeof order.SalesSegment === "number"
+        ? order.SalesSegment
+        : parseInt(String(order.SalesSegment ?? ""), 10);
+      return Number.isFinite(seg) ? Math.trunc(seg) : null;
+    })(),
   };
 }
 

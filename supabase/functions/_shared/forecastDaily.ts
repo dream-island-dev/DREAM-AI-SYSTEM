@@ -69,6 +69,9 @@ export type ForecastReport = {
     doc2Departures: { rooms: number; guests: number } | null;
     doc2Capsules: { rooms: number; guests: number } | null;
     suiteArrivalGap: boolean;
+    ezgoDirectGroup: { rooms: number; guests: number } | null;
+    ezgoSegmentUnmapped: number;
+    ezgoSegmentUnmappedIds: number;
   };
   notes: string[];
 };
@@ -234,6 +237,7 @@ type GuestRow = {
   departure_date: string | null;
   order_number: string | null;
   meal_plan: string | null;
+  sales_segment_kind?: string | null;
 };
 
 function ymd(v: unknown): string {
@@ -303,6 +307,25 @@ export function classifySuiteOccupancy(
   }
 
   return { arrivals, departures, stayovers, capsules, suiteOrderNumbers, breakfast, dinner };
+}
+
+export function countDirectGroupOccupancy(
+  guests: GuestRow[],
+  roomsByGuest: Map<number, Array<{ adults?: unknown }>>,
+  targetDate: string,
+): { rooms: number; guests: number } {
+  const out = { rooms: 0, guests: 0 };
+  for (const g of guests) {
+    if (String(g.status ?? "") === "cancelled") continue;
+    if (g.sales_segment_kind !== "direct_group") continue;
+    const arr = ymd(g.arrival_date);
+    const dep = ymd(g.departure_date);
+    const onDay = arr === targetDate || dep === targetDate
+      || (arr && arr < targetDate && (!dep || dep > targetDate));
+    if (!onDay) continue;
+    addPair(out, paxFromRooms(roomsByGuest.get(g.id) ?? [], 2));
+  }
+  return out;
 }
 
 function sumSpaTreatmentsFromOps(rows: OpsPackageRow[]): number {
@@ -376,7 +399,7 @@ async function fetchAllGuests(supabase: SupabaseClient): Promise<GuestRow[]> {
   for (;;) {
     const { data, error } = await supabase
       .from("guests")
-      .select("id, room, room_type, status, arrival_date, departure_date, order_number, meal_plan")
+      .select("id, room, room_type, status, arrival_date, departure_date, order_number, meal_plan, sales_segment_kind")
       .neq("status", "cancelled")
       .range(from, from + page - 1);
     if (error) throw new Error(error.message);
@@ -432,6 +455,12 @@ export async function computeForecastReport(
   });
   const roomsByGuest = await fetchRoomsByGuest(supabase, relevant.map((g) => g.id));
   const occ = classifySuiteOccupancy(relevant, roomsByGuest, targetDate);
+  const ezgoDirectGroup = countDirectGroupOccupancy(relevant, roomsByGuest, targetDate);
+  const { data: segmentMapRows } = await supabase
+    .from("ezgo_sales_segment_map")
+    .select("ezgo_segment_id, kind");
+  const ezgoSegmentUnmappedIds = (segmentMapRows ?? []).filter((r: { kind?: string }) => r.kind === "unmapped").length;
+  const ezgoSegmentUnmapped = relevant.filter((g) => g.sales_segment_kind === "unmapped").length;
 
   const { data: ingestRows } = await supabase
     .from("ezgo_mail_ingest")
@@ -518,6 +547,9 @@ export async function computeForecastReport(
       `פער הגעות: XOS ${occ.arrivals.rooms}/${occ.arrivals.guests} · מייל כניסות ${doc2Mail.arrivals.rooms}/${doc2Mail.arrivals.guests} — אשרי שורות, בלי יצירה אוטומטית.`,
     );
   }
+  if (ezgoSegmentUnmappedIds > 0) {
+    notes.push(`⚠ ${ezgoSegmentUnmappedIds} קודי סגמנט מכירות באיזיגו בלי מיפוי — סנכרון נתונים → EZGO API.`);
+  }
 
   const totalWithDepartures = morningTotal + eveningTotal + groupsTotal
     + occ.arrivals.guests + occ.departures.guests + occ.stayovers.guests + occ.capsules.guests;
@@ -556,6 +588,9 @@ export async function computeForecastReport(
       doc2Departures: doc2Ingest?.id ? doc2Mail.departures : null,
       doc2Capsules: doc2Ingest?.id ? doc2Mail.capsules : null,
       suiteArrivalGap,
+      ezgoDirectGroup: ezgoDirectGroup.guests > 0 || ezgoDirectGroup.rooms > 0 ? ezgoDirectGroup : null,
+      ezgoSegmentUnmapped,
+      ezgoSegmentUnmappedIds,
     },
     notes,
   };

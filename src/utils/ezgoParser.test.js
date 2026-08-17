@@ -328,6 +328,27 @@ describe("ezgoParser — Sprint 1 fixes", () => {
     expect(row.automationMuted).toBe(true);
   });
 
+  test("resolveImportAutomationScope: EZGO Hebrew SalesSegment קבוצות ישירות → Stage 4", () => {
+    expect(
+      resolveImportAutomationScope({
+        useRemarkIdentity: false,
+        phoneSource: "individual",
+        guestPhone: "+972501234567",
+        remarkNameCandidate: null,
+        salesSegment: "קבוצות ישירות",
+      }),
+    ).toBe("courtesy_only");
+    expect(
+      resolveImportAutomationScope({
+        useRemarkIdentity: false,
+        phoneSource: "individual",
+        guestPhone: "+972501234567",
+        remarkNameCandidate: null,
+        salesSegment: "בודדים",
+      }),
+    ).toBe("full");
+  });
+
   test("resolveImportAutomationScope: remark occupant vs coordinator", () => {
     expect(
       resolveImportAutomationScope({

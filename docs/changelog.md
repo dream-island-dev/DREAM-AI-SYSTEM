@@ -1,4 +1,5 @@
-2026-08-17 | Forecast groups — paste/photo of reception group card | «קבלת הקבוצה מהקבלה» fills name/arrival/entry/meals/qty (Leumi 7 individuals, Merimim 15:30, Strauss 17:00). Text parser first; image uses Gemini OCR. Does not create guests. Deploy: `forecast-daily` + frontend.
+2026-08-18 | EZGO SalesSegment → guests + forecast + Stage 4 groups | Live API already sends `Order.SalesSegment` as a number. Staff maps ids to בודדים / קבוצות ישירות (`ezgo_sales_segment_map`, migration 300). Direct groups get `courtesy_only`. Forecast shows EZGO group pax vs the groups line. CSV Hebrew column `סגמנט מכירות` also sets Stage 4. Deploy: `db push` + `ezgo-guest-sync` `forecast-daily` + frontend.
+
 
 
 

@@ -95,12 +95,14 @@ export function resolveImportAutomationScope({
   phoneSource,
   guestPhone,
   remarkNameCandidate,
+  salesSegment,
 }) {
   if (isAutomationMutedLeadSource(leadSource)) return "muted";
   if (isRemarkGroupOccupant({ useRemarkIdentity, phoneSource, guestPhone, remarkNameCandidate })) {
     return "courtesy_only";
   }
   if (isCorporateMuteCoordName(coordNameRaw)) return "muted";
+  if (/קבוצות\s*ישירות/.test(String(salesSegment ?? ""))) return "courtesy_only";
   return "full";
 }
 
@@ -454,6 +456,7 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   const priceRaw     = val("price");
   const price        = parseFloat(String(priceRaw ?? "").replace(/[^\d.-]/g, "")) || 0;
   const leadSource   = String(val("leadSource") ?? "").trim() || null;
+  const salesSegment = String(val("salesSegment") ?? "").trim() || null;
 
   // ── Arrival date ─────────────────────────────────────────────────────────
   const arrivalDate = parseDate(val("arrivalDate")) ?? fallbackDate;
@@ -532,6 +535,7 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
     phoneSource,
     guestPhone,
     remarkNameCandidate,
+    salesSegment,
   });
   const automationMuted = automationScope === "muted";
 

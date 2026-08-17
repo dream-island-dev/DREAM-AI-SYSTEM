@@ -3,6 +3,7 @@ import {
   addYmd,
   classifySuiteOccupancy,
   composeForecastPingText,
+  countDirectGroupOccupancy,
   mergeForecastGroups,
   parseForecastConfig,
   shouldDispatchForecastPing,
@@ -40,6 +41,20 @@ Deno.test("suite occupancy buckets by dates", () => {
   assertEquals(occ.suiteOrderNumbers.has("5"), false);
   assertEquals(occ.breakfast, 4);
   assertEquals(occ.dinner, 4);
+});
+
+Deno.test("direct_group occupancy counts on-day group profiles only", () => {
+  const guests = [
+    { id: 1, room: "אמטיסט 8", room_type: "suite", status: "expected", arrival_date: "2026-08-18", departure_date: "2026-08-19", sales_segment_kind: "direct_group" },
+    { id: 2, room: "אמטיסט 9", room_type: "suite", status: "expected", arrival_date: "2026-08-18", departure_date: "2026-08-19", sales_segment_kind: "individual" },
+    { id: 3, room: "ג׳ספר 1", room_type: "suite", status: "cancelled", arrival_date: "2026-08-18", departure_date: "2026-08-19", sales_segment_kind: "direct_group" },
+  ];
+  const rooms = new Map([
+    [1, [{ adults: 2 }]],
+    [2, [{ adults: 2 }]],
+    [3, [{ adults: 9 }]],
+  ]);
+  assertEquals(countDirectGroupOccupancy(guests, rooms, "2026-08-18"), { rooms: 1, guests: 2 });
 });
 
 Deno.test("ops qty: כניסה people, evening meals, EZGO tiling dump", () => {

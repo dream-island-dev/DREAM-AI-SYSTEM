@@ -311,6 +311,23 @@ export default function ForecastBoard({ onOpenMailSync }) {
                   <td>קבוצות</td>
                   <td colSpan={2}><Cell n={groupsTotal} /></td>
                 </tr>
+                {(r.sources?.ezgoDirectGroup || r.sources?.ezgoSegmentUnmappedIds > 0) && (
+                  <tr>
+                    <td colSpan={3} style={{
+                      color: r.sources.ezgoSegmentUnmappedIds > 0 ? "var(--status-warning)" : "var(--text-muted)",
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}>
+                      {r.sources.ezgoSegmentUnmappedIds > 0 ? "⚠ " : "✓ "}
+                      קבוצות ישירות מאיזיגו (פרופילים): {r.sources.ezgoDirectGroup
+                        ? `${r.sources.ezgoDirectGroup.rooms} / ${r.sources.ezgoDirectGroup.guests}`
+                        : "0"}
+                      {r.sources.ezgoSegmentUnmappedIds > 0
+                        ? ` · ${r.sources.ezgoSegmentUnmappedIds} קודים בלי מיפוי (EZGO API)`
+                        : ""}
+                    </td>
+                  </tr>
+                )}
                 <tr>
                   <td style={sectionRow}>סוויטות</td>
                   <td style={sectionRow}>כמות חדרים</td>

@@ -83,7 +83,13 @@ import {
   resolveApiRoomOccupantIdentity,
   selectPrioritizedBatch,
 } from "../_shared/ezgoGuestSyncLogic.ts";
-import { resolveDoc2ImportAutomationScope } from "../_shared/importAutomationScope.ts";
+import { mergeAutomationScope, resolveDoc2ImportAutomationScope } from "../_shared/importAutomationScope.ts";
+import {
+  automationScopeFromSalesSegmentKind,
+  buildSalesSegmentKindMap,
+  kindFromSegmentMap,
+  type SalesSegmentKind,
+} from "../_shared/ezgoSalesSegment.ts";
 import type { Doc2Record } from "../_shared/ezgoDoc2Parser.ts";
 import type { Doc2GuestRow } from "../_shared/ezgoDoc2MailLineWorkflow.ts";
 import {
@@ -223,7 +229,16 @@ type RoomLineOutcome =
 async function applyApiOnlyEnrichment(
   supabase: SupabaseClient,
   guestId: number,
-  { mealPlan, email, clientId, noPhoneAtImport }: { mealPlan?: string; email?: string | null; clientId?: number | null; noPhoneAtImport?: boolean },
+  {
+    mealPlan, email, clientId, noPhoneAtImport, salesSegmentId, salesSegmentKind,
+  }: {
+    mealPlan?: string;
+    email?: string | null;
+    clientId?: number | null;
+    noPhoneAtImport?: boolean;
+    salesSegmentId?: number | null;
+    salesSegmentKind?: SalesSegmentKind;
+  },
 ): Promise<void> {
   // Best-effort fill-empty patches on top of an already-created/merged guest
   // (core identity/dates/room already written by the caller) — logged, not
@@ -242,6 +257,24 @@ async function applyApiOnlyEnrichment(
   if (clientId) {
     const { error } = await supabase.from("guests").update({ ezgo_client_id: clientId }).eq("id", guestId).is("ezgo_client_id", null);
     if (error) console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment ezgo_client_id failed for guest ${guestId}:`, error.message);
+  }
+  if (salesSegmentId != null || salesSegmentKind) {
+    const patch: Record<string, unknown> = {};
+    if (salesSegmentId != null) patch.ezgo_sales_segment_id = salesSegmentId;
+    if (salesSegmentKind) patch.sales_segment_kind = salesSegmentKind;
+    const fromSeg = automationScopeFromSalesSegmentKind(salesSegmentKind || "unmapped");
+    if (fromSeg) {
+      const { data: cur } = await supabase
+        .from("guests")
+        .select("automation_scope")
+        .eq("id", guestId)
+        .maybeSingle();
+      const merged = mergeAutomationScope(cur?.automation_scope, fromSeg);
+      patch.automation_scope = merged;
+      if (merged === "muted") patch.automation_muted = true;
+    }
+    const { error } = await supabase.from("guests").update(patch).eq("id", guestId);
+    if (error) console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment sales_segment failed for guest ${guestId}:`, error.message);
   }
   if (noPhoneAtImport) {
     // Fail Visible marker + hard automation mute for the Stage 1 no-phone
@@ -292,6 +325,7 @@ async function processRoomLine(
   line: ReservationInfo,
   totalLinesInOrder: number,
   roomMap: Map<number, string>,
+  segmentKind: SalesSegmentKind,
 ): Promise<RoomLineOutcome & { identitySource?: "remark" | "order_client" }> {
   const coordPhone = normalizeWhatsAppPhone(oc.tel1);
   const remarkText = line.remark || line.operationRemark || "";
@@ -340,12 +374,15 @@ async function processRoomLine(
   // matches the corporate/municipal pattern (עיריית/בנק לאומי/…) — otherwise
   // full. Without this, a municipal coordinator's own number synced straight
   // from a single-room booking would receive full guest WhatsApp automation.
-  const automationScope = phone
-    ? resolveDoc2ImportAutomationScope({
-      coordNameRaw: oc.fullName,
-      isRemarkGroupOccupant: identity.is_remark_group_occupant,
-    })
-    : "muted"; // zero WA — no dialable number to send to (Stage 1 no-phone gate)
+  const automationScope = mergeAutomationScope(
+    phone
+      ? resolveDoc2ImportAutomationScope({
+        coordNameRaw: oc.fullName,
+        isRemarkGroupOccupant: identity.is_remark_group_occupant,
+      })
+      : "muted",
+    automationScopeFromSalesSegmentKind(segmentKind),
+  );
 
   const rec: Doc2Record = {
     _report: "doc2",
@@ -427,6 +464,8 @@ async function processRoomLine(
       email: !identity.is_remark_group_occupant ? oc.email : null,
       clientId: !identity.is_remark_group_occupant ? oc.clientId : null,
       noPhoneAtImport: !phone,
+      salesSegmentId: oc.salesSegment,
+      salesSegmentKind: segmentKind,
     });
 
     if (willMerge && existing) {
@@ -727,6 +766,23 @@ serve(async (req) => {
     }
     const roomMap = buildTrustedRoomMap(roomMapRows ?? []);
 
+    const { data: segmentRows } = await supabase
+      .from("ezgo_sales_segment_map")
+      .select("ezgo_segment_id, kind");
+    const segmentMap = buildSalesSegmentKindMap(segmentRows ?? []);
+
+    const seenIds = [...new Set(
+      [...orderClientByOrder.values()]
+        .map((o) => o.salesSegment)
+        .filter((id): id is number => id != null),
+    )];
+    if (seenIds.length) {
+      await supabase.from("ezgo_sales_segment_map").upsert(
+        seenIds.map((id) => ({ ezgo_segment_id: id, kind: segmentMap.get(id) ?? "unmapped" })),
+        { onConflict: "ezgo_segment_id", ignoreDuplicates: true },
+      );
+    }
+
     for (const [orderId, reservations] of reservationsByOrder) {
       const rowIds = [...(rowIdsByOrder.get(orderId) ?? [])];
 
@@ -762,7 +818,15 @@ serve(async (req) => {
 
       const lineResolutions: OrderLineResolution[] = [];
       for (const line of lines) {
-        const outcome = await processRoomLine(supabase, orderId, oc, line, totalLinesInOrder, roomMap);
+        const outcome = await processRoomLine(
+          supabase,
+          orderId,
+          oc,
+          line,
+          totalLinesInOrder,
+          roomMap,
+          kindFromSegmentMap(oc.salesSegment, segmentMap),
+        );
         switch (outcome.kind) {
           case "created":
             summary.created++;
