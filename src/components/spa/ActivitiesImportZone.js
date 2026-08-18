@@ -11,7 +11,12 @@ import { supabase } from "../../supabaseClient";
 import { parseEzgoActivitiesReport, repairEzgoCsvText } from "../../utils/ezgoSpaActivitiesParser";
 import { syncEzgoSpaActivities } from "../../utils/spaActivitiesSyncEngine";
 
-/** Prefer a single consensus dtDate from the file over the UI date picker when the English CSV carries one. Mixed dates → keep selectedDate (FAIL VISIBLE via toast note). */
+/** Prefer the next file-date on/after the picker (month dumps skip empty days like 18.8). */
+function pickBoardJumpDate(dates, today) {
+  const sorted = [...new Set(dates)].filter(Boolean).sort();
+  if (!sorted.length) return today;
+  return sorted.find((d) => d >= today) || sorted[sorted.length - 1];
+}
 function resolveImportDate(parsedRows, selectedDate) {
   const dates = [...new Set(parsedRows.map((r) => r.appointment_date).filter(Boolean))];
   if (dates.length === 1) return { date: dates[0], fromFile: true, mixed: false };
@@ -37,6 +42,7 @@ async function loadActivitiesSheetRows(file, XLSX) {
 export default function ActivitiesImportZone({ selectedDate, onImportDone, onError }) {
   const [dragging, setDragging] = useState(false);
   const [parsing, setParsing] = useState(false);
+  const [progress, setProgress] = useState("");
   const fileRef = useRef();
 
   const handleFile = async (file) => {
@@ -44,10 +50,13 @@ export default function ActivitiesImportZone({ selectedDate, onImportDone, onErr
     const ext = file.name.split(".").pop().toLowerCase();
     if (!["xlsx", "xls", "csv"].includes(ext)) { onError("בחר קובץ .xlsx / .xls / .csv"); return; }
     setParsing(true);
+    setProgress("קורא את הקובץ…");
     try {
       const XLSX = await import("xlsx");
       const rows = await loadActivitiesSheetRows(file, XLSX);
       if (!rows.length) { onError("הקובץ ריק"); return; }
+
+      setProgress("מפענח שורות…");
 
       const { rows: parsedRows, skippedCancelled } = parseEzgoActivitiesReport(rows);
       if (!parsedRows.length && !skippedCancelled) { onError("לא נמצאו שורות בקובץ"); return; }
@@ -64,7 +73,10 @@ export default function ActivitiesImportZone({ selectedDate, onImportDone, onErr
         byDate.get(d).push(row);
       }
       const summaries = [];
+      let dayIndex = 0;
       for (const [date, dateRows] of byDate) {
+        dayIndex += 1;
+        setProgress(`מסנכרן יום ${dayIndex} מתוך ${byDate.size} (${date}, ${dateRows.length} תורים)…`);
         summaries.push(await syncEzgoSpaActivities(dateRows, date, { supabase, skippedCancelled: 0 }));
       }
       const summary = summaries.reduce((acc, s) => {
@@ -75,6 +87,7 @@ export default function ActivitiesImportZone({ selectedDate, onImportDone, onErr
         return acc;
       }, { skippedCancelled });
       summary.days_synced = byDate.size;
+      summary.jump_date = pickBoardJumpDate([...byDate.keys()], selectedDate);
       if (fromFile && importDate !== selectedDate) summary.date_from_file = importDate;
       if (mixed) summary.date_mixed = true;
       onImportDone(summary);
@@ -82,6 +95,7 @@ export default function ActivitiesImportZone({ selectedDate, onImportDone, onErr
       onError("שגיאה בייבוא: " + err.message);
     } finally {
       setParsing(false);
+      setProgress("");
     }
   };
 
@@ -89,7 +103,7 @@ export default function ActivitiesImportZone({ selectedDate, onImportDone, onErr
     return (
       <div style={{ background: "var(--ivory)", border: "1px solid var(--border)", borderRadius: 12, padding: "16px 20px", display: "flex", alignItems: "center", gap: 12 }}>
         <div style={{ width: 18, height: 18, border: "3px solid var(--border)", borderTop: "3px solid var(--gold)", borderRadius: "50%", animation: "di-spin 0.8s linear infinite", flexShrink: 0 }} />
-        <span style={{ fontSize: 13, fontWeight: 700 }}>מייבא ומסנכרן — עשוי לקחת רגע לקובץ גדול...</span>
+        <span style={{ fontSize: 13, fontWeight: 700 }}>{progress || "מייבא ומסנכרן — קובץ חודשי יכול לקחת כמה דקות. אל תרענן."}</span>
       </div>
     );
   }

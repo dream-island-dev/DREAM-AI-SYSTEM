@@ -419,6 +419,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-08-18 — Therapists stay; guests move
+- **Fact:** Ops rule is sticky-room: one therapist, one room for the shift. EZGO CSV may scatter the same therapist. Align Day moves **patients** to the inferred/roster home room (majority that day). «חדר מלא» = another appointment already in that home at that hour — Move Guest, not “hotel out of rooms”.
+- **Fix:** Auto-run Align Day after Activities import. Copy must never tell staff to keep the EZGO scatter.
+- **Lesson:** Do not treat EZGO room columns as the final board layout.
+
 ### 2026-08-18 — Spa ops CSV is a month dump, iItemId is not an order
 - **Fact:** `העברה למייק.csv` parsed 3577 active / 1149 cancelled; therapists+rooms+guests extract cleanly. `iItemId` is spa catalog (11448). No `iOrderId` in this export.
 - **Fix:** Import groups by `dtDate`. Activity key is `orderId:itemId:index`. Mail sniffs spa CSV before Doc2.

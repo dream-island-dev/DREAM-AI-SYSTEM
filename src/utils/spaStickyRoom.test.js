@@ -26,9 +26,14 @@ function appt(id, therapistId, roomId, startTime, endTime = null, status = "acti
 }
 
 describe("inferHomeRoomByTherapist", () => {
-  test("earliest non-cancelled appointment wins", () => {
-    const appts = [appt(1, 10, 100, "11:00"), appt(2, 10, 200, "09:00"), appt(3, 10, 300, "10:00")];
+  test("majority room wins over a one-off earliest slot", () => {
+    const appts = [appt(1, 10, 100, "09:00"), appt(2, 10, 200, "10:00"), appt(3, 10, 200, "11:00")];
     expect(inferHomeRoomByTherapist(appts).get(10)).toBe(200);
+  });
+
+  test("tie keeps the earliest room", () => {
+    const appts = [appt(1, 10, 100, "09:00"), appt(2, 10, 200, "10:00")];
+    expect(inferHomeRoomByTherapist(appts).get(10)).toBe(100);
   });
 
   test("cancelled appointments are ignored", () => {

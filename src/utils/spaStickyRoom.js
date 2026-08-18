@@ -1,19 +1,36 @@
 // src/utils/spaStickyRoom.js
 // Smart Spa Board — therapist sticky-room pure logic (migration 193 companion).
-// Home room = earliest non-cancelled appointment that day for that therapist
-// (first-touch); an existing spa_shift_roster row always wins over inference.
+// Home room = majority of that day's slots (roster row always wins).
+// Locked ops rule (Mike): therapists stay in one room all shift; move guests
+// toward that home — never walk the therapist. Align Day after CSV import.
 // No Supabase here — SpaBoard.js wires these against the DB.
-
-// therapist_id -> room_id, first (earliest start_time) non-cancelled appointment wins.
 export function inferHomeRoomByTherapist(appointments) {
   const sorted = [...(appointments ?? [])]
     .filter((a) => a.therapist_id && a.status !== "cancelled" && a.start_time)
     .sort((a, b) => (a.start_time || "").localeCompare(b.start_time || ""));
-  const map = new Map();
-  sorted.forEach((a) => {
-    if (!map.has(a.therapist_id)) map.set(a.therapist_id, a.room_id);
-  });
-  return map;
+  const countByTherapistRoom = new Map();
+  const firstRoom = new Map();
+  for (const a of sorted) {
+    if (!firstRoom.has(a.therapist_id)) firstRoom.set(a.therapist_id, a.room_id);
+    const key = `${a.therapist_id}:${a.room_id}`;
+    countByTherapistRoom.set(key, (countByTherapistRoom.get(key) || 0) + 1);
+  }
+  const bestCount = new Map();
+  const home = new Map();
+  for (const [key, n] of countByTherapistRoom) {
+    const [tid, rid] = key.split(":");
+    const therapistId = Number(tid) || tid;
+    const roomId = Number(rid) || rid;
+    const prev = bestCount.get(therapistId) || 0;
+    if (n > prev) {
+      bestCount.set(therapistId, n);
+      home.set(therapistId, roomId);
+    }
+  }
+  for (const [tid, room] of firstRoom) {
+    if (!home.has(tid)) home.set(tid, room);
+  }
+  return home;
 }
 
 // Merges first-touch inference with an existing roster — roster rows win.

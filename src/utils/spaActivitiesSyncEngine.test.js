@@ -13,8 +13,21 @@ import {
   matchExistingAppointment,
   pickBestGuestMatch,
   resolvePhoneVariants,
+  spaBoardImportNote,
   syncEzgoSpaActivities,
 } from "./spaActivitiesSyncEngine";
+
+describe("spaBoardImportNote", () => {
+  test("drops EZGO machine dumps so board cards stay readable", () => {
+    expect(spaBoardImportNote({
+      extras: '"0526730999","1","45","81","2994531","11448","שוודאי"',
+    })).toBeNull();
+  });
+
+  test("keeps a short human note", () => {
+    expect(spaBoardImportNote({ note: "VIP — להגיע מוקדם" })).toBe("VIP — להגיע מוקדם");
+  });
+});
 
 describe("resolvePhoneVariants", () => {
   test("972-prefixed phone → +972 / 972 / 0 variants", () => {
@@ -232,7 +245,26 @@ describe("syncEzgoSpaActivities — orchestrator (mocked supabase)", () => {
       };
       return api;
     }
-    return { from: (table) => chain({ table, op: "select" }) };
+    return {
+      from: (table) => chain({ table, op: "select" }),
+      rpc: () => Promise.resolve({ error: null }),
+    };
+  }
+
+  function insertApptResult(ctx) {
+    const rows = Array.isArray(ctx.payload) ? ctx.payload : [ctx.payload];
+    return {
+      data: rows.map((p, i) => ({
+        id: 5000 + i,
+        guest_id: p.guest_id,
+        room_id: p.room_id,
+        therapist_id: p.therapist_id ?? null,
+        ezgo_line_id: p.ezgo_line_id ?? null,
+        start_time: p.start_time,
+        ezgo_order_id: p.ezgo_order_id ?? null,
+      })),
+      error: null,
+    };
   }
 
   function baseRow(overrides = {}) {
@@ -262,7 +294,7 @@ describe("syncEzgoSpaActivities — orchestrator (mocked supabase)", () => {
         insertedGuestPayload = ctx.payload;
         return { data: { id: 999, name: "דנה כהן", phone: "+972500000001", arrival_date: "2026-07-15", departure_date: "2026-07-15", status: "expected" }, error: null };
       }
-      if (ctx.table === "spa_appointments" && ctx.op === "insert") return { error: null };
+      if (ctx.table === "spa_appointments" && ctx.op === "insert") return insertApptResult(ctx);
       if (ctx.table === "spa_import_unmatched") return { error: null };
       if (ctx.table === "guests" && ctx.select === "guest_profile, meal_time") return { data: { guest_profile: {}, meal_time: null } };
       if (ctx.table === "guests" && ctx.op === "update") return { error: null };
@@ -276,7 +308,7 @@ describe("syncEzgoSpaActivities — orchestrator (mocked supabase)", () => {
     expect(summary.unmatched).toBe(0);
     expect(summary.not_in_file).toBe(0);
     expect(insertedGuestPayload).toMatchObject({
-      phone: "+972500000001", name: "דנה כהן", room_type: "day_guest", room: "Premium Day 1",
+      phone: "+972500000001", name: "דנה כהן", room_type: "day_guest", room: "בילוי יומי",
       arrival_date: "2026-07-15", departure_date: "2026-07-15", status: "expected",
     });
   });
@@ -362,7 +394,7 @@ describe("syncEzgoSpaActivities — orchestrator (mocked supabase)", () => {
         return { data: [] };
       }
       if (ctx.table === "guests" && ctx.in) return { data: [{ id: 42, name: "דנה כהן", phone: "+972500000001", arrival_date: "2026-07-15", departure_date: "2026-07-15" }] };
-      if (ctx.table === "spa_appointments" && ctx.op === "insert") return { error: null };
+      if (ctx.table === "spa_appointments" && ctx.op === "insert") return insertApptResult(ctx);
       if (ctx.table === "guests" && ctx.select === "guest_profile, meal_time") return { data: { guest_profile: {}, meal_time: null } };
       if (ctx.table === "guests" && ctx.op === "update") { guestUpdatePayload = ctx.payload; return { error: null }; }
       return null;
@@ -387,7 +419,7 @@ describe("syncEzgoSpaActivities — orchestrator (mocked supabase)", () => {
         return { data: [] };
       }
       if (ctx.table === "guests" && ctx.in) return { data: [{ id: 42, name: "דנה כהן", phone: "+972500000001", arrival_date: "2026-07-15", departure_date: "2026-07-15" }] };
-      if (ctx.table === "spa_appointments" && ctx.op === "insert") return { error: null };
+      if (ctx.table === "spa_appointments" && ctx.op === "insert") return insertApptResult(ctx);
       if (ctx.table === "guests" && ctx.select === "guest_profile, meal_time") return { data: { guest_profile: {}, meal_time: "18:00" } };
       if (ctx.table === "guests" && ctx.op === "update") { guestUpdatePayload = ctx.payload; return { error: null }; }
       return null;
@@ -417,7 +449,7 @@ describe("syncEzgoSpaActivities — orchestrator (mocked supabase)", () => {
         guestInsertCount++;
         return { data: { id: 999, name: "דנה כהן", phone: "+972500000001", arrival_date: "2026-07-15", departure_date: "2026-07-15", status: "expected" }, error: null };
       }
-      if (ctx.table === "spa_appointments" && ctx.op === "insert") return { error: null };
+      if (ctx.table === "spa_appointments" && ctx.op === "insert") return insertApptResult(ctx);
       if (ctx.table === "spa_import_unmatched") { unmatchedPayload = ctx.payload; return { error: null }; }
       if (ctx.table === "guests" && ctx.select === "guest_profile, meal_time") return { data: { guest_profile: {}, meal_time: null } };
       if (ctx.table === "guests" && ctx.op === "update") return { error: null };
@@ -429,7 +461,7 @@ describe("syncEzgoSpaActivities — orchestrator (mocked supabase)", () => {
     expect(guestInsertCount).toBe(1); // never a second guest for the companion
     expect(summary.guests_created).toBe(1);
     expect(summary.suspicious).toBe(1);
-    expect(unmatchedPayload[0].reason).toBe("suspicious_shared_phone");
-    expect(unmatchedPayload[0].guest_name).toMatch(/פרופיל שני לא נוצר/);
+    expect(summary.created).toBe(1);
+    expect(unmatchedPayload).toBeNull();
   });
 });

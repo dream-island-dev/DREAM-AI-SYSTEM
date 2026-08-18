@@ -8,7 +8,7 @@
 // here creates/links a spa_appointments row and resolves the alert. On
 // success, writes through guests.spa_time/spa_date (Golden Profile SSOT).
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import ActivitiesImportZone from "./spa/ActivitiesImportZone";
 import { resolveHomeRoomMap, planAlignDay, roomOccupancyAtSlot } from "../utils/spaStickyRoom";
@@ -25,6 +25,86 @@ const UNMATCHED_REASON_LABELS = {
   invalid_time_range: "שעה לא תקינה בקובץ",
   write_failed: "שגיאת מערכת בשמירה",
 };
+
+function boardSafeNote(text) {
+  const s = String(text ?? "").trim();
+  if (!s) return "";
+  if (s.length > 90) return "";
+  if (/iItemId|iAddsLineId|sAttendantName|sActivityDesc|sClientName/i.test(s)) return "";
+  if ((s.match(/,/g) || []).length >= 6) return "";
+  return s;
+}
+
+function AddSpaRoomControl({ onAdded }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState("single");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async () => {
+    const n = name.trim();
+    if (!n) { setErr("שם חדר חובה"); return; }
+    setBusy(true);
+    setErr("");
+    const { data: maxRows } = await supabase
+      .from("spa_rooms")
+      .select("display_order")
+      .eq("room_type", kind)
+      .order("display_order", { ascending: false })
+      .limit(1);
+    const display_order = (maxRows?.[0]?.display_order ?? 50) + 1;
+    const { data, error } = await supabase.from("spa_rooms").insert({
+      name: n,
+      room_type: kind,
+      display_order,
+      active: true,
+    }).select("id, name").maybeSingle();
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    if (data) {
+      await supabase.from("spa_room_aliases").upsert(
+        { room_id: data.id, ezgo_name: n },
+        { onConflict: "ezgo_name" }
+      );
+    }
+    setName("");
+    setOpen(false);
+    onAdded?.();
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() => setOpen(true)}
+        title="מוסיף חדר ללוח כדי לשבץ ידנית כשאיזיגו משתמש בשם חדש"
+        style={{ background: "var(--ivory)", color: "var(--navy)", fontWeight: 700 }}
+      >
+        + חדר
+      </button>
+    );
+  }
+
+  return (
+    <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="שם חדר (כמו באיזיגו)"
+        style={{ width: 160, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--gold)" }}
+      />
+      <select value={kind} onChange={(e) => setKind(e.target.value)} style={{ padding: "4px 6px" }}>
+        <option value="single">יחיד</option>
+        <option value="couple">זוגי</option>
+      </select>
+      <button type="button" className="btn btn-sm" disabled={busy} onClick={submit} style={{ background: "var(--gold)", color: "var(--navy)", fontWeight: 700 }}>שמור</button>
+      <button type="button" className="btn btn-sm" onClick={() => { setOpen(false); setErr(""); }}>ביטול</button>
+      {err && <span style={{ color: "#A32D2D", fontSize: 12 }}>{err}</span>}
+    </span>
+  );
+}
 
 // Staff board markers — soft pastels, one-tap on the card. Keys match
 // spa_appointments.board_color CHECK (migration 180). Sync never writes these.
@@ -495,10 +575,10 @@ function ApptQuickEdit({ appt, roomName, onClose, onPatched }) {
           />
         </div>
 
-        {appt.notes && (
+        {boardSafeNote(appt.notes) && (
           <div style={{ marginBottom: 14, fontSize: 12, color: "var(--text-muted)", background: "var(--ivory)", borderRadius: 8, padding: "8px 10px" }}>
             <div style={{ fontWeight: 700, marginBottom: 2 }}>מהייבוא (Ezgo):</div>
-            {appt.notes}
+            {boardSafeNote(appt.notes)}
           </div>
         )}
 
@@ -1272,6 +1352,8 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
   const [moveDraft, setMoveDraft] = useState(null); // appointment being moved to its home room
   const [alignBlocked, setAlignBlocked] = useState([]); // moves that hit a scheduling conflict
   const [alignRunning, setAlignRunning] = useState(false);
+  const pendingAlignAfterImportRef = useRef(null);
+  const alignInFlightRef = useRef(false);
   // Hour agenda is the default view (Mike, locked decision) — room-columns
   // stays available as a secondary tab, same data/handlers, just a different
   // grouping of the same `appointments` state.
@@ -1330,6 +1412,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       .select("*")
       .eq("appointment_date", selectedDate)
       .eq("resolved", false)
+      .neq("reason", "suspicious_shared_phone")
       .order("created_at", { ascending: false });
     if (error) showToast("שגיאה בטעינת שורות לא-משויכות: " + error.message, "err");
     setUnmatchedRows(data ?? []);
@@ -1435,6 +1518,8 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
   // never hit the DB — FAIL VISIBLE list for manual «העבר אורח». No EZGO /
   // cancel side effects. Race 23P01 on a "safe" move still surfaces in list.
   async function handleAlignDay() {
+    if (alignInFlightRef.current) return;
+    alignInFlightRef.current = true;
     setAlignRunning(true);
     setAlignBlocked([]);
     const roomTypeById = Object.fromEntries(rooms.map((r) => [r.id, r.room_type]));
@@ -1449,6 +1534,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     if (rosterUpserts.length > 0) {
       const { error: rosterErr } = await supabase.from("spa_shift_roster").insert(rosterUpserts);
       if (rosterErr) {
+        alignInFlightRef.current = false;
         setAlignRunning(false);
         showToast("⚠ שגיאה בעדכון סידור המשמרת: " + rosterErr.message, "err");
         return;
@@ -1506,6 +1592,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
 
     blocked.sort((a, b) => (a.timeLabel || "").localeCompare(b.timeLabel || ""));
     setAlignRunning(false);
+    alignInFlightRef.current = false;
     setAlignBlocked(blocked);
     fetchShiftRoster();
     fetchAppointments();
@@ -1513,11 +1600,21 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       showToast("✓ כל התורים כבר בחדר הבית של המטפל/ת");
     } else {
       showToast(
-        `✓ יושרו בבטחה ${movedCount} תורים${blocked.length ? ` · ⚠ ${blocked.length} ממתינים להעברה ידנית (למטה)` : ""}`,
+        `✓ יושרו ${movedCount} מטופלים לחדר הקבוע של המטפל/ת${blocked.length ? ` · ${blocked.length} דורשים העברת אורח ידנית (שני מטפלים באותו חדר באותה שעה)` : ""}`,
         blocked.length ? "err" : "ok"
       );
     }
   }
+
+  useEffect(() => {
+    const targetDate = pendingAlignAfterImportRef.current;
+    if (!targetDate || loading || targetDate !== selectedDate) return;
+    pendingAlignAfterImportRef.current = false;
+    if (appointments.length === 0) return;
+    handleAlignDay();
+    // handleAlignDay reads latest board state from this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, selectedDate, appointments]);
 
   function handleImportDone(summary) {
     setShowImportZone(false);
@@ -1532,10 +1629,13 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     if (summary.room_unmapped) parts.push(`${summary.room_unmapped} חדר לא מזוהה`);
     if (summary.conflicts) parts.push(`${summary.conflicts} התנגשויות`);
     if (summary.unmatched) parts.push(`${summary.unmatched} ללא שיוך`);
+    if (summary.suspicious) parts.push(`${summary.suspicious} טלפון זוגי (התור נוצר)`);
     if (summary.not_in_file) parts.push(`${summary.not_in_file} לא בקובץ (לא בוטלו)`);
     showToast(`✓ ייבוא הושלם — ${parts.join(" · ") || "אין שינויים"}`);
-    if (summary.date_from_file && summary.date_from_file !== selectedDate) {
-      setSelectedDate(summary.date_from_file);
+    const boardDate = summary.jump_date || summary.date_from_file || selectedDate;
+    pendingAlignAfterImportRef.current = boardDate;
+    if (boardDate !== selectedDate) {
+      setSelectedDate(boardDate);
     }
     fetchAppointments();
     fetchUnmatched();
@@ -1720,8 +1820,9 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       {/* ── Date selector ───────────────────────────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
         <label style={{ fontSize: 13, fontWeight: 700, color: "var(--black)" }}>תאריך:</label>
-        <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
-        <button className="btn btn-ghost btn-sm" onClick={() => setSelectedDate(todayYmd())}>היום</button>
+        <input type="date" value={selectedDate} onChange={(e) => { pendingAlignAfterImportRef.current = null; setSelectedDate(e.target.value); }} />
+        <button className="btn btn-ghost btn-sm" onClick={() => { pendingAlignAfterImportRef.current = null; setSelectedDate(todayYmd()); }}>היום</button>
+        <AddSpaRoomControl onAdded={() => { showToast("✓ חדר נוסף ללוח"); fetchStatic(); }} />
         <button className="btn btn-sm" onClick={() => setShowImportZone((v) => !v)} style={{ marginRight: "auto", background: showImportZone ? "var(--gold)" : "var(--ivory)", fontWeight: 700 }}>
           📊 ייבוא דוח פעילויות
         </button>
@@ -1735,15 +1836,17 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
           className="btn btn-sm"
           onClick={handleAlignDay}
           disabled={alignRunning}
-          title="מיישר בבטחה: מעביר אורחים לחדר־בית רק כשהיעד פנוי (+ cascade). זוגות תקועים מחליפים דרך חדר ביניים. השאר — רשימה להעברה ידנית."
+          title="המטפל/ת נשאר/ת בחדר כל המשמרת. מעבירים מטופלים לחדר-הבית — לא מזיזים מטפלים."
           style={{ background: "var(--gold)", color: "#412402", fontWeight: 700 }}
         >
-          {alignRunning ? "מיישר…" : "🧭 יישור יום"}
+          {alignRunning ? "מיישר מטופלים…" : "🧭 יישור יום (מטפלים בחדר קבוע)"}
         </button>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18, flexWrap: "wrap", fontSize: 11, color: "var(--text-muted)" }}>
-        <span style={{ fontWeight: 700 }}>טיפ:</span>
+        <span style={{ fontWeight: 700 }}>כלל:</span>
+        <span>המטפל/ת נשאר/ת באותו חדר כל המשמרת — מיישרים מטופלים, לא מטפלים</span>
+        <span style={{ opacity: 0.5 }}>·</span>
         <span>לחיצה על תור → צבע + הערת צוות</span>
         <span style={{ opacity: 0.5 }}>·</span>
         {BOARD_COLORS.map((c) => (
@@ -1776,8 +1879,8 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       {alignBlocked.length > 0 && (
         <div style={{ marginBottom: 24 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
-            <div style={{ fontSize: 15, fontWeight: 800, color: "#A32D2D" }}>
-              ⚠ יישור יום — {alignBlocked.length} תורים ממתינים (חדר הבית מלא באותה שעה)
+            <div style={{ fontSize: 15, fontWeight: 800, color: "var(--navy)" }}>
+              יישור יום — {alignBlocked.length} מטופלים לא נכנסו לחדר הקבוע של המטפל/ת
             </div>
             <button
               type="button"
@@ -1790,7 +1893,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
             </button>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
-            היישור העביר רק תורים בטוחים. כאן נשארו מקרים שדורשים בחירה ידנית (החלפת חדר / העברת אורח אחר קודם).
+            הכלל: המטפל/ת לא עובר/ת חדר. כאן חדר-הבית תפוס באותה שעה (בדרך כלל מטופל של מטפל/ת אחר/ת). «העבר אורח» מזיז את המטופל — לא את המטפל. «+ חדר» אם באמת חסר חדר.
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {alignBlocked.map((b) => (
@@ -1856,13 +1959,14 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         <div style={{ marginBottom: 24 }}>
           {agendaRows.length === 0 ? (
             <div style={{ padding: "24px 0", textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
-              אין תורים ליום זה
+              אין תורים ליום זה. ייבוא חודשי מדלג על ימים ריקים — בחרי תאריך עם טיפולים (למשל מחר) או ייבאי שוב את דוח הפעילויות.
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {agendaRows.map((a) => {
                 const cStyle = boardColorStyle(a.board_color);
-                const hasNote = !!(a.staff_note || a.notes);
+                const importNote = boardSafeNote(a.notes);
+                const hasNote = !!(a.staff_note || importNote);
                 const warnings = apptWarnings(a);
                 return (
                   <div
@@ -1889,7 +1993,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                     <div style={{ minWidth: 140, fontSize: 13 }}>{a.guests?.name ?? "—"}</div>
                     <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{a.treatment_type || ""}</div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginRight: "auto" }}>
-                      {hasNote && <span title={a.staff_note || a.notes}>📝</span>}
+                      {hasNote && <span title={a.staff_note || importNote}>📝</span>}
                       {warnings.length > 0 && (
                         <span title={warnings.join(" · ")} style={{ fontSize: 11, color: "#A32D2D", fontWeight: 700 }}>⚠</span>
                       )}
@@ -1928,7 +2032,8 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                         <div style={{ fontSize: 11, color: "#ccc" }}>אין תורים</div>
                       ) : roomAppts.map((a) => {
                         const cStyle = boardColorStyle(a.board_color);
-                        const hasNote = !!(a.staff_note || a.notes);
+                        const importNote = boardSafeNote(a.notes);
+                        const hasNote = !!(a.staff_note || importNote);
                         const warnings = apptWarnings(a);
                         return (
                           <div
@@ -1962,9 +2067,9 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                                 {a.staff_note}
                               </div>
                             )}
-                            {!a.staff_note && a.notes && (
+                            {!a.staff_note && importNote && (
                               <div style={{ fontSize: 11, marginTop: 3, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {a.notes}
+                                {importNote}
                               </div>
                             )}
                             {a.spa_therapists?.name ? (

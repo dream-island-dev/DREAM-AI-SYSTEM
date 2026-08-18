@@ -51,6 +51,26 @@ export function resolvePhoneVariants(phone972) {
   return [...variants];
 }
 
+const GUEST_PHONE_IN_CHUNK = 80;
+const APPT_INSERT_CHUNK = 40;
+
+async function fetchGuestsByPhoneVariants(supabase, phoneVariants) {
+  const all = [];
+  for (let i = 0; i < phoneVariants.length; i += GUEST_PHONE_IN_CHUNK) {
+    const slice = phoneVariants.slice(i, i + GUEST_PHONE_IN_CHUNK);
+    const { data, error } = await supabase
+      .from("guests")
+      .select("id, name, phone, arrival_date, departure_date, status")
+      .in("phone", slice);
+    if (error) {
+      console.error("[spaActivitiesSyncEngine] guest phone lookup failed:", error.message);
+      continue;
+    }
+    all.push(...(data ?? []));
+  }
+  return all;
+}
+
 function nameTokenSet(name) {
   return new Set(String(name ?? "").trim().split(/\s+/).filter(Boolean));
 }
@@ -264,6 +284,19 @@ function unmatchedRow(batchId, appointmentDate, row, reason) {
   };
 }
 
+/** Skip EZGO machine dumps / package-line noise so board cards stay readable. */
+export function spaBoardImportNote(row) {
+  const candidates = [row?.note, row?.extras].map((v) => String(v ?? "").trim()).filter(Boolean);
+  for (const text of candidates) {
+    if (text.length > 90) continue;
+    if (/iItemId|iAddsLineId|sAttendantName|sActivityDesc|sClientName/i.test(text)) continue;
+    if ((text.match(/,/g) || []).length >= 6) continue;
+    if (/^\d+$/.test(text)) continue;
+    return text;
+  }
+  return null;
+}
+
 /**
  * Full sync for one day's parsed Activities rows. Upserts present rows only
  * — appointments not represented in this batch are left untouched (no
@@ -296,9 +329,9 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
 
   const phones = [...new Set(parsedRows.map((r) => r.phone).filter(Boolean))];
   const phoneVariants = [...new Set(phones.flatMap(resolvePhoneVariants))];
-  const { data: guestRows } = phoneVariants.length
-    ? await supabase.from("guests").select("id, name, phone, arrival_date, departure_date, status").in("phone", phoneVariants)
-    : { data: [] };
+  const guestRows = phoneVariants.length
+    ? await fetchGuestsByPhoneVariants(supabase, phoneVariants)
+    : [];
   // Canonicalize guest.phone the SAME way Phase 1 canonicalizes row.phone
   // (bare "972…", no +) before indexing — guests.phone is supposed to always
   // be "+972…" (CLAUDE.md §3) but this must not silently miss a match if a
@@ -316,11 +349,50 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
   const touchedGuestIds = new Set();
   const matchedExistingIds = new Set();
   const mealTimeByGuestId = new Map();
+  const pendingInserts = [];
+
+  async function flushPendingInserts() {
+    while (pendingInserts.length) {
+      const chunk = pendingInserts.splice(0, APPT_INSERT_CHUNK);
+      const { data, error } = await supabase
+        .from("spa_appointments")
+        .insert(chunk.map((c) => c.payload))
+        .select("id, guest_id, room_id, therapist_id, ezgo_line_id, start_time, ezgo_order_id");
+      if (!error && data) {
+        summary.created += data.length;
+        summary.matched_guests += data.length;
+        for (const appt of data) {
+          if (appt.ezgo_line_id) apptIndex.byLineId.set(appt.ezgo_line_id, appt);
+          apptIndex.byNaturalKey.set(
+            `${appt.room_id}|${appt.start_time}|${appt.guest_id ?? ""}|${appt.therapist_id ?? ""}`,
+            appt,
+          );
+        }
+        continue;
+      }
+      for (const item of chunk) {
+        const { error: oneErr } = await supabase.from("spa_appointments").insert(item.payload);
+        if (oneErr) {
+          if (oneErr.code === "23P01") {
+            summary.conflicts++;
+            unmatched.push(unmatchedRow(batchId, appointmentDate, item.row, "conflict_23P01"));
+            continue;
+          }
+          console.error("[spaActivitiesSyncEngine] appointment write failed:", oneErr.message);
+          summary.unmatched++;
+          unmatched.push(unmatchedRow(batchId, appointmentDate, item.row, "write_failed"));
+          continue;
+        }
+        summary.created++;
+        summary.matched_guests++;
+      }
+    }
+  }
 
   for (const row of parsedRows) {
     const roomId = row.room_raw ? aliasMap.get(row.room_raw) ?? null : null;
     const candidates = row.phone ? guestsByPhone.get(row.phone) ?? [] : [];
-    let { guest, suspicious, reason } = pickBestGuestMatch(
+    let { guest, suspicious } = pickBestGuestMatch(
       candidates,
       appointmentDate,
       row.guest_name,
@@ -417,44 +489,40 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
       appointment_date: appointmentDate,
       start_time: row.start_time,
       end_time: row.end_time,
-      notes: row.note,
+      notes: spaBoardImportNote(row),
       ezgo_line_id: row.ezgo_line_id,
       ezgo_order_id: row.order_id || null,
       phone_snapshot: row.phone_raw,
       treatment_type: row.treatment_type,
     };
 
-    const { error } = existing
-      ? await supabase.from("spa_appointments").update(payload).eq("id", existing.id)
-      : await supabase.from("spa_appointments").insert(payload);
+    let error = null;
+    if (existing) {
+      ({ error } = await supabase.from("spa_appointments").update(payload).eq("id", existing.id));
+    }
 
-    if (error) {
-      if (error.code === "23P01") {
-        summary.conflicts++;
-        unmatched.push(unmatchedRow(batchId, appointmentDate, row, "conflict_23P01"));
+    if (existing) {
+      if (error) {
+        if (error.code === "23P01") {
+          summary.conflicts++;
+          unmatched.push(unmatchedRow(batchId, appointmentDate, row, "conflict_23P01"));
+          continue;
+        }
+        console.error("[spaActivitiesSyncEngine] appointment write failed:", error.message);
+        summary.unmatched++;
+        unmatched.push(unmatchedRow(batchId, appointmentDate, row, "write_failed"));
         continue;
       }
-      console.error("[spaActivitiesSyncEngine] appointment write failed:", error.message);
-      summary.unmatched++;
-      unmatched.push(unmatchedRow(batchId, appointmentDate, row, "write_failed"));
-      continue;
+      summary.updated++;
+      summary.matched_guests++;
+    } else {
+      pendingInserts.push({ payload, row });
+      if (pendingInserts.length >= APPT_INSERT_CHUNK) await flushPendingInserts();
     }
-
-    existing ? summary.updated++ : summary.created++;
-    summary.matched_guests++;
     touchedGuestIds.add(guest.id);
 
-    if (suspicious) {
-      summary.suspicious++;
-      unmatched.push({ ...unmatchedRow(batchId, appointmentDate, row, "suspicious_shared_phone"), guest_name: `${row.guest_name ?? "—"} (${reason})` });
-    }
-    if (coupleFlag) {
-      summary.suspicious++;
-      unmatched.push({
-        ...unmatchedRow(batchId, appointmentDate, row, "suspicious_shared_phone"),
-        guest_name: `${row.guest_name ?? "—"} (זוג/קבוצה על טלפון אחד — פרופיל שני לא נוצר: "${row.group_label}")`,
-      });
-    }
+    if (suspicious) summary.suspicious++;
+    if (coupleFlag) summary.suspicious++;
 
     // Explicit meal time from this row's note/extras only (never board-basis
     // guessing) — earliest match across the batch wins per guest, actual
@@ -466,6 +534,8 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
       if (!prevMeal || mealTime < prevMeal) mealTimeByGuestId.set(guest.id, mealTime);
     }
   }
+
+  await flushPendingInserts();
 
   summary.not_in_file = (existingAppts ?? []).filter((a) => !matchedExistingIds.has(a.id)).length;
 
