@@ -29,6 +29,7 @@ import {
 } from "../_shared/ezgoDoc2Parser.ts";
 import { applyCertainDoc2SuiteSync, matchDoc2Record } from "../_shared/ezgoDoc2MailMatch.ts";
 import { parseSuiteArrivalsCsvBuffer } from "../_shared/ezgoDoc2SuiteCsvParser.ts";
+import { isEzgoSpaActivitiesCsvBytes } from "../_shared/ezgoSpaActivitiesCsvDetect.ts";
 import {
   applyCertainSuiteSpaEnrichment,
   enrichRecordsPhoneFromDb,
@@ -40,6 +41,7 @@ import { israelTodayYmd } from "../_shared/israelDate.ts";
 type MailResolveResult =
   | { kind: "doc1"; classified: EzgoMailClassification; records: Doc1Record[] }
   | { kind: "doc2"; classified: EzgoMailClassification; records: Doc2Record[] }
+  | { kind: "spa_activities"; classified: EzgoMailClassification; records: [] }
   | { kind: "unknown"; classified: EzgoMailClassification; records: [] };
 
 function ingestReportType(classified: EzgoMailClassification): string {
@@ -48,6 +50,9 @@ function ingestReportType(classified: EzgoMailClassification): string {
   }
   return classified.reportType;
 }
+
+const SPA_ACTIVITIES_MAIL_NOTE =
+  "דוח פעילויות ספא זוהה. ייבוא ללוח הספא: לוח ספא → ייבוא דוח פעילויות (עדיין לא נכתב אוטומטית מהמייל).";
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -201,6 +206,13 @@ async function resolveEzgoMailFromMessage(msg: {
 }): Promise<MailResolveResult> {
   if (msg.csvAttachments?.length) {
     for (const att of msg.csvAttachments) {
+      if (isEzgoSpaActivitiesCsvBytes(att.data)) {
+        return {
+          kind: "spa_activities",
+          classified: { reportType: "spa_activities_csv", csvFilename: att.filename },
+          records: [],
+        };
+      }
       const records = parseSuiteArrivalsCsvBuffer(att.data, att.filename);
       if (records.length) {
         return {
@@ -258,7 +270,7 @@ async function resolveDoc1FromMessage(msg: {
   if (resolved.kind === "doc2") {
     return { classified: resolved.classified, records: [] };
   }
-  if (resolved.kind === "unknown") {
+  if (resolved.kind === "spa_activities" || resolved.kind === "unknown") {
     return { classified: resolved.classified, records: [] };
   }
   return { classified: resolved.classified, records: resolved.records };
@@ -405,6 +417,17 @@ async function processIngestReplace(
 
   const resolved = await resolveEzgoMailFromMessage(msg);
   const { classified } = resolved;
+  if (resolved.kind === "spa_activities") {
+    await supabase.from("ezgo_mail_ingest").update({
+      parse_status: "parsed",
+      parse_error: SPA_ACTIVITIES_MAIL_NOTE,
+      report_type: "spa_activities_csv",
+      line_count: 0,
+      pending_count: 0,
+      ...bodySnapshot,
+    }).eq("id", existingIngestId);
+    return { ok: true, ingestId: existingIngestId, lines: 0, reason: "spa_activities_csv" };
+  }
   if (resolved.kind === "unknown" && !resolved.records.length) {
     await supabase.from("ezgo_mail_ingest").update({
       parse_status: "skipped",
@@ -499,6 +522,24 @@ async function processIngest(
 
   const resolved = await resolveEzgoMailFromMessage(msg);
   const { classified } = resolved;
+  if (resolved.kind === "spa_activities") {
+    const { data: spaIngest } = await supabase.from("ezgo_mail_ingest").insert({
+      external_message_id: msg.id,
+      from_email: msg.fromEmail,
+      from_name: msg.fromName,
+      subject: msg.subject,
+      received_at: msg.receivedAt,
+      report_type: "spa_activities_csv",
+      parse_status: "parsed",
+      parse_error: SPA_ACTIVITIES_MAIL_NOTE,
+      line_count: 0,
+      pending_count: 0,
+      body_preview: msg.bodyPreview,
+      source,
+      ...bodySnapshot,
+    }).select("id").maybeSingle();
+    return { ok: true, ingestId: spaIngest?.id, lines: 0, reason: "spa_activities_csv" };
+  }
   if (resolved.kind === "unknown" && !resolved.records.length) {
     const { data: skipped } = await supabase.from("ezgo_mail_ingest").insert({
       external_message_id: msg.id,

@@ -713,7 +713,7 @@ function parseOrderActivities(rows) {
   return [...byKey.values()].filter((a) => a.status === 1 && a.workerId);
 }
 
-function OrderActivityLookup({ therapists, onMapped, showToast }) {
+function OrderActivityLookup({ therapists, onMapped, showToast, seedOrderId }) {
   const [orderId, setOrderId] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null); // { activities: [] } | { errorMsg }
@@ -723,6 +723,10 @@ function OrderActivityLookup({ therapists, onMapped, showToast }) {
   const therapistByWorkerId = new Map(
     therapists.filter((t) => t.ezgo_worker_id != null).map((t) => [t.ezgo_worker_id, t]),
   );
+
+  useEffect(() => {
+    if (seedOrderId) setOrderId(String(seedOrderId));
+  }, [seedOrderId]);
 
   async function handleLookup() {
     const trimmed = orderId.trim();
@@ -838,6 +842,7 @@ function WorkerMappingSection({ showToast }) {
   const [therapists, setTherapists] = useState([]);
   const [seenMap, setSeenMap] = useState(new Map());
   const [loading, setLoading] = useState(true);
+  const [seedOrderId, setSeedOrderId] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -867,6 +872,10 @@ function WorkerMappingSection({ showToast }) {
   if (loading) return <div style={{ fontSize: 13, color: "rgba(232,201,138,0.6)" }}>טוען...</div>;
 
   const mapped = therapists.filter((t) => t.ezgo_worker_id != null);
+  const mappedIds = new Set(mapped.map((t) => t.ezgo_worker_id));
+  const unmappedSeen = [...seenMap.values()]
+    .filter((s) => s.ezgo_worker_id != null && !mappedIds.has(s.ezgo_worker_id))
+    .sort((a, b) => (b.event_count || 0) - (a.event_count || 0));
 
   return (
     <div style={{ marginBottom: 24 }}>
@@ -874,10 +883,39 @@ function WorkerMappingSection({ showToast }) {
         👤 מיפוי מטפלים — EZGO WorkerId ({mapped.length}/{therapists.length} ממופים)
       </div>
       <div style={{ fontSize: 12, color: "rgba(232,201,138,0.6)", marginBottom: 10 }}>
-        ה-API של EZGO לא שולח שם מטפל/ת, רק מספר פנימי. הזן/י את מספר ההזמנה מ-EZGO — נציג את הטיפולים שבה ואת ה-WorkerId שלהם, ותוכל/י לשייך למטפל/ת מהרשימה שלנו פעם אחת. מכאן זה יזוהה אוטומטית.
+        דוח תפעול הספא נותן שמות. ה-API נותן רק מספר. אחרי ייבוא הדוח ללוח, לחצי הזמנת דוגמה כאן ושייכי את המספר לשם. שינוי שעה אחר כך מתעדכן לבד.
       </div>
 
-      <OrderActivityLookup therapists={therapists} onMapped={load} showToast={showToast} />
+      {unmappedSeen.length > 0 && (
+        <div style={{ ...cardBoxStyle, marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(232,201,138,0.9)", marginBottom: 8 }}>
+            WorkerId שנצפו ב-API ועדיין בלי שם ({unmappedSeen.length})
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {unmappedSeen.slice(0, 20).map((s) => (
+              <div key={s.ezgo_worker_id} style={rowStyle}>
+                <div style={{ fontSize: 13, color: "rgba(232,201,138,0.85)" }}>
+                  <strong>WorkerId {s.ezgo_worker_id}</strong>
+                  <span style={{ color: "rgba(232,201,138,0.5)" }}> · {s.event_count} אירועים</span>
+                  <div style={{ fontSize: 11, color: "rgba(232,201,138,0.55)", marginTop: 4 }}>
+                    {s.sample_order_id
+                      ? `הזמנת דוגמה #${s.sample_order_id} · לאחרונה ${fmtTimestamp(s.last_seen_at)}`
+                      : "אין הזמנת דוגמה (אירוע ישן נמחק מהקליטה)."}
+                  </div>
+                </div>
+                <ConfirmButton
+                  disabled={!s.sample_order_id}
+                  onClick={() => setSeedOrderId(String(s.sample_order_id))}
+                >
+                  פתח הזמנה
+                </ConfirmButton>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <OrderActivityLookup therapists={therapists} onMapped={load} showToast={showToast} seedOrderId={seedOrderId} />
 
       <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(232,201,138,0.9)", marginBottom: 8 }}>
         מטפלים משויכים ({mapped.length})

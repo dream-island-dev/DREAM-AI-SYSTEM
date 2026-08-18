@@ -1,7 +1,7 @@
 /**
- * ezgo-guest-sync — EZGO live API sync. guests + suite_rooms only. Never
- * touches spa_appointments or spa_therapists/ezgo_worker_id (a separate,
- * already-completed effort).
+ * ezgo-guest-sync — EZGO live API sync. guests + suite_rooms, plus spa
+ * Activities → spa_appointments (time/cancel/worker). CSV import still seeds
+ * rooms and therapist names; this worker applies later webhook snapshots.
  *
  * Per-room occupant resolution (rewritten 2026-08-16 — product rule shipped
  * same day on Doc2, commit f85f2f8: one coordinator holding several suites
@@ -99,6 +99,10 @@ import {
   applyDoc2SuiteRoomAdd,
 } from "../_shared/ezgoDoc2SuiteRoomSync.ts";
 import { ensureMissingDepartureAlert } from "../_shared/guestDepartureGuard.ts";
+import {
+  processClaimedSpaActivities,
+  restageIgnoredSpaActivities,
+} from "../_shared/ezgoSpaActivityApply.ts";
 
 const GUEST_ROW_SELECT =
   "id, name, phone, order_number, arrival_date, departure_date, room, room_type, meal_location, meal_time, automation_scope";
@@ -539,6 +543,8 @@ serve(async (req) => {
     skipped_cancelled: 0, skipped_no_client_data: 0, ignored_out_of_scope: 0,
     parked_room_less: 0, parked_unresolved: 0,
     cancellations_applied: 0, delete_events_no_matching_guest: 0,
+    spa_updated: 0, spa_created: 0, spa_cancelled: 0, spa_skipped: 0,
+    spa_waiting_guest: 0, spa_unresolved: 0, spa_worker_stamped: 0, spa_restaged: 0,
   };
 
   // releaseIds/release are declared outside the try so the `finally` below
@@ -551,6 +557,8 @@ serve(async (req) => {
   const release = (ids: Iterable<string>) => { for (const id of ids) releaseIds.delete(id); };
 
   try {
+    summary.spa_restaged = await restageIgnoredSpaActivities(supabase);
+
     // 1) Race-safe claim: select candidate staged rows, then atomically flip
     // ONLY the ones still 'staged' at update time to 'processing'. A second
     // overlapping invocation (retry after timeout, accidental double-trigger)
@@ -618,7 +626,9 @@ serve(async (req) => {
       const type = rp.Type as string | null | undefined;
       if (type === "Delete") {
         deleteRows.push(row);
-      } else if (entity === "Activities" || entity === "MealTimings" || entity === "Adds") {
+      } else if (entity === "Activities") {
+        // Applied after guest/order processing in this same run.
+      } else if (entity === "MealTimings" || entity === "Adds") {
         outOfScopeIds.push(row.id);
       } else if (entity === "Orders" || entity === "Reservations" || (!entity && (type === "Insert" || type === "Update"))) {
         inScopeRows.push(row);
@@ -880,6 +890,15 @@ serve(async (req) => {
         }
       } // else action === "retry": stays claimed here, released back to 'staged' in `finally` — retried next run
     }
+
+    const spa = await processClaimedSpaActivities(supabase, claimedRows, release);
+    summary.spa_updated += spa.summary.spa_updated;
+    summary.spa_created += spa.summary.spa_created;
+    summary.spa_cancelled += spa.summary.spa_cancelled;
+    summary.spa_skipped += spa.summary.spa_skipped;
+    summary.spa_waiting_guest += spa.summary.spa_waiting_guest;
+    summary.spa_unresolved += spa.summary.spa_unresolved;
+    summary.spa_worker_stamped += spa.summary.spa_worker_stamped;
 
     const purged = await purgeStaleEzgoApiIngest(supabase);
 

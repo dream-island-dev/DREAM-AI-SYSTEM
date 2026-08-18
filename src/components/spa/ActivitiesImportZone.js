@@ -57,7 +57,24 @@ export default function ActivitiesImportZone({ selectedDate, onImportDone, onErr
       }
 
       const { date: importDate, fromFile, mixed } = resolveImportDate(parsedRows, selectedDate);
-      const summary = await syncEzgoSpaActivities(parsedRows, importDate, { supabase, skippedCancelled });
+      const byDate = new Map();
+      for (const row of parsedRows) {
+        const d = row.appointment_date || importDate;
+        if (!byDate.has(d)) byDate.set(d, []);
+        byDate.get(d).push(row);
+      }
+      const summaries = [];
+      for (const [date, dateRows] of byDate) {
+        summaries.push(await syncEzgoSpaActivities(dateRows, date, { supabase, skippedCancelled: 0 }));
+      }
+      const summary = summaries.reduce((acc, s) => {
+        for (const [k, v] of Object.entries(s)) {
+          if (typeof v === "number") acc[k] = (acc[k] || 0) + v;
+          else if (acc[k] == null) acc[k] = v;
+        }
+        return acc;
+      }, { skippedCancelled });
+      summary.days_synced = byDate.size;
       if (fromFile && importDate !== selectedDate) summary.date_from_file = importDate;
       if (mixed) summary.date_mixed = true;
       onImportDone(summary);

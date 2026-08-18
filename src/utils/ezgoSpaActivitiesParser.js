@@ -32,8 +32,13 @@ const NEW_BOOKING_PLACEHOLDER_RE = /^\(?\s*הזמנה חדשה\s*\)?$/;
 const NAME_WITH_GROUP_RE = /^(.*?)\s*\(([^)]+)\)\s*$/;
 /** Org/booking labels in parentheses — not a person name for Golden Profile match. */
 const ORG_GROUP_LABEL_RE = /ועד|בע["״']?מ|בעמ|טכנולוגי|חברה|ltd|inc|מוצרי|עיריית|קבוצת|פרומדיקס|אלקטרה/i;
-const LATIN_NICKNAME_RE = /^[A-Za-z0-9][A-Za-z0-9.\s_-]*$/;
+const FEMALE_ONLY_RE = /נשים\s*בלבד/;
+
+export function therapistNameImpliesFemaleOnly(name) {
+  return FEMALE_ONLY_RE.test(String(name ?? ""));
+}
 const HEBREW_CHAR_RE = /[\u0590-\u05FF]/;
+const LATIN_NICKNAME_RE = /^[A-Za-z0-9][A-Za-z0-9.\s_-]*$/;
 
 function cleanCell(raw) {
   return String(raw ?? "")
@@ -143,6 +148,12 @@ export function normalizeActivitiesDate(raw) {
   return null;
 }
 
+/** Header sniff for EZGO spa-ops CSV (mail vs Doc2 arrivals). */
+export function isEzgoSpaActivitiesCsvText(text) {
+  const head = String(text ?? "").slice(0, 1200);
+  return /sAttendantName/i.test(head) && /iAddsLineId/i.test(head) && /sActivityDesc/i.test(head);
+}
+
 /** True when the row looks like Ezgo's English machine-CSV export (not the Hebrew UI report). */
 export function isEnglishActivitiesCsvRow(rawRow) {
   if (!rawRow || typeof rawRow !== "object") return false;
@@ -196,6 +207,7 @@ export function canonicalizeEnglishActivitiesRow(rawRow) {
     מזהה: ezgoId,
     _appointment_date: normalizeActivitiesDate(rawRow.dtDate),
     _cancelled: cancelled,
+    _order_id: cleanCell(rawRow.iOrderId ?? rawRow.iOrderID ?? "") || null,
     _source: "english_csv",
   };
 }
@@ -283,6 +295,8 @@ export function mapEzgoActivitiesRow(rawRow) {
     note,
     appointment_date: appointmentDate,
     cancelled,
+    order_id: cleanCell(src._order_id ?? src["מס. הזמנה"] ?? src["מס הזמנה"] ?? src["מספר הזמנה"]) || null,
+    female_only: therapistNameImpliesFemaleOnly(therapistName),
     source: english ? "english_csv" : "hebrew_ui",
     warnings,
   };

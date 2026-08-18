@@ -1149,7 +1149,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                 {ing.from_email} · {ing.report_date_ymd || "—"} · {ing.line_count} שורות
               </div>
               <div style={{ fontSize: 10, marginTop: 4, opacity: 0.65 }}>
-                {ing.report_type} · {ing.parse_status}
+                {ing.report_type === "spa_activities_csv" ? "פעילויות ספא" : ing.report_type} · {ing.parse_status}
               </div>
             </button>
           ))}
@@ -1178,6 +1178,15 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                   🔁 פרסר מחדש
                 </button>
               </div>
+
+              {selected.report_type === "spa_activities_csv" && (
+                <div style={{
+                  marginBottom: 12, padding: "10px 12px", borderRadius: 8,
+                  background: "rgba(201,169,110,0.12)", color: "var(--gold-light)", fontSize: 13,
+                }}>
+                  דוח פעילויות ספא. לייבוא ללוח: לוח ספא → ייבוא דוח פעילויות.
+                </div>
+              )}
 
               <div style={{ maxHeight: 460, overflowY: "auto" }}>
                 {activeSections.map((section) => {

@@ -13,6 +13,8 @@ import {
   parseTimeRange,
   repairEzgoCsvText,
   resolveSpaGuestDisplayName,
+  therapistNameImpliesFemaleOnly,
+  isEzgoSpaActivitiesCsvText,
 } from "./ezgoSpaActivitiesParser";
 
 describe("parseTimeRange", () => {
@@ -395,5 +397,22 @@ describe("parseEzgoActivitiesReport", () => {
   test("non-array input returns empty shape instead of throwing", () => {
     expect(parseEzgoActivitiesReport(null)).toEqual({ rows: [], skippedCancelled: 0 });
     expect(parseEzgoActivitiesReport(undefined)).toEqual({ rows: [], skippedCancelled: 0 });
+  });
+
+  test("female-only flag from therapist cell", () => {
+    expect(therapistNameImpliesFemaleOnly("אולגה מרדכייב -נשים בלבד")).toBe(true);
+    expect(therapistNameImpliesFemaleOnly("יוכי גרינשטיין - לנשים בלבד")).toBe(true);
+    expect(therapistNameImpliesFemaleOnly("2 ליסה - Lissa")).toBe(false);
+    const mapped = mapEzgoActivitiesRow({
+      iLineStatus: "1", iAddsLineId: "1", sRowNum: "1", dtDate: "2026-08-01",
+      tmStart: "9:00", tmEnd: "9:45", sActivityDesc: "חדר 1",
+      sAttendantName: "רחל סיאונוב-נשים בלבד", sClientName: "אורח", sTel: "0501111111",
+    });
+    expect(mapped.female_only).toBe(true);
+  });
+
+  test("spa-ops CSV header sniff vs Doc2 arrivals", () => {
+    expect(isEzgoSpaActivitiesCsvText("iItemId,iLineStatus,iAddsLineId,sAttendantName,sActivityDesc\n")).toBe(true);
+    expect(isEzgoSpaActivitiesCsvText("iOrderId,sTel1,sClientFullName,sRoomName\n")).toBe(false);
   });
 });

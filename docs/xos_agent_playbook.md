@@ -419,6 +419,16 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-08-18 — Spa ops CSV is a month dump, iItemId is not an order
+- **Fact:** `העברה למייק.csv` parsed 3577 active / 1149 cancelled; therapists+rooms+guests extract cleanly. `iItemId` is spa catalog (11448). No `iOrderId` in this export.
+- **Fix:** Import groups by `dtDate`. Activity key is `orderId:itemId:index`. Mail sniffs spa CSV before Doc2.
+- **Lesson:** Do not stamp a mixed-date file onto “today”. `סוויטות אבניו 5` is a real 5th couple room (~196 rows) — seed it; חמאם/אופל stay unmatched.
+
+### 2026-08-18 — EZGO Activities were ingested then ignored
+- **Fact:** Spa time changes already arrive as `Entity=Activities` (same ItemId:Index on edit). `ezgo-guest-sync` parked them `ignored/out_of_scope`.
+- **Fix:** Apply onto `spa_appointments` after CSV seeds rooms+names. Do not ask EZGO to “send times”. Worker names still need CSV or a one-time WorkerId map.
+- **Lesson:** A webhook entity in `ezgo_api_ingest` is not live until a worker writes it. Mapping-panel “type an order number” fails unless the UI lists seen WorkerIds with `sample_order_id`.
+
 ### 2026-08-18 — EZGO mail auto-sync is parser + DB only
 - **Fact:** Suite create/enrich from Doc2/Doc1 mail must not call Gemini or send WhatsApp. Day-pass upsell stays HITL.
 - **Lesson:** Failed auto-apply leaves the line `pending_review` (Zero Data Loss). Never widen IMAP frequency to “make auto-sync faster”.
