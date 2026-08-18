@@ -141,6 +141,35 @@ Deno.test("applyCertainSuiteSpaEnrichment: never applies outside the suite_spa_s
   assertEquals(updates.length, 0);
 });
 
+Deno.test("applyCertainSuiteSpaEnrichment: applies suite enrich (meal only) on order match", async () => {
+  const { supabase, updates } = fakeSupabase({
+    data: { ...FRESH_GUEST_BASE, guest_profile: null },
+    error: null,
+  });
+  const rec = { ...BASE_REC, spa_time: null } as Doc1Record;
+  const match: MatchResult = {
+    ...BASE_MATCH,
+    guest: { id: 1, room: "אמטיסט 8" } as never,
+    patch: { meal_location: "חצי פנסיון", _workflow: "enrich" },
+  };
+  const ok = await applyCertainSuiteSpaEnrichment(supabase as never, rec, match);
+  assertEquals(ok, true);
+  assertEquals(updates[0].patch.meal_location, "חצי פנסיון");
+  assertEquals("spa_time" in updates[0].patch && updates[0].patch.spa_time != null, false);
+});
+
+Deno.test("applyCertainSuiteSpaEnrichment: never auto-applies daypass enrich", async () => {
+  const { supabase, updates } = fakeSupabase({ data: null, error: null });
+  const match: MatchResult = {
+    ...BASE_MATCH,
+    guest: { id: 1, room: "Premium Day 1", room_type: "day_guest" } as never,
+    patch: { meal_location: "חצי פנסיון", _workflow: "enrich" },
+  };
+  const ok = await applyCertainSuiteSpaEnrichment(supabase as never, BASE_REC, match);
+  assertEquals(ok, false);
+  assertEquals(updates.length, 0);
+});
+
 Deno.test("applyCertainSuiteSpaEnrichment: never applies without a matched guest id", async () => {
   const { supabase, updates } = fakeSupabase({ data: null, error: null });
   const match: MatchResult = { ...BASE_MATCH, guest: null };

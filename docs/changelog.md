@@ -1,4 +1,6 @@
-2026-08-18 | EZGO SalesSegment → guests + forecast + Stage 4 groups | Live API already sends `Order.SalesSegment` as a number. Staff maps ids to בודדים / קבוצות ישירות (`ezgo_sales_segment_map`, migration 300). Direct groups get `courtesy_only`. Forecast shows EZGO group pax vs the groups line. CSV Hebrew column `סגמנט מכירות` also sets Stage 4. Deploy: `db push` + `ezgo-guest-sync` `forecast-daily` + frontend.
+2026-08-18 | EZGO mail — auto-sync suite arrivals + operations (no LLM/WA) | Doc2 ingest auto-creates/enriches/assigns suite rows (`applyCertainDoc2SuiteSync`); Doc1 also auto-applies suite meal/spa `enrich` (not only `suite_spa_sync`). Day-pass, conflicts, missing nights, fuzzy matches stay `pending_review`. Deploy: `functions deploy ezgo-mail-sync --no-verify-jwt`.
+
+
 
 
 

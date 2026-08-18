@@ -10,6 +10,7 @@ import {
   classifyEzgoMailWorkflow,
   type GuestWorkflowRow,
 } from "./ezgoMailLineWorkflow.ts";
+import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 
 export type GuestRow = GuestWorkflowRow;
 
@@ -257,13 +258,20 @@ export async function matchDoc1Record(
 
 const AUTO_APPLY_ORDER_MATCH_MIN_CONFIDENCE = 0.9;
 
+function isDoc1CertainSuiteAutoEnrich(match: MatchResult): boolean {
+  const workflow = match.patch?._workflow;
+  if (workflow === "suite_spa_sync") return true;
+  // Operations report lines without spa_time classify as "enrich" — still
+  // auto-apply meal/spa fields, but only for a canonical suite guest.
+  return workflow === "enrich" && isEffectiveSuiteGuest(match.guest);
+}
+
 /**
- * Mike's ask (2026-08-04): suite spa-hours + meal-plan (פנסיון) enrichment should
- * write itself the moment a scan finds a CERTAIN match — no manual "אשר" click —
- * while every other Doc1/Doc2 workflow (arrivals, day-pass, phone/fuzzy matches,
- * conflicts) stays exactly as manual as before. "Certain" here means the same
- * order-number tier the existing "אשר הכל" batch button already trusts
- * (match_method==="order"), never phone/fuzzy.
+ * Mike's ask (2026-08-04 / 2026-08-18): suite spa-hours + meal-plan (פנסיון)
+ * enrichment should write itself the moment a scan finds a CERTAIN match —
+ * no manual "אשר" click — while day-pass / phone / fuzzy / conflicts stay
+ * pending_review. "Certain" = order-number match (never phone/fuzzy). No LLM,
+ * no WhatsApp — parser + guests UPDATE only.
  *
  * Reuses buildDoc1EnrichmentPatch(), which by construction never writes stay
  * dates, room, name, or phone — only spa_time/spa_date/meal_time/meal_location/
@@ -285,7 +293,7 @@ export async function applyCertainSuiteSpaEnrichment(
     || match.action !== "enrich"
     || match.method !== "order"
     || match.confidence < AUTO_APPLY_ORDER_MATCH_MIN_CONFIDENCE
-    || match.patch?._workflow !== "suite_spa_sync"
+    || !isDoc1CertainSuiteAutoEnrich(match)
   ) {
     return false;
   }

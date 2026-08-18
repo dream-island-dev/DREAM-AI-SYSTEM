@@ -27,7 +27,7 @@ import {
   parseDoc2FromClassification,
   type Doc2Record,
 } from "../_shared/ezgoDoc2Parser.ts";
-import { matchDoc2Record } from "../_shared/ezgoDoc2MailMatch.ts";
+import { applyCertainDoc2SuiteSync, matchDoc2Record } from "../_shared/ezgoDoc2MailMatch.ts";
 import { parseSuiteArrivalsCsvBuffer } from "../_shared/ezgoDoc2SuiteCsvParser.ts";
 import {
   applyCertainSuiteSpaEnrichment,
@@ -328,17 +328,37 @@ async function insertDoc2IngestLines(
   for (let i = 0; i < records.length; i++) {
     const rec = records[i];
     const match = await matchDoc2Record(supabase, rec, guestCache, reportDate);
+    const auto = await applyCertainDoc2SuiteSync(supabase, rec, match, reportDate);
+    if (auto.applied && auto.guestId && !guestCache.some((g) => g.id === auto.guestId)) {
+      guestCache.push({
+        id: auto.guestId,
+        name: rec.guest_name,
+        phone: rec.phone,
+        order_number: rec.order_number,
+        arrival_date: rec.arrival_date,
+        departure_date: rec.departure_date,
+        room: rec.room,
+        room_type: rec.is_premium_day ? "premium_day_guest" : (rec.is_day_guest ? "day_guest" : "suite"),
+        spa_time: null,
+        meal_location: rec.meal_location,
+        meal_time: rec.meal_time ?? null,
+        treatment_count: null,
+      });
+    }
     lineRows.push({
       ingest_id: ingestId,
       line_index: i,
       parsed_json: rec,
-      match_guest_id: match.guest?.id ?? null,
+      match_guest_id: auto.guestId ?? match.guest?.id ?? null,
       match_method: match.method === "none" ? null : match.method,
       match_confidence: match.confidence,
-      match_label: match.label,
+      match_label: auto.applied
+        ? `🤖 סונכרן אוטומטית · ${match.label}`
+        : match.label,
       action: match.action,
       proposed_patch: match.patch,
-      status: "pending_review",
+      status: auto.applied ? "applied" : "pending_review",
+      ...(auto.applied ? { applied_at: new Date().toISOString() } : {}),
     });
   }
 

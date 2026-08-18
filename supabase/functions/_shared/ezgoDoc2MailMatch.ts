@@ -3,9 +3,16 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { Doc2Record } from "./ezgoDoc2Parser.ts";
 import {
+  buildDoc2EnrichmentPatch,
   classifyDoc2MailWorkflow,
   type Doc2GuestRow,
 } from "./ezgoDoc2MailLineWorkflow.ts";
+import {
+  applyDoc2SuiteRoomAdd,
+  createDoc2SuiteArrival,
+} from "./ezgoDoc2SuiteRoomSync.ts";
+import { resolveMissingDepartureAlert } from "./guestDepartureGuard.ts";
+import { isCanonicalSuiteRoom } from "./suiteNames.ts";
 import { reportDateWithinGuestStay } from "./ezgoDoc1Parser.ts";
 import { doc2RecordMatchesGuest } from "./ezgoDoc2RecordMatch.ts";
 import { israelYmd } from "./automationSchedule.ts";
@@ -215,4 +222,95 @@ export async function matchDoc2Record(
     action: classified.action,
     patch: classified.patch,
   };
+}
+
+const DOC2_SUITE_AUTO_WORKFLOWS = new Set([
+  "suite_arrival_create",
+  "suite_arrival_enrich",
+  "suite_room_assign",
+  "suite_room_add",
+]);
+
+/**
+ * Deterministic gate only — no LLM, no WhatsApp. Day-pass / conflict / missing
+ * nights / name-only fuzzy matches stay pending_review (same as the UI buttons).
+ */
+export function isCertainDoc2SuiteAutoApply(
+  rec: Doc2Record,
+  match: Doc2MatchResult,
+): boolean {
+  if (!rec || rec.section === "departure") return false;
+  if (rec.departure_missing_nights) return false;
+  if ((rec.is_day_guest || rec.is_premium_day) && !isCanonicalSuiteRoom(rec.room)) {
+    return false;
+  }
+  const workflow = match.patch?._workflow;
+  if (typeof workflow !== "string" || !DOC2_SUITE_AUTO_WORKFLOWS.has(workflow)) {
+    return false;
+  }
+  if (match.action === "conflict" || match.action === "no_match") return false;
+
+  if (workflow === "suite_arrival_create") {
+    return match.action === "create" && !!rec.phone;
+  }
+
+  if (!match.guest?.id || match.action !== "enrich") return false;
+  return match.method === "order" || match.method === "phone";
+}
+
+export async function applyCertainDoc2SuiteSync(
+  supabase: SupabaseClient,
+  rec: Doc2Record,
+  match: Doc2MatchResult,
+  reportDateYmd: string | null,
+): Promise<{ applied: boolean; guestId: number | null }> {
+  if (!isCertainDoc2SuiteAutoApply(rec, match)) {
+    return { applied: false, guestId: null };
+  }
+
+  const workflow = match.patch?._workflow;
+  try {
+    if (workflow === "suite_arrival_create") {
+      const inserted = await createDoc2SuiteArrival(supabase, rec, reportDateYmd);
+      return { applied: true, guestId: inserted.id };
+    }
+    if (!match.guest?.id) return { applied: false, guestId: null };
+
+    if (workflow === "suite_room_add" || workflow === "suite_room_assign") {
+      await applyDoc2SuiteRoomAdd(supabase, {
+        guestId: match.guest.id,
+        rec,
+        reportDateYmd,
+      });
+      return { applied: true, guestId: match.guest.id };
+    }
+
+    const { data: freshGuest, error: fetchErr } = await supabase
+      .from("guests")
+      .select(
+        "id, name, phone, order_number, arrival_date, departure_date, room, room_type, meal_location, meal_time, automation_scope",
+      )
+      .eq("id", match.guest.id)
+      .maybeSingle();
+    if (fetchErr || !freshGuest) return { applied: false, guestId: null };
+
+    const rawPatch = buildDoc2EnrichmentPatch(rec, freshGuest as Doc2GuestRow);
+    const safePatch: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(rawPatch)) {
+      if (!k.startsWith("_")) safePatch[k] = v;
+    }
+    if (!Object.keys(safePatch).length) return { applied: false, guestId: null };
+
+    const { error: updateErr } = await supabase
+      .from("guests")
+      .update(safePatch)
+      .eq("id", freshGuest.id);
+    if (updateErr) return { applied: false, guestId: null };
+    if (safePatch.departure_date) {
+      await resolveMissingDepartureAlert(supabase, freshGuest.id as number);
+    }
+    return { applied: true, guestId: freshGuest.id as number };
+  } catch {
+    return { applied: false, guestId: null };
+  }
 }

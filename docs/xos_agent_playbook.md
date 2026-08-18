@@ -419,6 +419,10 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-08-18 — EZGO mail auto-sync is parser + DB only
+- **Fact:** Suite create/enrich from Doc2/Doc1 mail must not call Gemini or send WhatsApp. Day-pass upsell stays HITL.
+- **Lesson:** Failed auto-apply leaves the line `pending_review` (Zero Data Loss). Never widen IMAP frequency to “make auto-sync faster”.
+
 ### 2026-08-18 — EZGO SalesSegment is a number, not Hebrew
 - **Fact:** Live `Order.SalesSegment` is 0/1/2/3/5/6/8/10. There is no SalesSegments catalog in the webhook. `0` is a real id — not unset.
 - **Fix:** Staff map in EZGO API panel (`ezgo_sales_segment_map`). Persist `sales_segment_kind` on guests. `direct_group` → Stage 4 `courtesy_only`. Do not guess that `3` = בודדים.
