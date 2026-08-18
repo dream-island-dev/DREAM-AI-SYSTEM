@@ -1,4 +1,6 @@
-2026-08-18 | Spa board — therapists stay, guests move | Align Day after CSV import parks each therapist in their home room (majority/roster) and moves patients there. Leftovers = two therapists need the same room at the same hour — Move Guest, not “keep EZGO scatter”. Frontend only.
+2026-08-18 | Spa board — clip CSV-bleed names + exclusive therapist rooms | `עו"ד` broke EZGO CSV so guest names swallowed the row. Clip on parse+card. Align Day gives overflow therapists an empty room instead of stacking 60 «חדר מלא» on the same homes. Frontend only.
+
+
 2026-08-18 | Spa ops CSV — mixed-date import + אבניו 5 + mail sniff | Activities import syncs each `dtDate` separately. Therapist names with נשים בלבד set `gender=female`. New couple room `אבניו 5` + aliases. EZGO mail classifies spa-ops CSV (`sAttendantName`) instead of Doc2; board write still via SpaBoard import. Deploy: `db push` (302) + `functions deploy ezgo-mail-sync --no-verify-jwt` + frontend.
 2026-08-18 | EZGO mail — auto-sync suite arrivals + operations (no LLM/WA) | Doc2 ingest auto-creates/enriches/assigns suite rows (`applyCertainDoc2SuiteSync`); Doc1 also auto-applies suite meal/spa `enrich` (not only `suite_spa_sync`). Day-pass, conflicts, missing nights, fuzzy matches stay `pending_review`. Deploy: `functions deploy ezgo-mail-sync --no-verify-jwt`.
 

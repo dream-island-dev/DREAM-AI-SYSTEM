@@ -11,6 +11,7 @@ import {
   parseEzgoActivitiesReport,
   parseGuestNameCell,
   parseTimeRange,
+  clipEzgoCsvBleed,
   repairEzgoCsvText,
   resolveSpaGuestDisplayName,
   therapistNameImpliesFemaleOnly,
@@ -149,6 +150,18 @@ describe("repairEzgoCsvText / date / display-name helpers", () => {
     const fixed = repairEzgoCsvText(broken);
     expect(fixed).toContain("בע״מ");
     expect(fixed).not.toMatch(/בע"/);
+  });
+
+  test("repairEzgoCsvText also fixes עו\"ד inside a quoted name", () => {
+    const broken = `"שוהם יפת (משרד עו"ד עידו רביד)","0526730999"`;
+    const fixed = repairEzgoCsvText(broken);
+    expect(fixed).toContain("עו״ד");
+    expect(fixed).not.toMatch(/עו"/);
+  });
+
+  test("clipEzgoCsvBleed cuts a name that swallowed the rest of the CSV row", () => {
+    const dumped = `שוהם יפת (משרד עו"ד עידו רביד-)","1","0526730999",","0:45"`;
+    expect(clipEzgoCsvBleed(dumped)).toBe("שוהם יפת (משרד עו\"ד עידו רביד-)");
   });
 
   test("normalizeActivitiesDate accepts ISO, Excel serial, and Date", () => {

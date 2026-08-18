@@ -31,7 +31,7 @@ const CLOCK_RE = /^(\d{1,2}):(\d{2})$/;
 const NEW_BOOKING_PLACEHOLDER_RE = /^\(?\s*הזמנה חדשה\s*\)?$/;
 const NAME_WITH_GROUP_RE = /^(.*?)\s*\(([^)]+)\)\s*$/;
 /** Org/booking labels in parentheses — not a person name for Golden Profile match. */
-const ORG_GROUP_LABEL_RE = /ועד|בע["״']?מ|בעמ|טכנולוגי|חברה|ltd|inc|מוצרי|עיריית|קבוצת|פרומדיקס|אלקטרה/i;
+const ORG_GROUP_LABEL_RE = /ועד|בע["״']?מ|בעמ|משרד|עו["״']?ד|טכנולוגי|חברה|ltd|inc|מוצרי|עיריית|קבוצת|פרומדיקס|אלקטרה/i;
 const FEMALE_ONLY_RE = /נשים\s*בלבד/;
 
 export function therapistNameImpliesFemaleOnly(name) {
@@ -63,8 +63,19 @@ function excelSerialToISO(serial) {
 export function repairEzgoCsvText(text) {
   return String(text ?? "")
     .replace(/^\uFEFF/, "")
-    .replace(/בע"מ/g, "בע״מ")
-    .replace(/בע''מ/g, "בע״מ");
+    .replace(/([א-ת])"([א-ת])/g, "$1״$2");
+}
+
+/** Guest/treatment cells that swallowed the rest of a broken CSV row. */
+export function clipEzgoCsvBleed(text) {
+  const s = String(text ?? "").trim();
+  if (!s) return "";
+  const cut = s.search(/"?\s*,\s*"?\d|"?,\s*"/);
+  if (cut >= 2) return s.slice(0, cut).replace(/["\s]+$/, "").trim();
+  if ((s.match(/,/g) || []).length >= 6) {
+    return s.split(",")[0].replace(/"/g, "").trim();
+  }
+  return s;
 }
 
 /** True when parentheses text is a company/org booking label, not a companion person name. */
@@ -87,7 +98,7 @@ export function resolveSpaGuestDisplayName(guestName, groupLabel) {
   ) {
     return groupLabel;
   }
-  return guestName || null;
+  return clipEzgoCsvBleed(guestName) || guestName || null;
 }
 
 /**
@@ -285,9 +296,9 @@ export function mapEzgoActivitiesRow(rawRow) {
     end_time,
     room_raw: roomRaw,
     therapist_name: therapistName,
-    treatment_type: treatmentType,
+    treatment_type: clipEzgoCsvBleed(treatmentType) || treatmentType,
     extras,
-    guest_name,
+    guest_name: clipEzgoCsvBleed(guest_name) || guest_name,
     group_label,
     is_new_booking_placeholder,
     phone,

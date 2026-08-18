@@ -1,6 +1,7 @@
 import {
   inferHomeRoomByTherapist,
   resolveHomeRoomMap,
+  assignExclusiveHomeRooms,
   planAlignDay,
   timesOverlap,
   canPlaceInRoom,
@@ -112,7 +113,7 @@ describe("roomOccupancyAtSlot", () => {
 });
 
 describe("planAlignDay", () => {
-  const singles = { 100: "single", 200: "single", 300: "single", 999: "single" };
+  const singles = { 100: "single", 200: "single", 300: "single", 400: "single", 999: "single" };
 
   test("no moves when every appointment is already in its therapist's home room", () => {
     const appts = [appt(1, 10, 100, "09:00"), appt(2, 10, 100, "11:00")];
@@ -128,19 +129,28 @@ describe("planAlignDay", () => {
     expect(blockedMoves).toEqual([]);
   });
 
-  test("blocks move when home room is already occupied at that time", () => {
-    // Therapist 10 home=100 (09:00). Therapist 20 also in 100 at 11:00.
-    // Therapist 10's later appt in 200 at 11:00 cannot move into 100.
+  test("overflow therapist gets an empty room instead of stacking on the same single home", () => {
     const appts = [
       appt(1, 10, 100, "09:00"),
       appt(2, 20, 100, "11:00"),
       appt(3, 10, 200, "11:00"),
     ];
-    const { safeMoves, blockedMoves } = planAlignDay(appts, [], singles);
-    expect(safeMoves).toEqual([]);
-    expect(blockedMoves).toEqual([
-      { apptId: 3, therapistId: 10, fromRoomId: 200, toRoomId: 100, reason: "room_full" },
-    ]);
+    const home = assignExclusiveHomeRooms(appts, [], singles, [100, 200, 300, 400]);
+    expect(home.get(10)).toBe(100);
+    expect(home.get(20)).toBe(300);
+    const { blockedMoves, safeMoves } = planAlignDay(appts, [], singles, [100, 200, 300, 400]);
+    expect(blockedMoves).toEqual([]);
+    expect(safeMoves.some((m) => m.apptId === 2 && m.toRoomId === 300)).toBe(true);
+  });
+
+  test("blocks when two therapists collide and no empty room exists", () => {
+    const appts = [
+      appt(1, 10, 100, "09:00"),
+      appt(2, 20, 100, "11:00"),
+      appt(3, 10, 200, "11:00"),
+    ];
+    const { blockedMoves } = planAlignDay(appts, [], singles, [100, 200]);
+    expect(blockedMoves.length).toBeGreaterThan(0);
   });
 
   test("cascade: freeing a room unlocks a later safe move", () => {

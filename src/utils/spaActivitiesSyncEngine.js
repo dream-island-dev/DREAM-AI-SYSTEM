@@ -493,7 +493,7 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
       ezgo_line_id: row.ezgo_line_id,
       ezgo_order_id: row.order_id || null,
       phone_snapshot: row.phone_raw,
-      treatment_type: row.treatment_type,
+      treatment_type: spaBoardImportNote({ note: row.treatment_type }),
     };
 
     let error = null;

@@ -40,6 +40,61 @@ export function resolveHomeRoomMap(appointments, roster) {
   return home;
 }
 
+export function assignExclusiveHomeRooms(appointments, roster, roomTypeById = {}, allRoomIds = []) {
+  const preferred = resolveHomeRoomMap(appointments, roster);
+  const rostered = new Set((roster ?? []).map((r) => r.therapist_id));
+  const slotCount = new Map();
+  const roomsUsed = new Map();
+  for (const a of appointments ?? []) {
+    if (!a.therapist_id || a.status === "cancelled") continue;
+    slotCount.set(a.therapist_id, (slotCount.get(a.therapist_id) || 0) + 1);
+    if (!roomsUsed.has(a.therapist_id)) roomsUsed.set(a.therapist_id, new Map());
+    const used = roomsUsed.get(a.therapist_id);
+    used.set(a.room_id, (used.get(a.room_id) || 0) + 1);
+  }
+  const therapists = [...preferred.keys()].sort((a, b) => {
+    const ra = rostered.has(a) ? 1 : 0;
+    const rb = rostered.has(b) ? 1 : 0;
+    if (rb !== ra) return rb - ra;
+    return (slotCount.get(b) || 0) - (slotCount.get(a) || 0);
+  });
+  const roomPool = [...new Set([
+    ...(allRoomIds ?? []),
+    ...(appointments ?? []).map((a) => a.room_id).filter((id) => id != null),
+  ])];
+  const busy = new Set((appointments ?? []).map((a) => a.room_id).filter((id) => id != null));
+  const rankedPool = [
+    ...roomPool.filter((rid) => !busy.has(rid)),
+    ...roomPool.filter((rid) => busy.has(rid)),
+  ];
+  const load = new Map();
+  const home = new Map();
+  const lookup = (id) =>
+    roomTypeById instanceof Map ? roomTypeById.get(id) : roomTypeById?.[id];
+  const canClaim = (roomId) => {
+    if (roomId == null) return false;
+    return (load.get(roomId) || 0) < roomCapacity(lookup(roomId) ?? "single");
+  };
+  for (const tid of therapists) {
+    const candidates = [];
+    const pref = preferred.get(tid);
+    if (pref != null) candidates.push(pref);
+    const ranked = [...(roomsUsed.get(tid)?.entries() ?? [])]
+      .sort((x, y) => y[1] - x[1])
+      .map(([rid]) => rid);
+    for (const rid of ranked) if (!candidates.includes(rid)) candidates.push(rid);
+    for (const rid of rankedPool) if (!candidates.includes(rid)) candidates.push(rid);
+    const pick = candidates.find((rid) => canClaim(rid));
+    if (pick != null) {
+      home.set(tid, pick);
+      load.set(pick, (load.get(pick) || 0) + 1);
+    } else if (pref != null) {
+      home.set(tid, pref);
+    }
+  }
+  return home;
+}
+
 /** Half-open overlap matching Postgres tsrange '[)'. */
 export function timesOverlap(aStart, aEnd, bStart, bEnd) {
   if (!aStart || !aEnd || !bStart || !bEnd) return false;
@@ -151,7 +206,7 @@ export function planAlignDay(appointments, roster, roomTypeById = {}, allRoomIds
     rosterList.find((r) => r.appointment_date)?.appointment_date ??
     null;
 
-  const home = resolveHomeRoomMap(list, rosterList);
+  const home = assignExclusiveHomeRooms(list, rosterList, roomTypeById, allRoomIds);
   const rosteredTherapistIds = new Set(rosterList.map((r) => r.therapist_id));
 
   const rosterUpserts = [];

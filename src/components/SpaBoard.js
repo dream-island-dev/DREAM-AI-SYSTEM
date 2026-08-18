@@ -13,6 +13,7 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import ActivitiesImportZone from "./spa/ActivitiesImportZone";
 import { resolveHomeRoomMap, planAlignDay, roomOccupancyAtSlot } from "../utils/spaStickyRoom";
 import { suppressSpaAutomationStages } from "../utils/spaActivitiesSyncEngine";
+import { clipEzgoCsvBleed } from "../utils/ezgoSpaActivitiesParser";
 
 const DEFAULT_START_TIME = "09:00";
 const DEFAULT_DURATION_MIN = 60;
@@ -33,6 +34,10 @@ function boardSafeNote(text) {
   if (/iItemId|iAddsLineId|sAttendantName|sActivityDesc|sClientName/i.test(s)) return "";
   if ((s.match(/,/g) || []).length >= 6) return "";
   return s;
+}
+
+function boardGuestName(guest) {
+  return clipEzgoCsvBleed(guest?.name) || "—";
 }
 
 function AddSpaRoomControl({ onAdded }) {
@@ -551,9 +556,9 @@ function ApptQuickEdit({ appt, roomName, onClose, onPatched }) {
 
         <div style={{ background: cStyle?.bg ?? "var(--ivory)", border: `1px solid ${cStyle?.border ?? "var(--border)"}`, borderRadius: 10, padding: "10px 12px", marginBottom: 16, fontSize: 13 }}>
           <div style={{ fontWeight: 800 }}>{roomName} · {appt.start_time?.slice(0, 5)}–{appt.end_time?.slice(0, 5)}</div>
-          <div style={{ color: "var(--text-muted)", marginTop: 2 }}>{appt.guests?.name ?? "—"}{appt.spa_therapists?.name ? ` · 👤 ${appt.spa_therapists.name}` : ""}</div>
-          {appt.treatment_type && (
-            <div style={{ fontSize: 12, marginTop: 4, fontWeight: 600 }}>{appt.treatment_type}</div>
+          <div style={{ color: "var(--text-muted)", marginTop: 2 }}>{boardGuestName(appt.guests)}{appt.spa_therapists?.name ? ` · 👤 ${appt.spa_therapists.name}` : ""}</div>
+          {boardSafeNote(appt.treatment_type) && (
+            <div style={{ fontSize: 12, marginTop: 4, fontWeight: 600 }}>{boardSafeNote(appt.treatment_type)}</div>
           )}
         </div>
 
@@ -1546,7 +1551,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       const appt = appointments.find((a) => a.id === move.apptId);
       return {
         apptId: move.apptId,
-        guestName: appt?.guests?.name ?? "—",
+        guestName: boardGuestName(appt?.guests),
         therapistName: therapistsById[move.therapistId] ?? "—",
         timeLabel: appt?.start_time ? `${appt.start_time.slice(0, 5)}${appt.end_time ? `–${appt.end_time.slice(0, 5)}` : ""}` : "—",
         fromRoomName: roomsById[move.fromRoomId] ?? "—",
@@ -1893,7 +1898,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
             </button>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
-            הכלל: המטפל/ת לא עובר/ת חדר. כאן חדר-הבית תפוס באותה שעה (בדרך כלל מטופל של מטפל/ת אחר/ת). «העבר אורח» מזיז את המטופל — לא את המטפל. «+ חדר» אם באמת חסר חדר.
+            יישור לא אומר שנגמרו החדרים במלון. לכל מטפל/ת חדר אחד — אם כמה מטפלים נדחסו לאותו חדר, העודפים עוברים לחדר פנוי. מה שנשאר כאן: אותה שעה בלי חדר פנוי, או צריך «העבר אורח».
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {alignBlocked.map((b) => (
@@ -1990,8 +1995,8 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                       {a.start_time?.slice(0, 5)}–{a.end_time?.slice(0, 5)}
                     </div>
                     <div style={{ minWidth: 120, fontWeight: 700, fontSize: 13 }}>{roomsById[a.room_id] ?? "—"}</div>
-                    <div style={{ minWidth: 140, fontSize: 13 }}>{a.guests?.name ?? "—"}</div>
-                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{a.treatment_type || ""}</div>
+                    <div style={{ minWidth: 140, fontSize: 13 }}>{boardGuestName(a.guests)}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{boardSafeNote(a.treatment_type)}</div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginRight: "auto" }}>
                       {hasNote && <span title={a.staff_note || importNote}>📝</span>}
                       {warnings.length > 0 && (
@@ -2057,7 +2062,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                               {a.start_time?.slice(0, 5)}–{a.end_time?.slice(0, 5)}
                               {hasNote ? " 📝" : ""}
                             </div>
-                            <div style={{ fontSize: 12, fontWeight: 600 }}>{a.guests?.name ?? "—"}</div>
+                            <div style={{ fontSize: 12, fontWeight: 600 }}>{boardGuestName(a.guests)}</div>
                             {a.staff_note && (
                               <div style={{
                                 fontSize: 11, marginTop: 3, color: cStyle?.text ?? "var(--text-muted)",
