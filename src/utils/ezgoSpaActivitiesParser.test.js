@@ -164,6 +164,12 @@ describe("repairEzgoCsvText / date / display-name helpers", () => {
     expect(clipEzgoCsvBleed(dumped)).toBe("שוהם יפת (משרד עו\"ד עידו רביד-)");
   });
 
+  test("clipEzgoCsvBleed cuts the live board dump (order 2994531 / #FFFF80)", () => {
+    const live = `שוהם יפת (משרד עו"ד עידו רביד-)","1","0526730999",","0:45","0.75","45",18, "11448","1","2994531","81","14","5","2026-08-19","11:00","11:45","0.75","Aor1 - אור ","#FFFF80","1","`;
+    expect(clipEzgoCsvBleed(live)).toBe("שוהם יפת (משרד עו\"ד עידו רביד-)");
+    expect(clipEzgoCsvBleed(live)).not.toMatch(/11448|#FFFF80|2994531/);
+  });
+
   test("normalizeActivitiesDate accepts ISO, Excel serial, and Date", () => {
     expect(normalizeActivitiesDate("2026-07-13")).toBe("2026-07-13");
     expect(normalizeActivitiesDate(46216)).toBe("2026-07-13");

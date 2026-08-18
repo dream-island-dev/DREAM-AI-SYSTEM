@@ -1,4 +1,5 @@
-2026-08-18 | Spa board — clip CSV-bleed names + exclusive therapist rooms | `עו"ד` broke EZGO CSV so guest names swallowed the row. Clip on parse+card. Align Day gives overflow therapists an empty room instead of stacking 60 «חדר מלא» on the same homes. Frontend only.
+2026-08-18 | Spa board cards clip live EZGO CSV-bleed names | Guest names like שוהם יפת still showed the rest of the machine row (`11448`/`#FFFF80`). Clip now cuts on `","` and sanitizes rows on fetch. Frontend only.
+
 
 
 2026-08-18 | Spa ops CSV — mixed-date import + אבניו 5 + mail sniff | Activities import syncs each `dtDate` separately. Therapist names with נשים בלבד set `gender=female`. New couple room `אבניו 5` + aliases. EZGO mail classifies spa-ops CSV (`sAttendantName`) instead of Doc2; board write still via SpaBoard import. Deploy: `db push` (302) + `functions deploy ezgo-mail-sync --no-verify-jwt` + frontend.

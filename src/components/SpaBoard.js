@@ -40,6 +40,22 @@ function boardGuestName(guest) {
   return clipEzgoCsvBleed(guest?.name) || "—";
 }
 
+function sanitizeSpaAppointment(a) {
+  if (!a) return a;
+  const name = clipEzgoCsvBleed(a.guests?.name);
+  const therapistName = clipEzgoCsvBleed(a.spa_therapists?.name);
+  const treatment = clipEzgoCsvBleed(a.treatment_type);
+  return {
+    ...a,
+    treatment_type: treatment && treatment !== name ? (boardSafeNote(treatment) || null) : null,
+    notes: boardSafeNote(clipEzgoCsvBleed(a.notes)) || null,
+    guests: a.guests ? { ...a.guests, name: name || "—" } : a.guests,
+    spa_therapists: a.spa_therapists
+      ? { ...a.spa_therapists, name: therapistName || a.spa_therapists.name }
+      : a.spa_therapists,
+  };
+}
+
 function AddSpaRoomControl({ onAdded }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -1385,7 +1401,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       .neq("status", "cancelled")
       .order("start_time");
     if (error) showToast("שגיאה בטעינת התורים: " + error.message, "err");
-    setAppointments(data ?? []);
+    setAppointments((data ?? []).map(sanitizeSpaAppointment));
   }, [selectedDate]);
 
   const fetchSpaAlerts = useCallback(async () => {
@@ -1995,7 +2011,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                       {a.start_time?.slice(0, 5)}–{a.end_time?.slice(0, 5)}
                     </div>
                     <div style={{ minWidth: 120, fontWeight: 700, fontSize: 13 }}>{roomsById[a.room_id] ?? "—"}</div>
-                    <div style={{ minWidth: 140, fontSize: 13 }}>{boardGuestName(a.guests)}</div>
+                    <div style={{ minWidth: 140, maxWidth: 220, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{boardGuestName(a.guests)}</div>
                     <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{boardSafeNote(a.treatment_type)}</div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginRight: "auto" }}>
                       {hasNote && <span title={a.staff_note || importNote}>📝</span>}
@@ -2062,7 +2078,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                               {a.start_time?.slice(0, 5)}–{a.end_time?.slice(0, 5)}
                               {hasNote ? " 📝" : ""}
                             </div>
-                            <div style={{ fontSize: 12, fontWeight: 600 }}>{boardGuestName(a.guests)}</div>
+                            <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{boardGuestName(a.guests)}</div>
                             {a.staff_note && (
                               <div style={{
                                 fontSize: 11, marginTop: 3, color: cStyle?.text ?? "var(--text-muted)",

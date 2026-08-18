@@ -70,8 +70,19 @@ export function repairEzgoCsvText(text) {
 export function clipEzgoCsvBleed(text) {
   const s = String(text ?? "").trim();
   if (!s) return "";
-  const cut = s.search(/"?\s*,\s*"?\d|"?,\s*"/);
-  if (cut >= 2) return s.slice(0, cut).replace(/["\s]+$/, "").trim();
+  const markers = ['","', '", "', "#FFFF80", "iItemId", "iAddsLineId", "sAttendantName"];
+  let cut = -1;
+  for (const m of markers) {
+    const i = s.indexOf(m);
+    if (i >= 2 && (cut < 0 || i < cut)) cut = i;
+  }
+  if (cut >= 2) return s.slice(0, cut).replace(/["'\s]+$/, "").trim();
+  const phoneCut = s.search(/"?\s*,\s*"?05\d/);
+  if (phoneCut >= 2) return s.slice(0, phoneCut).replace(/["'\s]+$/, "").trim();
+  if (/#FFFF80|11448/.test(s)) {
+    const q = s.indexOf('"');
+    if (q >= 2) return s.slice(0, q).replace(/["'\s]+$/, "").trim();
+  }
   if ((s.match(/,/g) || []).length >= 6) {
     return s.split(",")[0].replace(/"/g, "").trim();
   }
