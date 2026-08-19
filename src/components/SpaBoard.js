@@ -1534,10 +1534,8 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     fetchAppointments();
   }
 
-  // «יישור יום» — seeds spa_shift_roster (existing rows win), then applies
-  // only SAFE room_id moves (sim + cascade in planAlignDay). Blocked leftovers
-  // never hit the DB — FAIL VISIBLE list for manual «העבר אורח». No EZGO /
-  // cancel side effects. Race 23P01 on a "safe" move still surfaces in list.
+  // «יישור יום» — global home-room search (times unchanged), upserts
+  // spa_shift_roster, then SAFE room_id moves. Blocked leftovers stay off DB.
   async function handleAlignDay() {
     if (alignInFlightRef.current) return;
     alignInFlightRef.current = true;
@@ -1553,7 +1551,9 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     );
 
     if (rosterUpserts.length > 0) {
-      const { error: rosterErr } = await supabase.from("spa_shift_roster").insert(rosterUpserts);
+      const { error: rosterErr } = await supabase.from("spa_shift_roster").upsert(rosterUpserts, {
+        onConflict: "appointment_date,therapist_id",
+      });
       if (rosterErr) {
         alignInFlightRef.current = false;
         setAlignRunning(false);
@@ -1866,7 +1866,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18, flexWrap: "wrap", fontSize: 11, color: "var(--text-muted)" }}>
         <span style={{ fontWeight: 700 }}>כלל:</span>
-        <span>המטפל/ת נשאר/ת באותו חדר כל המשמרת — מיישרים מטופלים, לא מטפלים</span>
+        <span>המטפל/ת נשאר/ת באותו חדר כל המשמרת — מיישרים חדרים, לא שעות. חדר זוגי יכול שתי מטפלות יחד</span>
         <span style={{ opacity: 0.5 }}>·</span>
         <span>לחיצה על תור → צבע + הערת צוות</span>
         <span style={{ opacity: 0.5 }}>·</span>
@@ -1914,7 +1914,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
             </button>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
-            יישור לא אומר שנגמרו החדרים במלון. לכל מטפל/ת חדר אחד — אם כמה מטפלים נדחסו לאותו חדר, העודפים עוברים לחדר פנוי. מה שנשאר כאן: אותה שעה בלי חדר פנוי, או צריך «העבר אורח».
+            מה שנשאר כאן: אותה שעה בלי מקום בחדר הבית (גם אחרי סידור אוטומטי). שעת הטיפול לא זזה — רק «העבר אורח» לחדר אחר.
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {alignBlocked.map((b) => (

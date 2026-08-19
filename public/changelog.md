@@ -1,3 +1,7 @@
+2026-08-19 | Spa Align Day global home rooms | Therapists get one room for the day (search, not EZGO majority). Times never move. Couple rooms may hold two therapists. Leftovers stay on «העבר אורח». Frontend only.
+
+
+
 2026-08-18 | Spa board cards clip live EZGO CSV-bleed names | Guest names like שוהם יפת still showed the rest of the machine row (`11448`/`#FFFF80`). Clip now cuts on `","` and sanitizes rows on fetch. Frontend only.
 
 

@@ -129,28 +129,26 @@ describe("planAlignDay", () => {
     expect(blockedMoves).toEqual([]);
   });
 
-  test("overflow therapist gets an empty room instead of stacking on the same single home", () => {
+  test("keeps each overlapping therapist in their own single — fewer guest moves, not an empty spare room", () => {
     const appts = [
       appt(1, 10, 100, "09:00"),
       appt(2, 20, 100, "11:00"),
       appt(3, 10, 200, "11:00"),
     ];
-    const home = assignExclusiveHomeRooms(appts, [], singles, [100, 200, 300, 400]);
-    expect(home.get(10)).toBe(100);
-    expect(home.get(20)).toBe(300);
     const { blockedMoves, safeMoves } = planAlignDay(appts, [], singles, [100, 200, 300, 400]);
     expect(blockedMoves).toEqual([]);
-    expect(safeMoves.some((m) => m.apptId === 2 && m.toRoomId === 300)).toBe(true);
+    expect(safeMoves).toEqual([{ apptId: 1, therapistId: 10, fromRoomId: 100, toRoomId: 200 }]);
   });
 
-  test("blocks when two therapists collide and no empty room exists", () => {
+  test("overlapping therapists still get a zero-block plan when no spare room exists", () => {
     const appts = [
       appt(1, 10, 100, "09:00"),
       appt(2, 20, 100, "11:00"),
       appt(3, 10, 200, "11:00"),
     ];
-    const { blockedMoves } = planAlignDay(appts, [], singles, [100, 200]);
-    expect(blockedMoves.length).toBeGreaterThan(0);
+    const { blockedMoves, safeMoves } = planAlignDay(appts, [], singles, [100, 200]);
+    expect(blockedMoves).toEqual([]);
+    expect(safeMoves).toEqual([{ apptId: 1, therapistId: 10, fromRoomId: 100, toRoomId: 200 }]);
   });
 
   test("cascade: freeing a room unlocks a later safe move", () => {
@@ -194,7 +192,8 @@ describe("planAlignDay", () => {
       appt(2, 20, 200, "09:00"),
       appt(3, 20, 100, "11:00"),
       appt(4, 10, 200, "11:00"),
-      appt(5, 30, 300, "11:00"), // fills the only other single room
+      appt(5, 30, 300, "09:00"),
+      appt(6, 30, 300, "11:00"),
     ];
     const roster = [{ appointment_date: DATE, room_id: 300, therapist_id: 30 }];
     const { safeMoves, blockedMoves, swapPairs } = planAlignDay(appts, roster, singles, [100, 200, 300]);
@@ -203,20 +202,35 @@ describe("planAlignDay", () => {
     expect(blockedMoves).toHaveLength(2);
   });
 
-  test("roster wins over inference when planning moves", () => {
+  test("does not drag a therapist to an empty roster room when the current room already works", () => {
     const appts = [appt(1, 10, 100, "09:00")];
     const roster = [{ appointment_date: DATE, room_id: 999, therapist_id: 10 }];
-    // 999 empty → safe
     const { safeMoves, blockedMoves } = planAlignDay(appts, roster, singles);
-    expect(safeMoves).toEqual([{ apptId: 1, therapistId: 10, fromRoomId: 100, toRoomId: 999 }]);
+    expect(safeMoves).toEqual([]);
     expect(blockedMoves).toEqual([]);
   });
 
-  test("seeds rosterUpserts only for therapists missing a roster row", () => {
+  test("writes rosterUpserts for every therapist home after optimize", () => {
     const appts = [appt(1, 10, 100, "09:00"), appt(2, 20, 300, "09:30")];
     const roster = [{ appointment_date: DATE, room_id: 300, therapist_id: 20 }];
     const { rosterUpserts } = planAlignDay(appts, roster, singles);
-    expect(rosterUpserts).toEqual([{ appointment_date: DATE, room_id: 100, therapist_id: 10 }]);
+    expect(rosterUpserts).toHaveLength(2);
+    expect(rosterUpserts).toEqual(expect.arrayContaining([
+      { appointment_date: DATE, room_id: 100, therapist_id: 10 },
+      { appointment_date: DATE, room_id: 300, therapist_id: 20 },
+    ]));
+  });
+
+
+  test("never emits a start_time change — only room_id moves", () => {
+    const appts = [
+      appt(1, 10, 100, "09:00"),
+      appt(2, 10, 200, "11:00"),
+      appt(3, 10, 300, "13:00"),
+    ];
+    const { safeMoves } = planAlignDay(appts, [], singles, [100, 200, 300]);
+    expect(safeMoves.every((m) => m.fromRoomId != null && m.toRoomId != null && !("start_time" in m))).toBe(true);
+    expect(new Set(safeMoves.map((m) => m.therapistId))).toEqual(new Set([10]));
   });
 
   test("cancelled appointments never produce a move", () => {
@@ -235,21 +249,28 @@ describe("planAlignDay", () => {
     });
   });
 
-  test("couple capacity allows two safe moves into the same home room", () => {
-    const rooms = { 100: "couple", 200: "single", 300: "single" };
-    // T10 home=100 @09. Two later appts for T10 wrongly elsewhere, both @11 — couple holds 2.
-    // Actually same therapist can't have two overlapping appointments (therapist exclusion).
-    // Use two therapists who both have home=100 via roster.
-    const appts = [
-      appt(1, 10, 200, "11:00"),
-      appt(2, 20, 300, "11:00"),
-    ];
-    const roster = [
-      { appointment_date: DATE, room_id: 100, therapist_id: 10 },
-      { appointment_date: DATE, room_id: 100, therapist_id: 20 },
-    ];
-    const { safeMoves, blockedMoves } = planAlignDay(appts, roster, rooms);
-    expect(safeMoves).toHaveLength(2);
+  test("keeps two overlapping therapists who already share a couple room", () => {
+    const rooms = { 100: "couple", 200: "single" };
+    const appts = [appt(1, 10, 100, "11:00"), appt(2, 20, 100, "11:00")];
+    const { safeMoves, blockedMoves } = planAlignDay(appts, [], rooms, [100, 200]);
+    expect(safeMoves).toEqual([]);
     expect(blockedMoves).toEqual([]);
+  });
+
+  test("couple room can be the shared home when two therapists already sit there and later slots move in", () => {
+    const rooms = { 100: "couple", 200: "single", 300: "single" };
+    const appts = [
+      appt(1, 10, 100, "09:00"),
+      appt(2, 20, 100, "09:00"),
+      appt(3, 10, 200, "11:00"),
+      appt(4, 20, 300, "11:00"),
+    ];
+    const { safeMoves, blockedMoves } = planAlignDay(appts, [], rooms, [100, 200, 300]);
+    expect(blockedMoves).toEqual([]);
+    expect(safeMoves).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apptId: 3, therapistId: 10, toRoomId: 100 }),
+      expect.objectContaining({ apptId: 4, therapistId: 20, toRoomId: 100 }),
+    ]));
+    expect(safeMoves).toHaveLength(2);
   });
 });

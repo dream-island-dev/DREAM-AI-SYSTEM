@@ -1,9 +1,8 @@
 // src/utils/spaStickyRoom.js
 // Smart Spa Board — therapist sticky-room pure logic (migration 193 companion).
-// Home room = majority of that day's slots (roster row always wins).
-// Locked ops rule (Mike): therapists stay in one room all shift; move guests
-// toward that home — never walk the therapist. Align Day after CSV import.
-// No Supabase here — SpaBoard.js wires these against the DB.
+// Align Day: one home room per therapist (global search). Couple rooms may
+// host two therapists together. Guest times never change — only room_id.
+// Roster is a preference, not a lock. No Supabase here — SpaBoard.js applies.
 export function inferHomeRoomByTherapist(appointments) {
   const sorted = [...(appointments ?? [])]
     .filter((a) => a.therapist_id && a.status !== "cancelled" && a.start_time)
@@ -154,6 +153,232 @@ export function findParkingRoomId(simAppts, appt, roomIds, roomTypeById, exclude
   return null;
 }
 
+function lookupRoomType(roomTypeById, id) {
+  return roomTypeById instanceof Map ? roomTypeById.get(id) : roomTypeById?.[id];
+}
+
+function collectRoomIds(appointments, allRoomIds) {
+  return [...new Set([
+    ...(allRoomIds ?? []),
+    ...(appointments ?? []).map((a) => a.room_id).filter((id) => id != null),
+  ])];
+}
+
+function activeByTherapist(appointments) {
+  const byTherapist = new Map();
+  for (const a of appointments ?? []) {
+    if (!a.therapist_id || a.status === "cancelled" || !a.start_time) continue;
+    if (!byTherapist.has(a.therapist_id)) byTherapist.set(a.therapist_id, []);
+    byTherapist.get(a.therapist_id).push(a);
+  }
+  return byTherapist;
+}
+
+function therapistsOverlapAt(byTherapist, therapistId, start, end) {
+  return (byTherapist.get(therapistId) ?? []).some((a) =>
+    timesOverlap(a.start_time, a.end_time, start, end)
+  );
+}
+
+/** True if `tid` can use `roomId` as all-day home given therapists already pinned there. */
+function canShareHomeRoom(partialHome, tid, roomId, byTherapist, roomTypeById) {
+  if (roomId == null) return false;
+  const cap = roomCapacity(lookupRoomType(roomTypeById, roomId) ?? "single");
+  for (const appt of byTherapist.get(tid) ?? []) {
+    let used = 1;
+    for (const [otherId, otherRoom] of partialHome) {
+      if (otherRoom !== roomId) continue;
+      if (therapistsOverlapAt(byTherapist, otherId, appt.start_time, appt.end_time)) {
+        used += 1;
+        if (used > cap) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function rankRoomsForTherapist(tid, partialHome, byTherapist, roomIds, roomTypeById, rosterHome) {
+  const usedCounts = new Map();
+  for (const a of byTherapist.get(tid) ?? []) {
+    if (a.room_id == null) continue;
+    usedCounts.set(a.room_id, (usedCounts.get(a.room_id) || 0) + 1);
+  }
+  const usedRanked = [...usedCounts.entries()].sort((x, y) => y[1] - x[1]).map(([id]) => id);
+  const couplePartners = [];
+  for (const [otherId, otherRoom] of partialHome) {
+    if ((lookupRoomType(roomTypeById, otherRoom) ?? "single") !== "couple") continue;
+    const shares = (byTherapist.get(tid) ?? []).some((a) =>
+      therapistsOverlapAt(byTherapist, otherId, a.start_time, a.end_time)
+    );
+    if (shares) couplePartners.push(otherRoom);
+  }
+  const ordered = [];
+  const push = (id) => {
+    if (id == null || !roomIds.includes(id) || ordered.includes(id)) return;
+    ordered.push(id);
+  };
+  push(rosterHome.get(tid));
+  usedRanked.forEach(push);
+  couplePartners.forEach(push);
+  for (const rid of roomIds) {
+    if ((lookupRoomType(roomTypeById, rid) ?? "single") === "couple") push(rid);
+  }
+  roomIds.forEach(push);
+  return ordered;
+}
+
+function greedyFillHomes(pinned, therapists, byTherapist, roomIds, roomTypeById, rosterHome) {
+  const home = new Map(pinned);
+  for (const tid of therapists) {
+    if (home.has(tid)) continue;
+    const ranked = rankRoomsForTherapist(tid, home, byTherapist, roomIds, roomTypeById, rosterHome);
+    const legal = ranked.find((rid) => canShareHomeRoom(home, tid, rid, byTherapist, roomTypeById));
+    const pick = legal ?? ranked[0];
+    if (pick != null) home.set(tid, pick);
+  }
+  return home;
+}
+
+function scoreHomeBetter(a, b) {
+  if (!b) return true;
+  if (a.blocked !== b.blocked) return a.blocked < b.blocked;
+  if (a.moves !== b.moves) return a.moves < b.moves;
+  if (a.alreadyHome !== b.alreadyHome) return a.alreadyHome > b.alreadyHome;
+  if (a.rosterHits !== b.rosterHits) return a.rosterHits > b.rosterHits;
+  return false;
+}
+
+function countAlreadyHome(appointments, home) {
+  let n = 0;
+  for (const a of appointments ?? []) {
+    if (!a.therapist_id || a.status === "cancelled") continue;
+    if (home.get(a.therapist_id) === a.room_id) n += 1;
+  }
+  return n;
+}
+
+function scoreHomeAssignment(appointments, home, rosterHome, roomTypeById, roomIds) {
+  const plan = planMovesTowardHome(appointments, home, roomTypeById, roomIds);
+  let moves = plan.safeMoves.length;
+  for (const pair of plan.swapPairs) {
+    void pair;
+    moves += 2;
+  }
+  let rosterHits = 0;
+  home.forEach((rid, tid) => {
+    if (rosterHome.get(tid) === rid) rosterHits += 1;
+  });
+  return {
+    blocked: plan.blockedMoves.length,
+    moves,
+    alreadyHome: countAlreadyHome(appointments, home),
+    rosterHits,
+    home: new Map(home),
+  };
+}
+
+/**
+ * Search therapist → one home room for the whole day (times never change).
+ * Couple rooms may host two overlapping therapists; singles may not.
+ * Roster is a preference (tried first), not a lock — leftover EZGO scatter
+ * must not freeze a bad home.
+ */
+export function optimizeTherapistHomeRooms(appointments, roster, roomTypeById = {}, allRoomIds = []) {
+  const byTherapist = activeByTherapist(appointments);
+  const therapists = [...byTherapist.keys()].sort(
+    (a, b) => (byTherapist.get(b)?.length || 0) - (byTherapist.get(a)?.length || 0)
+  );
+  const roomIds = collectRoomIds(appointments, allRoomIds);
+  const rosterHome = new Map((roster ?? []).map((r) => [r.therapist_id, r.room_id]));
+  if (therapists.length === 0 || roomIds.length === 0) return new Map();
+
+  const seeds = [];
+  const pushSeed = (home) => {
+    if (!home || home.size === 0) return;
+    seeds.push(home);
+  };
+  pushSeed(greedyFillHomes(new Map(), therapists, byTherapist, roomIds, roomTypeById, rosterHome));
+  if (rosterHome.size > 0) {
+    pushSeed(greedyFillHomes(rosterHome, therapists, byTherapist, roomIds, roomTypeById, rosterHome));
+  }
+  pushSeed(assignExclusiveHomeRooms(appointments, [], roomTypeById, roomIds));
+  pushSeed(assignExclusiveHomeRooms(appointments, roster, roomTypeById, roomIds));
+  for (const tid of therapists) {
+    const used = new Set((byTherapist.get(tid) ?? []).map((a) => a.room_id).filter((id) => id != null));
+    for (const rid of used) {
+      pushSeed(greedyFillHomes(new Map([[tid, rid]]), therapists, byTherapist, roomIds, roomTypeById, rosterHome));
+    }
+  }
+
+  const coupleRooms = roomIds.filter((rid) => (lookupRoomType(roomTypeById, rid) ?? "single") === "couple");
+  const overlapPairs = [];
+  for (let i = 0; i < therapists.length; i += 1) {
+    for (let j = i + 1; j < therapists.length; j += 1) {
+      const a = therapists[i];
+      const b = therapists[j];
+      const overlaps = (byTherapist.get(a) ?? []).some((appt) =>
+        therapistsOverlapAt(byTherapist, b, appt.start_time, appt.end_time)
+      );
+      if (overlaps) overlapPairs.push([a, b]);
+    }
+  }
+  for (const cr of coupleRooms) {
+    for (const [a, b] of overlapPairs) {
+      const pinned = new Map([
+        [a, cr],
+        [b, cr],
+      ]);
+      if (!canShareHomeRoom(new Map([[a, cr]]), b, cr, byTherapist, roomTypeById)) continue;
+      pushSeed(greedyFillHomes(pinned, therapists, byTherapist, roomIds, roomTypeById, rosterHome));
+    }
+  }
+
+  let best = null;
+  for (const seed of seeds) {
+    const scored = scoreHomeAssignment(appointments, seed, rosterHome, roomTypeById, roomIds);
+    if (scoreHomeBetter(scored, best)) best = scored;
+  }
+
+  const relocateRounds = 5;
+  for (let round = 0; round < relocateRounds; round += 1) {
+    if (!best) break;
+    let improved = false;
+    const base = best.home;
+    for (const tid of therapists) {
+      for (const rid of roomIds) {
+        if (base.get(tid) === rid) continue;
+        const trial = new Map(base);
+        trial.set(tid, rid);
+        const scored = scoreHomeAssignment(appointments, trial, rosterHome, roomTypeById, roomIds);
+        if (scoreHomeBetter(scored, best)) {
+          best = scored;
+          improved = true;
+        }
+      }
+    }
+    for (let i = 0; i < therapists.length; i += 1) {
+      for (let j = i + 1; j < therapists.length; j += 1) {
+        const a = therapists[i];
+        const b = therapists[j];
+        const trial = new Map(base);
+        const ra = trial.get(a);
+        const rb = trial.get(b);
+        if (ra == null || rb == null || ra === rb) continue;
+        trial.set(a, rb);
+        trial.set(b, ra);
+        const scored = scoreHomeAssignment(appointments, trial, rosterHome, roomTypeById, roomIds);
+        if (scoreHomeBetter(scored, best)) {
+          best = scored;
+          improved = true;
+        }
+      }
+    }
+    if (!improved) break;
+  }
+
+  return best?.home ?? new Map();
+}
+
 function runGreedySafeMoves(sim, home, roomTypeById, safeMoves) {
   let progressed = true;
   let any = false;
@@ -186,38 +411,8 @@ function runGreedySafeMoves(sim, home, roomTypeById, safeMoves) {
   return any;
 }
 
-/**
- * Seed roster + greedy safe room moves toward each therapist's home room.
- * Cascade retries after each placement. Mutual deadlocks (A in B's home, B in
- * A's home) become swapPairs — applied by SpaBoard via a parking-room hop so
- * sequential UPDATEs never trip room exclusion mid-swap.
- *
- * @param {object[]} appointments
- * @param {object[]} roster
- * @param {Map|Record} [roomTypeById]
- * @param {number[]} [allRoomIds] spa room ids for parking lookup on swaps
- * @returns {{ rosterUpserts: object[], safeMoves: object[], swapPairs: object[], blockedMoves: object[] }}
- */
-export function planAlignDay(appointments, roster, roomTypeById = {}, allRoomIds = []) {
+function planMovesTowardHome(appointments, home, roomTypeById, allRoomIds = []) {
   const list = appointments ?? [];
-  const rosterList = roster ?? [];
-  const date =
-    list.find((a) => a.appointment_date)?.appointment_date ??
-    rosterList.find((r) => r.appointment_date)?.appointment_date ??
-    null;
-
-  const home = assignExclusiveHomeRooms(list, rosterList, roomTypeById, allRoomIds);
-  const rosteredTherapistIds = new Set(rosterList.map((r) => r.therapist_id));
-
-  const rosterUpserts = [];
-  if (date) {
-    home.forEach((roomId, therapistId) => {
-      if (!rosteredTherapistIds.has(therapistId)) {
-        rosterUpserts.push({ appointment_date: date, room_id: roomId, therapist_id: therapistId });
-      }
-    });
-  }
-
   const sim = list.map((a) => ({
     id: a.id,
     therapist_id: a.therapist_id,
@@ -245,7 +440,6 @@ export function planAlignDay(appointments, roster, roomTypeById = {}, allRoomIds
     outer = false;
     if (runGreedySafeMoves(sim, home, roomTypeById, safeMoves)) outer = true;
 
-    // Mutual home-room swap with a parking room (so DB can apply 3 sequential UPDATEs).
     const pending = sim.filter(needsHome);
     let swapped = false;
     outerPair: for (let i = 0; i < pending.length; i++) {
@@ -263,8 +457,6 @@ export function planAlignDay(appointments, roster, roomTypeById = {}, allRoomIds
         if (!canPlaceInRoom([...without, bAtHome], aAtHome, aHome, roomTypeById)) continue;
         if (!canPlaceInRoom([...without, aAtHome], bAtHome, bHome, roomTypeById)) continue;
 
-        // Parking must fit A while B still sits in b.room (= aHome). Exclude both homes
-        // so we don't park on the destination of either hop.
         const parkingRoomId = findParkingRoomId(sim, a, roomIds, roomTypeById, [aHome, bHome]);
         if (parkingRoomId == null) continue;
 
@@ -295,6 +487,34 @@ export function planAlignDay(appointments, roster, roomTypeById = {}, allRoomIds
       toRoomId: home.get(row.therapist_id),
       reason: "room_full",
     }));
+
+  return { safeMoves, swapPairs, blockedMoves };
+}
+
+/**
+ * Pick one home room per therapist (global search), then move guests — never
+ * times — into that room. Couple rooms may keep two therapists together.
+ * Cascade + parking swaps so sequential DB updates stay legal. Blocked leftovers
+ * never hit the DB — FAIL VISIBLE list for manual «העבר אורח».
+ */
+export function planAlignDay(appointments, roster, roomTypeById = {}, allRoomIds = []) {
+  const list = appointments ?? [];
+  const rosterList = roster ?? [];
+  const date =
+    list.find((a) => a.appointment_date)?.appointment_date ??
+    rosterList.find((r) => r.appointment_date)?.appointment_date ??
+    null;
+
+  const roomIds = collectRoomIds(list, allRoomIds);
+  const home = optimizeTherapistHomeRooms(list, rosterList, roomTypeById, roomIds);
+  const { safeMoves, swapPairs, blockedMoves } = planMovesTowardHome(list, home, roomTypeById, roomIds);
+
+  const rosterUpserts = [];
+  if (date) {
+    home.forEach((roomId, therapistId) => {
+      rosterUpserts.push({ appointment_date: date, room_id: roomId, therapist_id: therapistId });
+    });
+  }
 
   return { rosterUpserts, safeMoves, swapPairs, blockedMoves };
 }

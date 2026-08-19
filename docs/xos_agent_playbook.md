@@ -417,7 +417,17 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ---
 
-## 10. Learnings Log
+### 2026-08-19 — Align Day searches homes, does not lock EZGO majority
+- **Symptom:** Align Day left therapists walking between rooms; reception still sorted by hand.
+- **Root:** Home room = EZGO majority + first roster seed forever. Overflow dumped to empty rooms. Times were already fixed; the home map was wrong.
+- **Fix:** `optimizeTherapistHomeRooms` then move guests only. Couple = two therapists. Roster upsert = result, not a lock.
+- **Lesson:** Do not freeze the first Align click into `spa_shift_roster` as ground truth.
+
+### 2026-08-18 — Guest Inbox red must default ON
+- **Symptom:** Bot answered guests without lighting Inbox red; staff missed human-needed threads.
+- **Root:** Red was opt-in (keyword / exact handoff sentence / ops allowlist). LLM confident answers never flagged.
+- **Fix:** Fail-open `human_requested` on inbound insert; clear only a documented FAQ allowlist. Do not stamp `needs_callback` on that default (Silence Rule / health spike).
+- **Lesson:** Never let the model decide whether staff should see the thread.
 
 ### 2026-08-18 — Therapists stay; guests move
 - **Fact:** Ops rule is sticky-room: one therapist, one room for the shift. EZGO CSV may scatter the same therapist. Align Day moves **patients** to the inferred/roster home room (majority that day). «חדר מלא» = another appointment already in that home at that hour — Move Guest, not “hotel out of rooms”.
