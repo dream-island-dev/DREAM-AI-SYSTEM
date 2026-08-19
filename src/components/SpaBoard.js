@@ -11,7 +11,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import ActivitiesImportZone from "./spa/ActivitiesImportZone";
-import { resolveHomeRoomMap, planAlignDay, roomOccupancyAtSlot } from "../utils/spaStickyRoom";
+import { resolveHomeRoomMap, planAlignDay, roomOccupancyAtSlot, coupleLockedAppointmentIds } from "../utils/spaStickyRoom";
 import { suppressSpaAutomationStages } from "../utils/spaActivitiesSyncEngine";
 import { clipEzgoCsvBleed } from "../utils/ezgoSpaActivitiesParser";
 
@@ -167,10 +167,11 @@ function genderLabel(gender) {
 }
 
 // Therapist -> distinct rooms they appear in today (soft ⚠ trigger, never blocks save).
-function therapistsMultiRoomToday(appointments) {
+function therapistsMultiRoomToday(appointments, lockedIds) {
   const map = new Map();
   appointments.forEach((a) => {
     if (!a.therapist_id) return;
+    if (lockedIds?.has(a.id)) return;
     if (!map.has(a.therapist_id)) map.set(a.therapist_id, new Set());
     map.get(a.therapist_id).add(a.room_id);
   });
@@ -1470,8 +1471,19 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
 
   const roomsById = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r.name])), [rooms]);
 
-  const multiRoomMap = useMemo(() => therapistsMultiRoomToday(appointments), [appointments]);
-  const homeRoomByTherapist = useMemo(() => resolveHomeRoomMap(appointments, shiftRoster), [appointments, shiftRoster]);
+  const roomTypeById = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r.room_type])), [rooms]);
+  const coupleLockedIds = useMemo(
+    () => coupleLockedAppointmentIds(appointments, roomTypeById),
+    [appointments, roomTypeById]
+  );
+  const multiRoomMap = useMemo(
+    () => therapistsMultiRoomToday(appointments, coupleLockedIds),
+    [appointments, coupleLockedIds]
+  );
+  const homeRoomByTherapist = useMemo(() => {
+    const singlesOnly = appointments.filter((a) => !coupleLockedIds.has(a.id));
+    return resolveHomeRoomMap(singlesOnly, shiftRoster);
+  }, [appointments, shiftRoster, coupleLockedIds]);
   const bookedTherapistIdsToday = useMemo(
     () => new Set(appointments.filter((a) => a.therapist_id).map((a) => a.therapist_id)),
     [appointments]
@@ -1866,7 +1878,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18, flexWrap: "wrap", fontSize: 11, color: "var(--text-muted)" }}>
         <span style={{ fontWeight: 700 }}>כלל:</span>
-        <span>המטפל/ת נשאר/ת באותו חדר כל המשמרת — מיישרים חדרים, לא שעות. חדר זוגי יכול שתי מטפלות יחד</span>
+        <span>חדר-בית לטיפולים בודדים. הזמנה זוגית נשארת יחד בחדר זוגי — המטפל/ת הולך/ת לשם רק באותו תור. שעות לא זזות</span>
         <span style={{ opacity: 0.5 }}>·</span>
         <span>לחיצה על תור → צבע + הערת צוות</span>
         <span style={{ opacity: 0.5 }}>·</span>
@@ -1929,7 +1941,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                   </div>
                   <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
                     👤 {b.therapistName} · {b.fromRoomName} ← יעד: {b.toRoomName}
-                    {b.reason === "db_conflict" ? " · ⚠ נחסם גם בשרת" : " · חדר מלא"}
+                    {b.reason === "db_conflict" ? " · ⚠ נחסם גם בשרת" : b.reason === "couple_split" ? " · הזמנה זוגית לא אוחדה" : " · חדר מלא"}
                   </div>
                 </div>
                 <button

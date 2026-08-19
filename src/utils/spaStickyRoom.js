@@ -1,8 +1,7 @@
 // src/utils/spaStickyRoom.js
-// Smart Spa Board — therapist sticky-room pure logic (migration 193 companion).
-// Align Day: one home room per therapist (global search). Couple rooms may
-// host two therapists together. Guest times never change — only room_id.
-// Roster is a preference, not a lock. No Supabase here — SpaBoard.js applies.
+// Smart Spa Board — therapist sticky-room (migration 193 companion).
+// Align: home room = singles only. Couple bookings stay a locked pair in a
+// couple room; the therapist walks there for that slot only. Times never change.
 export function inferHomeRoomByTherapist(appointments) {
   const sorted = [...(appointments ?? [])]
     .filter((a) => a.therapist_id && a.status !== "cancelled" && a.start_time)
@@ -164,6 +163,71 @@ function collectRoomIds(appointments, allRoomIds) {
   ])];
 }
 
+function clockKey(appt) {
+  return `${String(appt.start_time || "").slice(0, 5)}|${String(appt.end_time || "").slice(0, 5)}`;
+}
+
+/**
+ * Couple booking = two overlapping appointments with different therapists
+ * in a couple room (EZGO exports one row per attendant). Also reunites a
+ * pair that shares the same clock window when at least one side is already
+ * in a couple room (after a bad prior align).
+ */
+export function findCoupleLockGroups(appointments, roomTypeById = {}) {
+  const list = (appointments ?? []).filter((a) => a.status !== "cancelled" && a.start_time);
+  const groups = [];
+  const seen = new Set();
+
+  const byRoom = new Map();
+  for (const a of list) {
+    if ((lookupRoomType(roomTypeById, a.room_id) ?? "single") !== "couple") continue;
+    if (!byRoom.has(a.room_id)) byRoom.set(a.room_id, []);
+    byRoom.get(a.room_id).push(a);
+  }
+  for (const [roomId, rows] of byRoom) {
+    for (let i = 0; i < rows.length; i += 1) {
+      for (let j = i + 1; j < rows.length; j += 1) {
+        const a = rows[i];
+        const b = rows[j];
+        if (!a.therapist_id || !b.therapist_id || a.therapist_id === b.therapist_id) continue;
+        if (!timesOverlap(a.start_time, a.end_time, b.start_time, b.end_time)) continue;
+        const key = [a.id, b.id].sort().join(":");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        groups.push({ ids: [a.id, b.id], roomId });
+      }
+    }
+  }
+
+  const bySlot = new Map();
+  for (const a of list) {
+    const k = clockKey(a);
+    if (!bySlot.has(k)) bySlot.set(k, []);
+    bySlot.get(k).push(a);
+  }
+  for (const rows of bySlot.values()) {
+    if (rows.length !== 2) continue;
+    const [a, b] = rows;
+    if (!a.therapist_id || !b.therapist_id || a.therapist_id === b.therapist_id) continue;
+    const key = [a.id, b.id].sort().join(":");
+    if (seen.has(key)) continue;
+    const aCouple = (lookupRoomType(roomTypeById, a.room_id) ?? "single") === "couple";
+    const bCouple = (lookupRoomType(roomTypeById, b.room_id) ?? "single") === "couple";
+    if (!aCouple && !bCouple) continue;
+    seen.add(key);
+    groups.push({ ids: [a.id, b.id], roomId: aCouple ? a.room_id : b.room_id });
+  }
+  return groups;
+}
+
+export function coupleLockedAppointmentIds(appointments, roomTypeById = {}) {
+  const ids = new Set();
+  for (const g of findCoupleLockGroups(appointments, roomTypeById)) {
+    g.ids.forEach((id) => ids.add(id));
+  }
+  return ids;
+}
+
 function activeByTherapist(appointments) {
   const byTherapist = new Map();
   for (const a of appointments ?? []) {
@@ -242,22 +306,38 @@ function greedyFillHomes(pinned, therapists, byTherapist, roomIds, roomTypeById,
 function scoreHomeBetter(a, b) {
   if (!b) return true;
   if (a.blocked !== b.blocked) return a.blocked < b.blocked;
+  if (a.scatter !== b.scatter) return a.scatter < b.scatter;
   if (a.moves !== b.moves) return a.moves < b.moves;
-  if (a.alreadyHome !== b.alreadyHome) return a.alreadyHome > b.alreadyHome;
   if (a.rosterHits !== b.rosterHits) return a.rosterHits > b.rosterHits;
   return false;
 }
 
-function countAlreadyHome(appointments, home) {
-  let n = 0;
+function countSingleScatter(appointments, roomByApptId, locked) {
+  const rooms = new Map();
   for (const a of appointments ?? []) {
     if (!a.therapist_id || a.status === "cancelled") continue;
-    if (home.get(a.therapist_id) === a.room_id) n += 1;
+    if (locked.has(a.id)) continue;
+    if (!rooms.has(a.therapist_id)) rooms.set(a.therapist_id, new Set());
+    const rid = roomByApptId.get(a.id) ?? a.room_id;
+    if (rid != null) rooms.get(a.therapist_id).add(rid);
   }
-  return n;
+  let scatter = 0;
+  for (const set of rooms.values()) scatter += Math.max(0, set.size - 1);
+  return scatter;
+}
+
+function roomByIdAfterPlan(appointments, plan) {
+  const roomById = new Map((appointments ?? []).map((a) => [a.id, a.room_id]));
+  for (const m of plan.safeMoves ?? []) roomById.set(m.apptId, m.toRoomId);
+  for (const pair of plan.swapPairs ?? []) {
+    roomById.set(pair.a.apptId, pair.a.toRoomId);
+    roomById.set(pair.b.apptId, pair.b.toRoomId);
+  }
+  return roomById;
 }
 
 function scoreHomeAssignment(appointments, home, rosterHome, roomTypeById, roomIds) {
+  const locked = coupleLockedAppointmentIds(appointments, roomTypeById);
   const plan = planMovesTowardHome(appointments, home, roomTypeById, roomIds);
   let moves = plan.safeMoves.length;
   for (const pair of plan.swapPairs) {
@@ -270,66 +350,50 @@ function scoreHomeAssignment(appointments, home, rosterHome, roomTypeById, roomI
   });
   return {
     blocked: plan.blockedMoves.length,
+    scatter: countSingleScatter(appointments, roomByIdAfterPlan(appointments, plan), locked),
     moves,
-    alreadyHome: countAlreadyHome(appointments, home),
     rosterHits,
     home: new Map(home),
   };
 }
 
 /**
- * Search therapist → one home room for the whole day (times never change).
- * Couple rooms may host two overlapping therapists; singles may not.
- * Roster is a preference (tried first), not a lock — leftover EZGO scatter
- * must not freeze a bad home.
+ * Home rooms for single treatments only. Couple pairs stay locked in a couple
+ * room (walk exception). Roster is a preference, not a lock.
  */
 export function optimizeTherapistHomeRooms(appointments, roster, roomTypeById = {}, allRoomIds = []) {
-  const byTherapist = activeByTherapist(appointments);
+  const locked = coupleLockedAppointmentIds(appointments, roomTypeById);
+  const singleAppts = (appointments ?? []).filter(
+    (a) => a.therapist_id && a.status !== "cancelled" && !locked.has(a.id)
+  );
+  const byTherapist = activeByTherapist(singleAppts);
   const therapists = [...byTherapist.keys()].sort(
     (a, b) => (byTherapist.get(b)?.length || 0) - (byTherapist.get(a)?.length || 0)
   );
   const roomIds = collectRoomIds(appointments, allRoomIds);
-  const rosterHome = new Map((roster ?? []).map((r) => [r.therapist_id, r.room_id]));
-  if (therapists.length === 0 || roomIds.length === 0) return new Map();
+  const singleRoomIds = roomIds.filter((rid) => (lookupRoomType(roomTypeById, rid) ?? "single") === "single");
+  const homePool = singleRoomIds.length > 0 ? singleRoomIds : roomIds;
+  const rosterHome = new Map();
+  for (const r of roster ?? []) {
+    if (homePool.includes(r.room_id)) rosterHome.set(r.therapist_id, r.room_id);
+  }
+  if (therapists.length === 0 || homePool.length === 0) return new Map();
 
   const seeds = [];
   const pushSeed = (home) => {
     if (!home || home.size === 0) return;
     seeds.push(home);
   };
-  pushSeed(greedyFillHomes(new Map(), therapists, byTherapist, roomIds, roomTypeById, rosterHome));
+  pushSeed(greedyFillHomes(new Map(), therapists, byTherapist, homePool, roomTypeById, rosterHome));
   if (rosterHome.size > 0) {
-    pushSeed(greedyFillHomes(rosterHome, therapists, byTherapist, roomIds, roomTypeById, rosterHome));
+    pushSeed(greedyFillHomes(rosterHome, therapists, byTherapist, homePool, roomTypeById, rosterHome));
   }
-  pushSeed(assignExclusiveHomeRooms(appointments, [], roomTypeById, roomIds));
-  pushSeed(assignExclusiveHomeRooms(appointments, roster, roomTypeById, roomIds));
+  pushSeed(assignExclusiveHomeRooms(singleAppts, [], roomTypeById, homePool));
+  pushSeed(assignExclusiveHomeRooms(singleAppts, roster, roomTypeById, homePool));
   for (const tid of therapists) {
-    const used = new Set((byTherapist.get(tid) ?? []).map((a) => a.room_id).filter((id) => id != null));
+    const used = new Set((byTherapist.get(tid) ?? []).map((a) => a.room_id).filter((id) => homePool.includes(id)));
     for (const rid of used) {
-      pushSeed(greedyFillHomes(new Map([[tid, rid]]), therapists, byTherapist, roomIds, roomTypeById, rosterHome));
-    }
-  }
-
-  const coupleRooms = roomIds.filter((rid) => (lookupRoomType(roomTypeById, rid) ?? "single") === "couple");
-  const overlapPairs = [];
-  for (let i = 0; i < therapists.length; i += 1) {
-    for (let j = i + 1; j < therapists.length; j += 1) {
-      const a = therapists[i];
-      const b = therapists[j];
-      const overlaps = (byTherapist.get(a) ?? []).some((appt) =>
-        therapistsOverlapAt(byTherapist, b, appt.start_time, appt.end_time)
-      );
-      if (overlaps) overlapPairs.push([a, b]);
-    }
-  }
-  for (const cr of coupleRooms) {
-    for (const [a, b] of overlapPairs) {
-      const pinned = new Map([
-        [a, cr],
-        [b, cr],
-      ]);
-      if (!canShareHomeRoom(new Map([[a, cr]]), b, cr, byTherapist, roomTypeById)) continue;
-      pushSeed(greedyFillHomes(pinned, therapists, byTherapist, roomIds, roomTypeById, rosterHome));
+      pushSeed(greedyFillHomes(new Map([[tid, rid]]), therapists, byTherapist, homePool, roomTypeById, rosterHome));
     }
   }
 
@@ -345,7 +409,7 @@ export function optimizeTherapistHomeRooms(appointments, roster, roomTypeById = 
     let improved = false;
     const base = best.home;
     for (const tid of therapists) {
-      for (const rid of roomIds) {
+      for (const rid of homePool) {
         if (base.get(tid) === rid) continue;
         const trial = new Map(base);
         trial.set(tid, rid);
@@ -379,7 +443,7 @@ export function optimizeTherapistHomeRooms(appointments, roster, roomTypeById = 
   return best?.home ?? new Map();
 }
 
-function runGreedySafeMoves(sim, home, roomTypeById, safeMoves) {
+function runGreedySafeMoves(sim, home, roomTypeById, safeMoves, lockedIds) {
   let progressed = true;
   let any = false;
   while (progressed) {
@@ -387,6 +451,7 @@ function runGreedySafeMoves(sim, home, roomTypeById, safeMoves) {
     const pending = sim
       .filter((row) => {
         if (!row.therapist_id || row.status === "cancelled") return false;
+        if (lockedIds.has(row.id)) return false;
         const homeRoomId = home.get(row.therapist_id);
         return homeRoomId != null && homeRoomId !== row.room_id;
       })
@@ -413,6 +478,8 @@ function runGreedySafeMoves(sim, home, roomTypeById, safeMoves) {
 
 function planMovesTowardHome(appointments, home, roomTypeById, allRoomIds = []) {
   const list = appointments ?? [];
+  const lockedIds = coupleLockedAppointmentIds(list, roomTypeById);
+  const lockGroups = findCoupleLockGroups(list, roomTypeById);
   const sim = list.map((a) => ({
     id: a.id,
     therapist_id: a.therapist_id,
@@ -424,6 +491,7 @@ function planMovesTowardHome(appointments, home, roomTypeById, allRoomIds = []) 
 
   const needsHome = (row) => {
     if (!row.therapist_id || row.status === "cancelled") return false;
+    if (lockedIds.has(row.id)) return false;
     const homeRoomId = home.get(row.therapist_id);
     return homeRoomId != null && homeRoomId !== row.room_id;
   };
@@ -435,10 +503,26 @@ function planMovesTowardHome(appointments, home, roomTypeById, allRoomIds = []) 
       ? allRoomIds
       : [...new Set(sim.map((a) => a.room_id).filter((id) => id != null))];
 
+  for (const g of lockGroups) {
+    for (const apptId of g.ids) {
+      const row = sim.find((x) => x.id === apptId);
+      if (!row || row.room_id === g.roomId) continue;
+      if (!canPlaceInRoom(sim, row, g.roomId, roomTypeById)) continue;
+      const fromRoomId = row.room_id;
+      row.room_id = g.roomId;
+      safeMoves.push({
+        apptId: row.id,
+        therapistId: row.therapist_id,
+        fromRoomId,
+        toRoomId: g.roomId,
+      });
+    }
+  }
+
   let outer = true;
   while (outer) {
     outer = false;
-    if (runGreedySafeMoves(sim, home, roomTypeById, safeMoves)) outer = true;
+    if (runGreedySafeMoves(sim, home, roomTypeById, safeMoves, lockedIds)) outer = true;
 
     const pending = sim.filter(needsHome);
     let swapped = false;
@@ -477,9 +561,8 @@ function planMovesTowardHome(appointments, home, roomTypeById, allRoomIds = []) 
     if (!swapped && !outer) break;
   }
 
-  const blockedMoves = sim
+  const blockedHome = sim
     .filter(needsHome)
-    .sort((a, b) => (a.start_time || "").localeCompare(b.start_time || "") || String(a.id).localeCompare(String(b.id)))
     .map((row) => ({
       apptId: row.id,
       therapistId: row.therapist_id,
@@ -488,14 +571,31 @@ function planMovesTowardHome(appointments, home, roomTypeById, allRoomIds = []) 
       reason: "room_full",
     }));
 
+  const blockedCouple = [];
+  for (const g of lockGroups) {
+    for (const apptId of g.ids) {
+      const row = sim.find((x) => x.id === apptId);
+      if (!row || row.room_id === g.roomId) continue;
+      blockedCouple.push({
+        apptId: row.id,
+        therapistId: row.therapist_id,
+        fromRoomId: row.room_id,
+        toRoomId: g.roomId,
+        reason: "couple_split",
+      });
+    }
+  }
+
+  const blockedMoves = [...blockedHome, ...blockedCouple].sort(
+    (a, b) => String(a.apptId).localeCompare(String(b.apptId))
+  );
+
   return { safeMoves, swapPairs, blockedMoves };
 }
 
 /**
- * Pick one home room per therapist (global search), then move guests — never
- * times — into that room. Couple rooms may keep two therapists together.
- * Cascade + parking swaps so sequential DB updates stay legal. Blocked leftovers
- * never hit the DB — FAIL VISIBLE list for manual «העבר אורח».
+ * Home for singles, then move those guests (never times). Couple pairs stay
+ * together in a couple room. Parking swaps keep sequential DB updates legal.
  */
 export function planAlignDay(appointments, roster, roomTypeById = {}, allRoomIds = []) {
   const list = appointments ?? [];

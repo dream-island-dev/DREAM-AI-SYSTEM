@@ -1,4 +1,6 @@
-2026-08-19 | Spa Align Day global home rooms | Therapists get one room for the day (search, not EZGO majority). Times never move. Couple rooms may hold two therapists. Leftovers stay on «העבר אורח». Frontend only.
+2026-08-19 | Spa Align: singles home + locked couple pairs | Therapist home is single treatments only. Couple bookings stay together in a couple room (walk exception). Scatter is scored above “don’t move EZGO”. Frontend only.
+
+
 
 
 

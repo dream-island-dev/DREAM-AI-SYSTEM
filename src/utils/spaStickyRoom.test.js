@@ -222,15 +222,18 @@ describe("planAlignDay", () => {
   });
 
 
-  test("never emits a start_time change — only room_id moves", () => {
+  test("collapses a scattered therapist into one single even when EZGO layout is already legal", () => {
     const appts = [
       appt(1, 10, 100, "09:00"),
       appt(2, 10, 200, "11:00"),
       appt(3, 10, 300, "13:00"),
     ];
-    const { safeMoves } = planAlignDay(appts, [], singles, [100, 200, 300]);
-    expect(safeMoves.every((m) => m.fromRoomId != null && m.toRoomId != null && !("start_time" in m))).toBe(true);
-    expect(new Set(safeMoves.map((m) => m.therapistId))).toEqual(new Set([10]));
+    const { blockedMoves, safeMoves } = planAlignDay(appts, [], singles, [100, 200, 300]);
+    expect(blockedMoves).toEqual([]);
+    expect(safeMoves.every((m) => m.toRoomId === 100 || m.toRoomId === 200 || m.toRoomId === 300)).toBe(true);
+    const roomsAfter = new Map([[1, 100], [2, 200], [3, 300]]);
+    for (const m of safeMoves) roomsAfter.set(m.apptId, m.toRoomId);
+    expect(new Set(roomsAfter.values()).size).toBe(1);
   });
 
   test("cancelled appointments never produce a move", () => {
@@ -257,7 +260,7 @@ describe("planAlignDay", () => {
     expect(blockedMoves).toEqual([]);
   });
 
-  test("couple room can be the shared home when two therapists already sit there and later slots move in", () => {
+  test("does not pull later singles into the couple room — home is singles only", () => {
     const rooms = { 100: "couple", 200: "single", 300: "single" };
     const appts = [
       appt(1, 10, 100, "09:00"),
@@ -267,10 +270,22 @@ describe("planAlignDay", () => {
     ];
     const { safeMoves, blockedMoves } = planAlignDay(appts, [], rooms, [100, 200, 300]);
     expect(blockedMoves).toEqual([]);
-    expect(safeMoves).toEqual(expect.arrayContaining([
-      expect.objectContaining({ apptId: 3, therapistId: 10, toRoomId: 100 }),
-      expect.objectContaining({ apptId: 4, therapistId: 20, toRoomId: 100 }),
-    ]));
-    expect(safeMoves).toHaveLength(2);
+    expect(safeMoves.every((m) => m.apptId !== 1 && m.apptId !== 2)).toBe(true);
+    const roomsAfter = new Map([[1, 100], [2, 100], [3, 200], [4, 300]]);
+    for (const m of safeMoves) roomsAfter.set(m.apptId, m.toRoomId);
+    expect(roomsAfter.get(1)).toBe(100);
+    expect(roomsAfter.get(2)).toBe(100);
+    expect(roomsAfter.get(3)).not.toBe(100);
+    expect(roomsAfter.get(4)).not.toBe(100);
+  });
+
+  test("reunites a couple pair when one half was moved to a single", () => {
+    const rooms = { 100: "couple", 200: "single" };
+    const appts = [appt(1, 10, 100, "11:00"), appt(2, 20, 200, "11:00")];
+    const { safeMoves, blockedMoves } = planAlignDay(appts, [], rooms, [100, 200]);
+    expect(blockedMoves).toEqual([]);
+    expect(safeMoves).toEqual([
+      { apptId: 2, therapistId: 20, fromRoomId: 200, toRoomId: 100 },
+    ]);
   });
 });

@@ -420,8 +420,8 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 ### 2026-08-19 — Align Day searches homes, does not lock EZGO majority
 - **Symptom:** Align Day left therapists walking between rooms; reception still sorted by hand.
 - **Root:** Home room = EZGO majority + first roster seed forever. Overflow dumped to empty rooms. Times were already fixed; the home map was wrong.
-- **Fix:** `optimizeTherapistHomeRooms` then move guests only. Couple = two therapists. Roster upsert = result, not a lock.
-- **Lesson:** Do not freeze the first Align click into `spa_shift_roster` as ground truth.
+- **Fix:** Singles get a home room; couple pairs lock in a couple room (walk exception). Score scatter of singles first — legal EZGO scatter is not “done”.
+- **Lesson:** A capacity-legal board can still be a bad day for therapists. Couple = two EZGO rows, one booking.
 
 ### 2026-08-18 — Guest Inbox red must default ON
 - **Symptom:** Bot answered guests without lighting Inbox red; staff missed human-needed threads.
