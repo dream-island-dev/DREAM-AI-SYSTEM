@@ -14,6 +14,7 @@ import ActivitiesImportZone from "./spa/ActivitiesImportZone";
 import { resolveHomeRoomMap, planAlignDay, roomOccupancyAtSlot, coupleLockedAppointmentIds } from "../utils/spaStickyRoom";
 import { suppressSpaAutomationStages } from "../utils/spaActivitiesSyncEngine";
 import { clipEzgoCsvBleed } from "../utils/ezgoSpaActivitiesParser";
+import { catalogTherapists, shiftTherapistsForDay } from "../utils/spaTherapistIdentity";
 
 const DEFAULT_START_TIME = "09:00";
 const DEFAULT_DURATION_MIN = 60;
@@ -1321,7 +1322,7 @@ function ShiftRosterModal({ date, rooms, therapists, existingRoster, bookedThera
           <button type="button" onClick={onClose} aria-label="סגור" style={{ minWidth: 36, minHeight: 36, border: "none", background: "var(--ivory)", borderRadius: 8, cursor: "pointer", fontSize: 16 }}>✕</button>
         </div>
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 12 }}>
-          חדר הבית של המטפל/ת ליום זה — עוזר למיין את רשימת המטפלים בקביעת תור. לא חוסם שיבוץ בפועל.
+          חדר הבית של המטפל/ת ליום זה — לפי מי שמופיע בדוח הפעילות של היום. לא כל הקטלוג. לא חוסם שיבוץ בפועל.
         </div>
 
         {err && (
@@ -1487,6 +1488,23 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
   const bookedTherapistIdsToday = useMemo(
     () => new Set(appointments.filter((a) => a.therapist_id).map((a) => a.therapist_id)),
     [appointments]
+  );
+  const catalogTherapistList = useMemo(() => catalogTherapists(therapists), [therapists]);
+  const shiftTherapistList = useMemo(
+    () => shiftTherapistsForDay(
+      therapists,
+      bookedTherapistIdsToday,
+      (shiftRoster ?? []).map((r) => r.therapist_id)
+    ),
+    [therapists, bookedTherapistIdsToday, shiftRoster]
+  );
+  const moveTherapistList = useMemo(
+    () => shiftTherapistsForDay(
+      therapists,
+      bookedTherapistIdsToday,
+      [moveDraft?.therapist_id, ...(shiftRoster ?? []).map((r) => r.therapist_id)]
+    ),
+    [therapists, bookedTherapistIdsToday, shiftRoster, moveDraft?.therapist_id]
   );
 
   // Soft ⚠ reasons for a card — never blocks save, purely informational (title tooltip).
@@ -1664,6 +1682,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     if (summary.unmatched) parts.push(`${summary.unmatched} ללא שיוך`);
     if (summary.suspicious) parts.push(`${summary.suspicious} טלפון זוגי (התור נוצר)`);
     if (summary.not_in_file) parts.push(`${summary.not_in_file} לא בקובץ (לא בוטלו)`);
+    if (summary.therapists_merged) parts.push(`${summary.therapists_merged} כפילויות מטפלים אוחדו`);
     showToast(`✓ ייבוא הושלם — ${parts.join(" · ") || "אין שינויים"}`);
     const boardDate = summary.jump_date || summary.date_from_file || selectedDate;
     pendingAlignAfterImportRef.current = boardDate;
@@ -1672,6 +1691,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     }
     fetchAppointments();
     fetchUnmatched();
+    fetchStatic();
   }
 
   async function handleDismissUnmatched(id) {
@@ -1737,7 +1757,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
 
       {showTherapistPanel && (
         <TherapistManagePanel
-          therapists={therapists}
+          therapists={catalogTherapistList}
           onClose={() => setShowTherapistPanel(false)}
           onSaved={() => { showToast("✓ השם עודכן"); fetchStatic(); }}
         />
@@ -1751,7 +1771,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         key={assignDraft ? `${assignDraft.alertId ?? "room"}-${assignDraft.roomId ?? "alert"}-${assignDraft.date}` : "closed"}
         draft={assignDraft}
         rooms={rooms}
-        therapists={therapists}
+        therapists={shiftTherapistList}
         shiftRoster={shiftRoster}
         homeRoomByTherapist={homeRoomByTherapist}
         onClose={() => setAssignDraft(null)}
@@ -1762,7 +1782,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         <ShiftRosterModal
           date={selectedDate}
           rooms={rooms}
-          therapists={therapists}
+          therapists={shiftTherapistList}
           existingRoster={shiftRoster}
           bookedTherapistIds={bookedTherapistIdsToday}
           onClose={() => setShowShiftRosterPanel(false)}
@@ -1780,7 +1800,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       <MoveGuestModal
         appt={moveDraft}
         rooms={rooms}
-        therapists={therapists}
+        therapists={moveTherapistList}
         appointments={appointments}
         homeRoomByTherapist={homeRoomByTherapist}
         onClose={() => setMoveDraft(null)}

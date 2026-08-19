@@ -1,4 +1,4 @@
-2026-08-19 | Spa Align: singles home + locked couple pairs | Therapist home is single treatments only. Couple bookings stay together in a couple room (walk exception). Scatter is scored above “don’t move EZGO”. Frontend only.
+2026-08-19 | Spa shift roster = today's report names, not 70 placeholders | Assign/roster lists therapists on today's activities only. CSV import merges geresh duplicates (אור, לאקי, אום, פור, ג'ין). Placeholders `active=false` (migration 304). Hour windows later. Frontend + db push 304.
 
 
 

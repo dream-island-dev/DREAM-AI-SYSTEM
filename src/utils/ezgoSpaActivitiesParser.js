@@ -23,6 +23,8 @@
 // English CSV is canonicalized to the Hebrew key shape before mapping so the
 // rest of the pipeline stays single-path.
 
+import { canonicalizeTherapistName } from "./spaTherapistIdentity";
+
 /** Excel 1900 date system — same convention as detailedReservationParser (kept local to avoid coupling spa ingest to Doc2 parser). */
 const EXCEL_EPOCH_OFFSET = 25569;
 
@@ -283,7 +285,8 @@ export function mapEzgoActivitiesRow(rawRow) {
 
   const { start_time, end_time } = parseTimeRange(src["תזמון"]);
   const roomRaw = normalizeEzgoRoomName(src["פעילות"]);
-  const therapistName = cleanCell(src["מטפל"]) || null;
+  const therapistRaw = cleanCell(src["מטפל"]);
+  const therapistName = canonicalizeTherapistName(therapistRaw);
   const treatmentType = cleanCell(src["סוגי טיפולים"]) || null;
   const extras = cleanCell(src["תוספות"]) || null;
   const { guest_name, group_label, is_new_booking_placeholder } = parseGuestNameCell(src["לקוח"]);
@@ -318,7 +321,7 @@ export function mapEzgoActivitiesRow(rawRow) {
     appointment_date: appointmentDate,
     cancelled,
     order_id: cleanCell(src._order_id ?? src["מס. הזמנה"] ?? src["מס הזמנה"] ?? src["מספר הזמנה"]) || null,
-    female_only: therapistNameImpliesFemaleOnly(therapistName),
+    female_only: therapistNameImpliesFemaleOnly(therapistRaw),
     source: english ? "english_csv" : "hebrew_ui",
     warnings,
   };

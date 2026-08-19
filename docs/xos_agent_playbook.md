@@ -417,6 +417,12 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ---
 
+### 2026-08-19 — Spa therapist catalog ≠ today's shift
+- **Symptom:** Shift roster listed 70 `מטפל/ת 01` placeholders plus duplicate nicknames (אור, לאקי, אום, פור, ג'ין).
+- **Root:** Dropdowns loaded every `spa_therapists.active=true` row. Import keyed therapists by exact `name`, so geresh variants created a second row.
+- **Fix:** Roster/assign = today's appointment therapist ids. Placeholders `active=false` (migration 304). Import collapses match-key duplicates unless two EZGO worker ids.
+- **Lesson:** Do not merge people who only share a first token (`אור` ≠ `אור לוי`). Hour windows per room are a later schema change.
+
 ### 2026-08-19 — Align Day searches homes, does not lock EZGO majority
 - **Symptom:** Align Day left therapists walking between rooms; reception still sorted by hand.
 - **Root:** Home room = EZGO majority + first roster seed forever. Overflow dumped to empty rooms. Times were already fixed; the home map was wrong.

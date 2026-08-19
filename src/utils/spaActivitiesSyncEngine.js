@@ -27,9 +27,36 @@
 
 import { normalizeActivitiesPhone, collectGuestNameHints, resolveSpaGuestDisplayName, therapistNameImpliesFemaleOnly } from "./ezgoSpaActivitiesParser";
 import { GENERIC_DAY_PASS_ROOM } from "../data/suiteRegistry";
+import {
+  canonicalizeTherapistName,
+  isPlaceholderTherapistName,
+  planTherapistMerges,
+  resolveTherapistIdFromName,
+} from "./spaTherapistIdentity";
 
 /** Spa cohort automation — muted on sync until staff unsuppresses in ACC (opt-in). */
 const SPA_AUTOMATION_STAGE_KEYS = ["spa_warmup_daypass", "survey_invite_daypass"];
+
+export async function collapseDuplicateSpaTherapists(supabase, therapistRows, summary = {}) {
+  const plans = planTherapistMerges(therapistRows);
+  for (const { keep, drop } of plans) {
+    for (const d of drop) {
+      if (d.ezgo_worker_id != null && keep.ezgo_worker_id == null) {
+        await supabase.from("spa_therapists").update({ ezgo_worker_id: d.ezgo_worker_id }).eq("id", keep.id).is("ezgo_worker_id", null);
+        keep.ezgo_worker_id = d.ezgo_worker_id;
+      }
+      await supabase.from("spa_appointments").update({ therapist_id: keep.id }).eq("therapist_id", d.id);
+      await supabase.from("spa_shift_roster").delete().eq("therapist_id", d.id);
+      const tombstone = `${canonicalizeTherapistName(d.name) || d.name} (מוזג #${d.id})`;
+      const { error } = await supabase
+        .from("spa_therapists")
+        .update({ active: false, name: tombstone, ezgo_worker_id: null })
+        .eq("id", d.id);
+      if (!error) summary.therapists_merged = (summary.therapists_merged ?? 0) + 1;
+    }
+  }
+  return plans;
+}
 
 export async function suppressSpaAutomationStages(supabase, guestId, summary = {}) {
   for (const stageKey of SPA_AUTOMATION_STAGE_KEYS) {
@@ -307,13 +334,14 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
   const summary = {
     created: 0, updated: 0, matched_guests: 0, unmatched: 0, room_unmapped: 0, conflicts: 0, suspicious: 0,
     guests_created: 0, not_in_file: 0, meal_time_set: 0, skipped_cancelled: skippedCancelled,
+    therapists_merged: 0,
     appointment_date: appointmentDate,
   };
   if (!parsedRows.length) return summary;
 
   const [{ data: aliasRows }, { data: therapistRows }, { data: roomRows }, { data: existingAppts }] = await Promise.all([
     supabase.from("spa_room_aliases").select("ezgo_name, room_id"),
-    supabase.from("spa_therapists").select("id, name, gender"),
+    supabase.from("spa_therapists").select("id, name, gender, active, ezgo_worker_id"),
     supabase.from("spa_rooms").select("id, name"),
     // Cancelled appointments are deliberately excluded from the re-import
     // index — matching against one would silently "revive" a slot a staff
@@ -321,9 +349,15 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
     // UPDATE would leave it cancelled forever while reporting success).
       supabase.from("spa_appointments").select("id, guest_id, room_id, therapist_id, ezgo_line_id, start_time, ezgo_order_id").eq("appointment_date", appointmentDate).neq("status", "cancelled"),
   ]);
+  await collapseDuplicateSpaTherapists(supabase, therapistRows ?? [], summary);
+  const { data: therapistsFresh } = await supabase
+    .from("spa_therapists")
+    .select("id, name, gender, active, ezgo_worker_id")
+    .eq("active", true);
+  const liveTherapists = (therapistsFresh ?? (therapistRows ?? []).filter((t) => t.active !== false))
+    .filter((t) => !isPlaceholderTherapistName(t.name));
   const aliasMap = new Map((aliasRows ?? []).map((r) => [r.ezgo_name, r.room_id]));
-  const therapistMap = new Map((therapistRows ?? []).map((t) => [t.name, t.id]));
-  const therapistGenderById = new Map((therapistRows ?? []).map((t) => [t.id, t.gender]));
+  const therapistGenderById = new Map(liveTherapists.map((t) => [t.id, t.gender]));
   const roomNameById = new Map((roomRows ?? []).map((r) => [r.id, r.name]));
   const apptIndex = buildExistingApptIndex(existingAppts);
 
@@ -441,19 +475,20 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
       }
     }
 
-    let therapistId = therapistMap.get(row.therapist_name) ?? null;
+    const canonicalTherapist = canonicalizeTherapistName(row.therapist_name);
+    let therapistId = resolveTherapistIdFromName(row.therapist_name, liveTherapists);
     const femaleOnly = row.female_only || therapistNameImpliesFemaleOnly(row.therapist_name);
-    if (row.therapist_name && !therapistId) {
+    if (canonicalTherapist && !therapistId) {
       const { data: newTherapist, error: newTherapistErr } = await supabase
         .from("spa_therapists")
-        .insert({ name: row.therapist_name, ...(femaleOnly ? { gender: "female" } : {}) })
-        .select("id, gender")
+        .insert({ name: canonicalTherapist, ...(femaleOnly ? { gender: "female" } : {}) })
+        .select("id, name, gender, active, ezgo_worker_id")
         .maybeSingle();
       if (newTherapistErr) {
-        console.warn("[spaActivitiesSyncEngine] therapist create failed:", row.therapist_name, newTherapistErr.message);
+        console.warn("[spaActivitiesSyncEngine] therapist create failed:", canonicalTherapist, newTherapistErr.message);
       } else if (newTherapist) {
         therapistId = newTherapist.id;
-        therapistMap.set(row.therapist_name, therapistId);
+        liveTherapists.push(newTherapist);
         therapistGenderById.set(newTherapist.id, newTherapist.gender);
       }
     } else if (therapistId && femaleOnly && therapistGenderById.get(therapistId) !== "female") {

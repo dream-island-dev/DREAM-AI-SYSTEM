@@ -428,6 +428,19 @@ describe("parseEzgoActivitiesReport", () => {
       sAttendantName: "רחל סיאונוב-נשים בלבד", sClientName: "אורח", sTel: "0501111111",
     });
     expect(mapped.female_only).toBe(true);
+    expect(mapped.therapist_name).toBe("רחל סיאונוב");
+  });
+
+  test("canonicalizes 2 ליסה - Lissa and keeps female-only on raw cell", () => {
+    const mapped = mapEzgoActivitiesRow({
+      "תזמון": "09:00-09:45",
+      "פעילות": "חדר 1",
+      "מטפל": "2 ליסה - Lissa",
+      "לקוח": "אורח",
+      "טלפון": "0501111111",
+    });
+    expect(mapped.therapist_name).toBe("ליסה");
+    expect(mapped.female_only).toBe(false);
   });
 
   test("spa-ops CSV header sniff vs Doc2 arrivals", () => {
