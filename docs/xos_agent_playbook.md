@@ -1,6 +1,6 @@
 # XOS Agent Playbook — Smart Dev Environment
 > **Living document.** Mike + every Cursor agent reads this with `CLAUDE.md` and `docs/active_sprint.md`.
-> Last updated: 2026-08-10 (thinking skills `/redteam` `/premortem` `/steelman` `/swot` in `.claude/skills` + `.cursor/skills`).
+> Last updated: 2026-08-20 (`docs/open_tasks.md` is the live work queue; `active_sprint.md` is historical).
 >
 > **When you learn something new that works** → add a bullet here + 1 line in `docs/changelog.md` + refresh `CLAUDE.md` §13 if architecture changed.
 
@@ -11,7 +11,8 @@
 | File | Role |
 |---|---|
 | `CLAUDE.md` | Architecture truth, DB, Edge Functions, session history |
-| `docs/active_sprint.md` | Current blockers + priorities |
+| **`docs/open_tasks.md`** | **Live work queue + deploy freeze** — read every session; append when Mike adds work |
+| `docs/active_sprint.md` | Historical sprint notes (pointer to open_tasks at top) |
 | `RESORT_UI_MANIFEST.md` | UI/UX philosophy + tab readiness |
 | **`docs/xos_agent_playbook.md`** | **How to work with Mike + how agents should behave** |
 | **`.claude/agents/`** | **Claude Code subagents** — `maya-partner`, `qa-gate`, `security-sentinel` (project-scoped, git-committed) |
@@ -28,7 +29,7 @@ Mike is a learning developer. The agent is **Lead Architect + executor**.
 
 | Mike does | Agent does |
 |---|---|
-| Describes goal in **short English** (or one Hebrew line + English task) | Reads `CLAUDE.md`, `active_sprint.md`, this playbook **before acting** |
+| Describes goal in **short English** (or one Hebrew line + English task) | Reads `CLAUDE.md`, `docs/open_tasks.md`, `active_sprint.md`, this playbook **before acting** |
 | Approves with `yes` / `כן` / `תעלה` / `yes deploy` | Runs `npm run build`, commit, push, db push, functions deploy |
 | Gives one-line feedback | Small atomic diffs only — never full-file dumps |
 | Works on **desktop** for visual tasks | Uses `npm start` + DevTools mobile emulation |
@@ -265,7 +266,7 @@ Cursor rule: `.cursor/rules/XOS-Session-Pipeline.mdc`. Full copy-paste prompts: 
 - Visual-only staff UI → Stage 1 short file/line list → Stage 2 (UI template §8.4); skip Shabbat QA unless automation touched.
 - Mike override: `רק research` / `רק diagnostic` / `תריץ QA` forces that stage.
 
-1. Read `CLAUDE.md` + `docs/active_sprint.md` + this file.
+1. Read `CLAUDE.md` + `docs/open_tasks.md` + `docs/active_sprint.md` + this file. Honor freeze rows.
 1b. **Design Mode (= Stage 1):** new feature / architecturally unclear only — skip for small bugfixes. Present **3 distinct approaches** (not 3 variations of the same idea) with trade-offs. Justify chosen option (Disable-Don't-Hide, FAIL VISIBLE). List exact files/lines. Identify reusable helpers first. Wait for Mike to pick / say `כן` before any code.
 2. **Plan & Chain of Thought:** For complex logic, Plan → Execute → Verify reasoning *before* writing code.
 3. Read target files before editing. **Search existing function/util/`_shared/` first — reuse beats reinventing.**
@@ -416,6 +417,16 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 **Do not** let knowledge live only in chat — chat is lost; files persist.
 
 ---
+
+### 2026-08-20 — Doc2 mail is a per-ingest room snapshot
+- **Symptom:** EZGO changed nights/room; XOS kept fill-empty dates and extra `suite_rooms` (0-night suite, 15 leftover after 16).
+- **Fix:** Same booking overwrites suite dates. After all Doc2 lines of one mail, prune rooms not in that report. Do not prune from `ezgo-guest-sync` by OrderId (ClientId merge wipes sibling suites).
+- **Lesson:** Canonical physical suite wins over stale `day_guest` / `iNights=0`.
+
+### 2026-08-20 — Chat is not the work queue
+- **Symptom:** Cross-session tasks (spa hub banner, Meta vs DM price, EZGO room swap) would vanish when a new chat started.
+- **Fix:** `docs/open_tasks.md` + init in `.cursorrules` / `CLAUDE.md` / pipeline rule. Freeze cron/send while spa scheduled drain is live.
+- **Lesson:** Append here in the same session Mike asks. Never `git add -A` to "save the queue".
 
 ### 2026-08-19 — Spa therapist catalog ≠ today's shift
 - **Symptom:** Shift roster listed 70 `מטפל/ת 01` placeholders plus duplicate nicknames (אור, לאקי, אום, פור, ג'ין).

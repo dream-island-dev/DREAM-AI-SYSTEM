@@ -1,6 +1,7 @@
 // Suite departure_date guard — alerts + nights→departure helper (Edge Functions).
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isCanonicalSuiteRoom } from "./suiteNames.ts";
 
 export function addDepartureFromNights(
   arrivalDate: string | null | undefined,
@@ -24,6 +25,8 @@ export function isSuiteStayGuest(guest: {
   isDayGuest?: boolean;
 } | null | undefined): boolean {
   if (!guest) return false;
+  // Canonical physical suite wins over a stale day_guest room_type (split-brain).
+  if (isCanonicalSuiteRoom(guest.room)) return true;
   const rt = guest.room_type;
   if (rt === "day_guest" || rt === "premium_day_guest") return false;
   if (rt === "suite") return true;

@@ -1,5 +1,7 @@
 // Suite departure_date validation — mirrors supabase/functions/_shared/guestDepartureGuard.ts
 
+import { isCanonicalSuiteRoom } from "./pipelineSegment";
+
 /** arrival + nights → departure (exclusive checkout day). Day guests: same-day. */
 export function addDepartureFromNights(arrivalDate, nights, { isDayGuest = false } = {}) {
   if (!arrivalDate) return null;
@@ -14,6 +16,7 @@ export function addDepartureFromNights(arrivalDate, nights, { isDayGuest = false
 
 export function isSuiteStayGuest(guest) {
   if (!guest) return false;
+  if (isCanonicalSuiteRoom(guest.room)) return true;
   const rt = guest.room_type;
   if (rt === "day_guest" || rt === "premium_day_guest") return false;
   if (rt === "suite") return true;

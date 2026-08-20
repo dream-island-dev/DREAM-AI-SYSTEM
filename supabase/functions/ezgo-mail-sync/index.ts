@@ -28,6 +28,8 @@ import {
   type Doc2Record,
 } from "../_shared/ezgoDoc2Parser.ts";
 import { applyCertainDoc2SuiteSync, matchDoc2Record } from "../_shared/ezgoDoc2MailMatch.ts";
+import { isSameDoc2Booking, reconcileDoc2GuestRoomsToReport } from "../_shared/ezgoDoc2SuiteRoomSync.ts";
+import { isCanonicalSuiteRoom } from "../_shared/suiteNames.ts";
 import { parseSuiteArrivalsCsvBuffer } from "../_shared/ezgoDoc2SuiteCsvParser.ts";
 import { isEzgoSpaActivitiesCsvBytes } from "../_shared/ezgoSpaActivitiesCsvDetect.ts";
 import {
@@ -350,7 +352,9 @@ async function insertDoc2IngestLines(
         arrival_date: rec.arrival_date,
         departure_date: rec.departure_date,
         room: rec.room,
-        room_type: rec.is_premium_day ? "premium_day_guest" : (rec.is_day_guest ? "day_guest" : "suite"),
+        room_type: isCanonicalSuiteRoom(rec.room)
+          ? "suite"
+          : (rec.is_premium_day ? "premium_day_guest" : (rec.is_day_guest ? "day_guest" : "suite")),
         spa_time: null,
         meal_location: rec.meal_location,
         meal_time: rec.meal_time ?? null,
@@ -372,6 +376,20 @@ async function insertDoc2IngestLines(
       status: auto.applied ? "applied" : "pending_review",
       ...(auto.applied ? { applied_at: new Date().toISOString() } : {}),
     });
+  }
+
+  const roomsByGuest = new Map<number, Set<string>>();
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    const gid = lineRows[i].match_guest_id as number | null;
+    if (!gid || !rec.room || !isCanonicalSuiteRoom(rec.room)) continue;
+    const guest = guestCache.find((g) => g.id === gid);
+    if (guest && !isSameDoc2Booking(rec, guest)) continue;
+    if (!roomsByGuest.has(gid)) roomsByGuest.set(gid, new Set());
+    roomsByGuest.get(gid)!.add(rec.room);
+  }
+  for (const [gid, rooms] of roomsByGuest) {
+    await reconcileDoc2GuestRoomsToReport(supabase, gid, [...rooms]);
   }
 
   const { error: linesErr } = await supabase.from("ezgo_mail_import_lines").insert(lineRows);

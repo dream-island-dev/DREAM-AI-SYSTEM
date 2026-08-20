@@ -8,7 +8,10 @@ import { createDaypassGuestFromRec, stripWorkflowPatch } from "./ezgoMailLineWor
 import { isSuiteStayGuest } from "./departureDateGuard";
 import {
   createDoc2SuiteArrival,
+  doc2CreateAutomationScope,
+  doc2NamesMatch,
   guestRoomLabelsInclude,
+  isDoc2SamePerson,
   isSameDoc2Booking,
 } from "./ezgoDoc2SuiteRoomSync";
 
@@ -26,7 +29,7 @@ export const DOC2_WORKFLOW_META = {
 export const DOC2_WORKFLOW_SECTIONS = [
   { id: "suite_arrival_create", title: "🆕 כניסות חדשות — צור פרופיל סוויטה", hint: "טלפון חובה · חדר אופציונלי (יישוב מאוחר)" },
   { id: "suite_room_add", title: "➕ חדר נוסף — אותה הזמנה", hint: "מוסיף suite_rooms + מעדכן תווית משולבת ב-guests.room" },
-  { id: "suite_arrival_enrich", title: "📥 השלמת חסר — אורח קיים", hint: "ממלא רק שדות ריקים (תאריכים / פנסיון)" },
+  { id: "suite_arrival_enrich", title: "📥 השלמת חסר — אורח קיים", hint: "אותה הזמנה: תאריכי סוויטה מאיזיגו דורסים; פנסיון/שם רק אם ריק" },
   { id: "suite_room_assign", title: "🏨 שיבוץ חדר", hint: "פרופיל קיים בלי חדר" },
   { id: "daypass_create", title: "☀️ צור בילוי יומי", hint: "Premium Day / בילוי יומי" },
   { id: "conflict", title: "⚠ בדוק", hint: "התנגשות שם/חדר — אישור ידני בלבד" },
@@ -83,14 +86,33 @@ export function buildDoc2EnrichmentPatch(rec, guest) {
     if (picked !== undefined) patch.order_number = picked;
   }
   if (rec.arrival_date) {
-    const picked = pickEnrichValue(rec.arrival_date, guest.arrival_date);
+    const allowArrivalOverwrite = isSuiteStayGuest(guest)
+      && isSameDoc2Booking(rec, guest)
+      && rec.arrival_date !== guest.arrival_date;
+    const picked = pickDoc2SnapshotValue(rec.arrival_date, guest.arrival_date, {
+      allowOverwrite: allowArrivalOverwrite,
+    });
     if (picked !== undefined) patch.arrival_date = picked;
   }
   if (rec.departure_date) {
-    const allowOverwrite = isSuspectSuiteStayDates(guest)
-      && (!guest.arrival_date || rec.departure_date > guest.arrival_date);
+    const arrival = String(rec.arrival_date || guest.arrival_date || "").slice(0, 10);
+    const allowOverwrite = (!arrival || rec.departure_date > arrival) && (
+      isSuspectSuiteStayDates(guest)
+      || (
+        isSuiteStayGuest(guest)
+        && isSameDoc2Booking(rec, guest)
+        && rec.departure_date !== guest.departure_date
+      )
+    );
     const picked = pickDoc2SnapshotValue(rec.departure_date, guest.departure_date, { allowOverwrite });
     if (picked !== undefined) patch.departure_date = picked;
+  }
+  const suiteRoom = rec.room || guest.room;
+  if (
+    isCanonicalSuiteRoom(suiteRoom)
+    && (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest")
+  ) {
+    patch.room_type = "suite";
   }
   if (rec.meal_location) {
     const picked = pickEnrichValue(rec.meal_location, guest.meal_location);
@@ -104,7 +126,7 @@ export function buildDoc2EnrichmentPatch(rec, guest) {
     const picked = pickEnrichValue(rec.meal_time, guest.meal_time);
     if (picked !== undefined) patch.meal_time = picked;
   }
-  if (rec.automation_scope) {
+  if (rec.automation_scope && doc2CreateAutomationScope(rec) !== "full") {
     const merged = mergeAutomationScope(guest.automation_scope, rec.automation_scope);
     if (merged !== (guest.automation_scope || "full")) {
       patch.automation_scope = merged;
@@ -116,7 +138,7 @@ export function buildDoc2EnrichmentPatch(rec, guest) {
 
 function nameConflict(rec, guest) {
   if (!rec.guest_name || !guest.name) return false;
-  return rec.guest_name.trim() !== String(guest.name).trim();
+  return !doc2NamesMatch(rec.guest_name, guest.name);
 }
 
 function roomConflict(rec, guest) {
@@ -237,7 +259,7 @@ export function classifyDoc2MailWorkflow(rec, guest) {
     roomConflict(rec, matchedGuest)
     && isSameDoc2Booking(rec, matchedGuest)
     && rec.room
-    && !rec.is_remark_group_occupant
+    && (!rec.is_remark_group_occupant || isDoc2SamePerson(rec, matchedGuest))
   ) {
     return {
       workflow: "suite_room_add",

@@ -98,6 +98,31 @@ Deno.test("upsertDoc2SuiteRoomForGuest: no existing row → inserts", async () =
   });
   assertEquals(result.added, true);
   assertEquals(calls.some((c) => c.op === "insert"), true);
+  const insertCall = calls.find((c) => c.op === "insert");
+  assertEquals((insertCall?.args?.[0] as { adults?: number })?.adults, 2);
+});
+
+Deno.test("upsertDoc2SuiteRoomForGuest: missing guest_count still writes adults=2, not 1", async () => {
+  const { supabase, calls } = fakeSupabase({ existingByRoomRows: [] });
+  const result = await upsertDoc2SuiteRoomForGuest(supabase as never, {
+    guestId: 21,
+    rec: { ...BASE_REC, guest_count: null },
+    reportDateYmd: "2026-07-21",
+  });
+  assertEquals(result.added, true);
+  const insertCall = calls.find((c) => c.op === "insert");
+  assertEquals((insertCall?.args?.[0] as { adults?: number })?.adults, 2);
+});
+
+Deno.test("upsertDoc2SuiteRoomForGuest: existing row update writes guest_count into adults", async () => {
+  const { supabase, calls } = fakeSupabase({ existingByRoomRows: [{ id: 101 }] });
+  await upsertDoc2SuiteRoomForGuest(supabase as never, {
+    guestId: 10,
+    rec: { ...BASE_REC, guest_count: "3" },
+    reportDateYmd: "2026-07-21",
+  });
+  const updateCall = calls.find((c) => c.op === "update");
+  assertEquals((updateCall?.args?.[0] as { adults?: number })?.adults, 3);
 });
 
 Deno.test("upsertDoc2SuiteRoomForGuest: non-canonical room (e.g. stale בילוי יומי label) is skipped, not inserted", async () => {

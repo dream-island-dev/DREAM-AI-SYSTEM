@@ -19,7 +19,7 @@ import {
   createDoc2LineFromRec,
   resolveDoc2LineWorkflow,
 } from "../utils/ezgoDoc2MailLineWorkflow";
-import { applyDoc2SuiteRoomAdd, findGuestForDoc2SuiteCreate } from "../utils/ezgoDoc2SuiteRoomSync";
+import { applyDoc2SuiteRoomAdd, findGuestForDoc2SuiteCreate, reconcileDoc2GuestRoomsToReport } from "../utils/ezgoDoc2SuiteRoomSync";
 import { resolveMissingDepartureAlert } from "../utils/departureDateGuard";
 import {
   fetchSpaUpsellDispatchMeta,
@@ -585,6 +585,15 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     }
   };
 
+  const reconcileDoc2GuestFromIngest = async (guestId) => {
+    if (!isDoc2Ingest || !guestId) return;
+    const rooms = (lines || [])
+      .filter((l) => Number(l.match_guest_id) === Number(guestId))
+      .map((l) => l.parsed_json?.room)
+      .filter(Boolean);
+    await reconcileDoc2GuestRoomsToReport(supabase, guestId, rooms);
+  };
+
   const applyLine = async (line) => {
     if (!line.match_guest_id || line.action === "no_match") {
       showToast?.("אין פרופיל לעדכון", "err");
@@ -607,6 +616,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
           applied_at: new Date().toISOString(),
           proposed_patch: { _workflow: workflow, _add_room: rec.room || null },
         }).eq("id", line.id);
+        await reconcileDoc2GuestFromIngest(line.match_guest_id);
         showToast?.(`חדר נוסף: ${result.name} · ${result.room || rec.room}`, "ok");
         await loadLines(selectedId);
         await loadIngests();
@@ -646,6 +656,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
           applied_at: new Date().toISOString(),
           proposed_patch: { room: result.room || rec.room, _workflow: workflow },
         }).eq("id", line.id);
+        await reconcileDoc2GuestFromIngest(guest.id);
         showToast?.(`שובץ חדר: ${result.name} → ${result.room || rec.room}`, "ok");
         await loadLines(selectedId);
         await loadIngests();
@@ -674,6 +685,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         proposed_patch: { ...safePatch, _workflow: workflow },
       }).eq("id", line.id);
 
+      if (isDoc2Ingest) await reconcileDoc2GuestFromIngest(guest.id);
       showToast?.(`עודכן: ${guest.name}`, "ok");
       await loadLines(selectedId);
       await loadIngests();
@@ -701,6 +713,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         match_label: label,
         proposed_patch: { _workflow: existing ? "suite_room_add" : wf(line) },
       }).eq("id", line.id);
+      await reconcileDoc2GuestFromIngest(inserted?.id);
       return inserted;
     }
     if (!rec.phone) throw new Error("חסר טלפון — לא ניתן ליצור פרופיל");

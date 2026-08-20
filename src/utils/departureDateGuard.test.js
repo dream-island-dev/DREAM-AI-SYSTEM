@@ -1,6 +1,7 @@
 import {
   addDepartureFromNights,
   isMissingSuiteDepartureDate,
+  isSuiteStayGuest,
   validateSuiteProfilesDeparture,
 } from "./departureDateGuard";
 
@@ -19,6 +20,20 @@ describe("departureDateGuard", () => {
       departure_date: null,
       room_type: "suite",
     })).toBe(true);
+  });
+
+  test("canonical suite room is a suite stay even with stale day_guest type", () => {
+    expect(isSuiteStayGuest({
+      room: "אקווה מרין 26",
+      room_type: "day_guest",
+    })).toBe(true);
+  });
+
+  test("plain day-pass room_type without canonical room is not a suite stay", () => {
+    expect(isSuiteStayGuest({
+      room: "בילוי יומי",
+      room_type: "day_guest",
+    })).toBe(false);
   });
 
   test("validateSuiteProfilesDeparture blocks suite rows", () => {

@@ -86,6 +86,19 @@ Deno.test("parseSuiteArrivalsCsvText: duplicate coord + name-only remarks → no
   }
 });
 
+Deno.test("parseSuiteArrivalsCsvText: iNights=0 on canonical suite is NOT day-guest — missing nights", () => {
+  const csv = [
+    "iOrderId,sTel1,sRemark,sClientFullName,sSubItemName,sRoomName,iResLineId,iNights",
+    "266941,0525778393,הערה,זוהרה חמי,סוויטת אקווה מרין,26,9821348,0",
+  ].join("\n");
+  const records = parseSuiteArrivalsCsvText(csv, "20.08.26.csv");
+  if (records.length !== 1) throw new Error(`expected 1 record got ${records.length}`);
+  if (records[0].is_day_guest) throw new Error("suite room must not become day-guest from iNights=0");
+  if (records[0].room !== "אקווה מרין 26") throw new Error(`room ${records[0].room}`);
+  if (records[0].departure_date != null) throw new Error(`expected null departure got ${records[0].departure_date}`);
+  if (!records[0].departure_missing_nights) throw new Error("expected departure_missing_nights");
+});
+
 Deno.test("parseSuiteArrivalsCsvText: iNights=0 on day-pass row → departure_date === arrival_date — P0 2026-08-05", () => {
   const csv = [
     "iOrderId,sTel1,sRemark,sClientFullName,sSubItemName,sRoomName,iResLineId,iNights",

@@ -9,7 +9,8 @@ import {
 } from "./suiteNames.ts";
 import type { Doc2GuestRow } from "./ezgoDoc2MailLineWorkflow.ts";
 import { doc2RecordMatchesGuest } from "./ezgoDoc2RecordMatch.ts";
-import { mergeAutomationScope } from "./importAutomationScope.ts";
+import { isCorporateMuteCoordName, mergeAutomationScope } from "./importAutomationScope.ts";
+import { phoneLookupVariants, normalizeGuestPhoneForLookup, assertGuestSegmentConsistent } from "./guestSegmentGuard.ts";
 import {
   addDepartureFromNights,
   isSuiteStayGuest,
@@ -19,6 +20,23 @@ import { buildDoc2RemarkGuestNotes } from "./ezgoDoc2RemarkIdentity.ts";
 import { runGuestImportPipelineHooks } from "./guestImportPipelineHooks.ts";
 
 const DOC2_MAIL_LINE_PREFIX = "doc2mail-";
+
+function nightsForSuiteRoomRow(rec: Doc2Record, arrival: string | null): number {
+  const parsed = parseInt(String(rec.nights ?? ""), 10);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  if (rec.departure_date && arrival && rec.departure_date > arrival) {
+    const ms = new Date(`${rec.departure_date}T12:00:00`).getTime()
+      - new Date(`${arrival}T12:00:00`).getTime();
+    const days = Math.round(ms / 86_400_000);
+    if (days > 0) return days;
+  }
+  return 0;
+}
+
+function adultsFromDoc2GuestCount(raw: unknown, fallback = 2): number {
+  const n = parseInt(String(raw ?? "").replace(/[^\d]/g, ""), 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 export function splitCombinedRoomLabel(combined = ""): string[] {
   const s = String(combined ?? "").trim();
@@ -60,14 +78,52 @@ export function guestRoomLabelsInclude(
   return labels.some((label) => roomsCanonicallyMatch(label, incomingRoom));
 }
 
+export function normalizeDoc2PersonName(name: string | null | undefined): string {
+  return String(name || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\.\s+/g, ".")
+    .toLowerCase();
+}
+
+export function doc2PhonesMatch(a: unknown, b: unknown): boolean {
+  const na = normalizeGuestPhoneForLookup(a);
+  const nb = normalizeGuestPhoneForLookup(b);
+  if (!na || !nb) return false;
+  return na.replace(/^\+/, "") === nb.replace(/^\+/, "");
+}
+
+export function doc2NamesMatch(a: unknown, b: unknown): boolean {
+  if (!a || !b) return false;
+  return normalizeDoc2PersonName(String(a)) === normalizeDoc2PersonName(String(b));
+}
+
+export function isDoc2SamePerson(
+  rec: { phone?: string | null; guest_name?: string | null },
+  guest: { phone?: string | null; name?: string | null },
+): boolean {
+  return doc2PhonesMatch(rec?.phone, guest?.phone) && doc2NamesMatch(rec?.guest_name, guest?.name);
+}
+
+export function doc2CreateAutomationScope(rec: Doc2Record): "full" | "courtesy_only" | "muted" {
+  const distinctOccupant = !!rec.is_remark_group_occupant
+    && !!rec.coord_name
+    && !!rec.guest_name
+    && !doc2NamesMatch(rec.guest_name, rec.coord_name);
+  if (distinctOccupant) return rec.automation_scope || "courtesy_only";
+  if (isCorporateMuteCoordName(rec.guest_name) || isCorporateMuteCoordName(rec.coord_name)) {
+    return rec.automation_scope || "muted";
+  }
+  return "full";
+}
+
 export function isSameDoc2Booking(rec: Doc2Record, guest: Doc2GuestRow): boolean {
   // Group/municipal rows share an order_number but each remark row is a
   // distinct occupant — never merge rooms onto one profile unless phone AND
   // resolved guest name both match (prevents 12-room איליה-style blobs).
   if (rec.is_remark_group_occupant) {
-    if (!rec.phone || !guest.phone || rec.phone !== guest.phone) return false;
-    if (!rec.guest_name || !guest.name) return false;
-    return rec.guest_name.trim() === String(guest.name).trim();
+    if (!doc2PhonesMatch(rec.phone, guest.phone)) return false;
+    return doc2NamesMatch(rec.guest_name, guest.name);
   }
 
   // An explicit order-number mismatch is authoritative — a shared phone/date
@@ -81,13 +137,13 @@ export function isSameDoc2Booking(rec: Doc2Record, guest: Doc2GuestRow): boolean
     // occupants (different phone, different room). An explicit phone
     // mismatch when both are known must still block the merge (Mike, P0
     // 2026-08-05: never merge via order_number when phones differ).
-    if (rec.phone && guest.phone && rec.phone !== guest.phone) return false;
+    if (rec.phone && guest.phone && !doc2PhonesMatch(rec.phone, guest.phone)) return false;
     return true;
   }
   const recDate = rec.arrival_date ? String(rec.arrival_date).slice(0, 10) : null;
   const guestDate = guest.arrival_date ? String(guest.arrival_date).slice(0, 10) : null;
   if (!recDate || !guestDate || recDate !== guestDate) return false;
-  if (rec.phone && guest.phone && rec.phone === guest.phone) return true;
+  if (rec.phone && guest.phone && doc2PhonesMatch(rec.phone, guest.phone)) return true;
   if (rec.guest_name && guest.name) {
     return rec.guest_name.trim() === String(guest.name).trim();
   }
@@ -100,7 +156,7 @@ export function shouldMergeDoc2RowOntoGuest(
   guest: Doc2GuestRow,
 ): boolean {
   if (!isSameDoc2Booking(rec, guest)) return false;
-  if (rec.is_remark_group_occupant) {
+  if (rec.is_remark_group_occupant && !isDoc2SamePerson(rec, guest)) {
     return !!rec.room && guestRoomLabelsInclude(guest.room, rec.room);
   }
   return true;
@@ -139,14 +195,33 @@ export function buildDoc2GuestEnrichPatch(
     if (picked !== undefined) patch.order_number = picked;
   }
   if (rec.arrival_date) {
-    const picked = pickEnrichValue(rec.arrival_date, guest.arrival_date);
+    const allowArrivalOverwrite = isSuiteStayGuest(guest)
+      && isSameDoc2Booking(rec, guest)
+      && rec.arrival_date !== guest.arrival_date;
+    const picked = pickDoc2SnapshotValue(rec.arrival_date, guest.arrival_date, {
+      allowOverwrite: allowArrivalOverwrite,
+    });
     if (picked !== undefined) patch.arrival_date = picked;
   }
   if (rec.departure_date) {
-    const allowOverwrite = isSuspectSuiteStayDates(guest)
-      && (!guest.arrival_date || rec.departure_date > guest.arrival_date);
+    const arrival = String(rec.arrival_date || guest.arrival_date || "").slice(0, 10);
+    const allowOverwrite = (!arrival || rec.departure_date > arrival) && (
+      isSuspectSuiteStayDates(guest)
+      || (
+        isSuiteStayGuest(guest)
+        && isSameDoc2Booking(rec, guest)
+        && rec.departure_date !== guest.departure_date
+      )
+    );
     const picked = pickDoc2SnapshotValue(rec.departure_date, guest.departure_date, { allowOverwrite });
     if (picked !== undefined) patch.departure_date = picked;
+  }
+  const suiteRoom = rec.room || guest.room;
+  if (
+    isCanonicalSuiteRoom(suiteRoom)
+    && (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest")
+  ) {
+    patch.room_type = "suite";
   }
   if (rec.meal_location) {
     const picked = pickEnrichValue(rec.meal_location, guest.meal_location);
@@ -160,7 +235,7 @@ export function buildDoc2GuestEnrichPatch(
     const picked = pickEnrichValue(rec.meal_time, guest.meal_time);
     if (picked !== undefined) patch.meal_time = picked;
   }
-  if (rec.automation_scope) {
+  if (rec.automation_scope && !isDoc2SamePerson(rec, guest)) {
     const merged = mergeAutomationScope(guest.automation_scope, rec.automation_scope);
     if (merged !== (guest.automation_scope ?? "full")) {
       patch.automation_scope = merged;
@@ -202,20 +277,22 @@ export async function findGuestForDoc2SuiteCreate(
         return (hit as Doc2GuestRow) ?? null;
       }
       if (rec.phone) {
-        const hit = data.find((g) => g.phone === rec.phone);
+        const hit = data.find((g) => doc2PhonesMatch(g.phone, rec.phone));
         if (hit) return hit as Doc2GuestRow;
       }
     }
   }
 
   if (rec.phone) {
-    const { data } = await supabase
+    const variants = phoneLookupVariants(rec.phone);
+    let q = supabase
       .from("guests")
       .select(select)
-      .eq("phone", rec.phone)
       .eq("arrival_date", arrival)
       .neq("status", "cancelled")
       .limit(2);
+    q = variants.length ? q.in("phone", variants) : q.eq("phone", rec.phone);
+    const { data } = await q;
     if (data?.length === 1) {
       const only = data[0] as Doc2GuestRow;
       if (rec.is_remark_group_occupant) {
@@ -349,6 +426,8 @@ export async function upsertDoc2SuiteRoomForGuest(
     room_display: room,
     room_name: room,
     is_day_guest: false,
+    adults: adultsFromDoc2GuestCount(rec.guest_count),
+    nights: nightsForSuiteRoomRow(rec, arrival),
   };
 
   if (existing) {
@@ -359,8 +438,7 @@ export async function upsertDoc2SuiteRoomForGuest(
   const { error: insErr } = await supabase.from("suite_rooms").insert({
     ...rowPatch,
     res_line_id: resLineId,
-    adults: 1,
-    nights: rec.nights ?? 0,
+    nights: nightsForSuiteRoomRow(rec, arrival),
   });
 
   if (insErr?.code === "23505") {
@@ -376,6 +454,22 @@ export async function upsertDoc2SuiteRoomForGuest(
   if (insErr) throw insErr;
 
   return { added: true, roomLabel: room };
+}
+
+export async function reconcileDoc2GuestRoomsToReport(
+  supabase: SupabaseClient,
+  guestId: number,
+  reportRooms: string[],
+): Promise<void> {
+  const wanted = [...new Set(reportRooms.map((r) => String(r || "").trim()).filter(isCanonicalSuiteRoom))];
+  if (!wanted.length) return;
+  const current = await fetchSuiteRoomLabels(supabase, guestId);
+  for (const label of current) {
+    if (!isCanonicalSuiteRoom(label)) continue;
+    if (wanted.includes(label)) continue;
+    await supabase.from("suite_rooms").delete().eq("guest_id", guestId).eq("room_display", label);
+  }
+  await recomputeGuestCombinedRoom(supabase, guestId, wanted[0]);
 }
 
 export async function recomputeGuestCombinedRoom(
@@ -414,7 +508,7 @@ export async function applyDoc2SuiteRoomAdd(
 ): Promise<{ id: number; name: string | null; phone: string | null; room: string | null }> {
   const { data: guest, error: gErr } = await supabase
     .from("guests")
-    .select("id, name, phone, order_number, arrival_date, departure_date, room, meal_location, meal_time, automation_scope")
+    .select("id, name, phone, order_number, arrival_date, departure_date, room, room_type, meal_location, meal_time, automation_scope")
     .eq("id", guestId)
     .maybeSingle();
   if (gErr || !guest) throw gErr || new Error("אורח לא נמצא");
@@ -430,6 +524,12 @@ export async function applyDoc2SuiteRoomAdd(
   const combined = await recomputeGuestCombinedRoom(supabase, guestId, rec.room);
 
   const enrichPatch = buildDoc2GuestEnrichPatch(rec, guest as Doc2GuestRow);
+  if (isDoc2SamePerson(rec, guest as Doc2GuestRow) && doc2CreateAutomationScope(rec) === "full") {
+    if ((guest.automation_scope || "full") !== "full") {
+      enrichPatch.automation_scope = "full";
+      enrichPatch.automation_muted = false;
+    }
+  }
   if (Object.keys(enrichPatch).length) {
     await supabase.from("guests").update(enrichPatch).eq("id", guestId);
     if (enrichPatch.departure_date) {
@@ -475,14 +575,19 @@ export async function createDoc2SuiteArrival(
   }
 
   const arrival = rec.arrival_date || reportDateYmd;
-  const automationScope = rec.automation_scope ?? "full";
-  const isDayGuest = !!rec.is_day_guest || !!rec.is_premium_day;
+  const automationScope = doc2CreateAutomationScope(rec);
+  const suiteRoom = isCanonicalSuiteRoom(rec.room);
+  const isDayGuest = !suiteRoom && (!!rec.is_day_guest || !!rec.is_premium_day);
+  const roomType = rec.is_premium_day && !suiteRoom
+    ? "premium_day_guest"
+    : (isDayGuest ? "day_guest" : "suite");
+  assertGuestSegmentConsistent({ room: rec.room, room_type: roomType });
 
   // FAIL VISIBLE (P0 2026-08-05): a suite create must never fall back to a
   // same-day departure just because nights failed to parse — that's exactly
   // the incident signature (arrival === departure, "0 nights" in the UI).
-  // Prefer the nights-derived date; accept an explicitly parsed departure_date
-  // only if it's genuinely after arrival; otherwise refuse the create.
+  // Canonical suite room always uses nights math, even if a stale is_day_guest
+  // flag arrived on the parsed row (CSV iNights=0 / old parsed_json).
   let departureDate: string | null = isDayGuest
     ? arrival
     : addDepartureFromNights(arrival, rec.nights, { isDayGuest: false });
@@ -509,7 +614,7 @@ export async function createDoc2SuiteArrival(
     arrival_date: arrival,
     departure_date: departureDate,
     room: rec.room,
-    room_type: rec.is_premium_day ? "premium_day_guest" : (rec.is_day_guest ? "day_guest" : "suite"),
+    room_type: roomType,
     status: "expected",
     order_number: rec.order_number || null,
     meal_location: rec.meal_location || null,

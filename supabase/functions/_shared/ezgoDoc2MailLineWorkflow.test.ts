@@ -2,7 +2,10 @@ import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import { buildDoc2EnrichmentPatch, classifyDoc2MailWorkflow } from "./ezgoDoc2MailLineWorkflow.ts";
 import {
   buildCombinedRoomLabel,
+  doc2CreateAutomationScope,
   doc2MailResLineId,
+  doc2NamesMatch,
+  doc2PhonesMatch,
   guestRoomLabelsInclude,
   isSameDoc2Booking,
   splitCombinedRoomLabel,
@@ -232,7 +235,14 @@ Deno.test("classifyDoc2MailWorkflow: genuine day-pass still routes to daypass_cr
 
 Deno.test("buildDoc2EnrichmentPatch: escalates existing guest to muted when rec resolves to a group occupant", () => {
   const guest = { ...shacharGuest, automation_scope: "full" };
-  const rec = { ...shacharSecondRoom, room: shacharGuest.room, automation_scope: "muted" as const };
+  const rec = {
+    ...shacharSecondRoom,
+    room: shacharGuest.room,
+    guest_name: "משה לוי",
+    coord_name: "שחר יובל",
+    is_remark_group_occupant: true,
+    automation_scope: "muted" as const,
+  };
   const patch = buildDoc2EnrichmentPatch(rec, guest);
   assertEquals(patch.automation_scope, "muted");
   assertEquals(patch.automation_muted, true);
@@ -259,9 +269,22 @@ Deno.test("buildDoc2EnrichmentPatch: suite guest with missing departure_date is 
   assertEquals(patch.departure_date, "2026-07-23");
 });
 
-Deno.test("buildDoc2EnrichmentPatch: suite guest with valid distinct dates is NOT overwritten (fill-empty-only stays default) — P0-C 2026-08-05", () => {
+Deno.test("buildDoc2EnrichmentPatch: same booking overwrites suite departure from EZGO nights snapshot", () => {
   const guest = { ...shacharGuest, arrival_date: "2026-07-21", departure_date: "2026-07-23" };
   const rec = { ...shacharSecondRoom, room: shacharGuest.room, departure_date: "2026-07-25" };
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  assertEquals(patch.departure_date, "2026-07-25");
+});
+
+Deno.test("buildDoc2EnrichmentPatch: different booking does NOT overwrite valid suite dates", () => {
+  const guest = { ...shacharGuest, arrival_date: "2026-07-21", departure_date: "2026-07-23" };
+  const rec = {
+    ...shacharSecondRoom,
+    order_number: "999999",
+    phone: "+972501110000",
+    room: shacharGuest.room,
+    departure_date: "2026-07-25",
+  };
   const patch = buildDoc2EnrichmentPatch(rec, guest);
   assertEquals("departure_date" in patch, false);
 });
@@ -397,4 +420,82 @@ Deno.test("isSameDoc2Booking: group rows with different occupant names → false
   if (isSameDoc2Booking(rec as never, guest as never)) {
     throw new Error("expected false for different group occupants");
   }
+});
+
+Deno.test("same-person Doc2 row (name spacing + group flag) → suite_room_add not duplicate create", () => {
+  const existing = {
+    id: 5305,
+    name: "ש. פרויקטים",
+    phone: "+972546969445",
+    order_number: "271439",
+    arrival_date: "2026-08-18",
+    departure_date: "2026-08-19",
+    room: "ג'ספר 3",
+    room_type: "suite",
+    meal_location: null,
+  };
+  const rec = {
+    _report: "doc2" as const,
+    section: "arrival" as const,
+    order_number: "271439",
+    room_raw: "סוויטת ג'ספר - 6",
+    room: "ג'ספר 6",
+    board_basis: null,
+    meal_location: null,
+    arrival_time: null,
+    nights: 1,
+    guest_count: "2",
+    guest_name: "ש.פרויקטים",
+    phone: "972546969445",
+    amount: null,
+    notes: null,
+    arrival_date: "2026-08-18",
+    departure_date: "2026-08-19",
+    is_day_guest: false,
+    is_premium_day: false,
+    is_remark_group_occupant: true,
+    coord_name: "ש.פרויקטים",
+    coord_phone: "+972546969445",
+    automation_scope: "courtesy_only" as const,
+  };
+  const r = classifyDoc2MailWorkflow(rec, existing);
+  assertEquals(r.workflow, "suite_room_add");
+  assertEquals(isSameDoc2Booking(rec as never, existing as never), true);
+});
+
+Deno.test("doc2CreateAutomationScope: same-name coordinator is full not muted", () => {
+  if (!doc2NamesMatch("ש.פרויקטים", "ש. פרויקטים")) {
+    throw new Error("expected name spacing to match");
+  }
+  if (!doc2PhonesMatch("+972546969445", "972546969445")) {
+    throw new Error("expected phone variants to match");
+  }
+  const scope = doc2CreateAutomationScope({
+    guest_name: "ש.פרויקטים",
+    coord_name: "ש.פרויקטים",
+    is_remark_group_occupant: true,
+    automation_scope: "courtesy_only",
+  } as never);
+  assertEquals(scope, "full");
+});
+
+Deno.test("buildDoc2EnrichmentPatch: split-brain suite room + day_guest type gets suite type + nights departure", () => {
+  const guest = {
+    ...shacharGuest,
+    room: "אקווה מרין 26",
+    room_type: "day_guest",
+    arrival_date: "2026-08-20",
+    departure_date: "2026-08-20",
+  };
+  const rec = {
+    ...shacharSecondRoom,
+    room: "אקווה מרין 26",
+    arrival_date: "2026-08-20",
+    departure_date: "2026-08-21",
+    nights: 1,
+    is_day_guest: false,
+  };
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  assertEquals(patch.departure_date, "2026-08-21");
+  assertEquals(patch.room_type, "suite");
 });

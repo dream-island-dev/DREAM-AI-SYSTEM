@@ -8,6 +8,7 @@ import {
 import type { Doc2Record } from "./ezgoDoc2Parser.ts";
 import { resolveDoc2GuestIdentity } from "./ezgoDoc2RemarkIdentity.ts";
 import {
+  isCanonicalSuiteRoom,
   isPremiumDayRoom,
   resolveSuiteRoomFromEzgoLabel,
 } from "./suiteNames.ts";
@@ -380,11 +381,14 @@ function extractedToDoc2Record(extracted: ExtractedRow): Doc2Record {
   const room_raw = buildRoomRaw(extracted.suiteType, extracted.roomName);
   const room = resolveSuiteRoomFromEzgoLabel(room_raw);
   const is_premium_day = isPremiumDayRoom(room);
-  const is_day_guest = extracted.groupId === 1
+  const suiteRoom = isCanonicalSuiteRoom(room);
+  const is_day_guest = !suiteRoom && (
+    extracted.groupId === 1
     || extracted.nights === 0
     || room === "בילוי יומי"
     || is_premium_day
-    || /premium\s*day|בילוי.*יומי/i.test(extracted.suiteType);
+    || /premium\s*day|בילוי.*יומי/i.test(extracted.suiteType)
+  );
 
   const departure_date = addDepartureFromNights(extracted.arrivalDate, extracted.nights, {
     isDayGuest: is_day_guest,

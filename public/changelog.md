@@ -1,3 +1,13 @@
+2026-08-20 | Doc2 mail snapshot sync — same-booking EZGO dates overwrite XOS suite stay; canonical suite never day-guest from iNights=0; ingest reconciles `suite_rooms` to the report (15→16 prune, 10+11 keep). Deploy later: `ezgo-mail-sync` + frontend. Not spa cron.
+
+2026-08-20 | Inbox ⚡ — «תפריט ספא» drafts `bot_scripts.spa_menu` into the reply box (manual send). Frontend only.
+
+2026-08-20 | Live task queue `docs/open_tasks.md` — every session reads it; freeze on spa cron/send until drain done.
+
+2026-08-20 | Spa upsell accept phrases — also «רוצה לתאם» / «נשמח לתאם» / «כן רוצה»; reject «לא רוצה». Deploy: `whatsapp-webhook` `whapi-webhook`.
+
+2026-08-20 | NOT YET DEPLOYED — auth guard for 6 zero-auth Edge Functions | Security audit (2026-08-19) found invite-user/chat/automation-queue/whapi-bulk-dispatch/guest-emergency-broadcast/guest-club-broadcast callable by anyone on the internet with zero credentials (invite-user could mint a fresh admin account). New `_shared/assertAuthenticatedStaff.ts` (19 tests, all passing, `deno check` clean) requires a valid session + non-suspended profile; invite-user additionally requires role=super_admin. This is NOT a new permission matrix — src/utils/auth.js untouched, ALLOWED_ROLES on invite-user untouched (still can't mint super_admin via the body). Code is written and locally tested only — NOT deployed, NOT committed, NOT pushed. Explicitly skipped tonight for morning safety: RLS changes (guests/bookings/whatsapp_conversations/bot_config/profiles/chat_history — still `USING(true)`-style open in places), webhook fail-closed behavior (META_APP_SECRET/WHAPI_WEBHOOK_SECRET presence unverifiable without dashboard access), CORS, Google OAuth whitelist enforcement, restaurant PIN storage, xlsx CVE, and all cron/webhook/guest-portal functions (untouched, still --no-verify-jwt with function-specific checks as before). To ship: review the diff on invite-user/chat/automation-queue/whapi-bulk-dispatch/guest-emergency-broadcast/guest-club-broadcast, then `npx supabase functions deploy <name> --no-verify-jwt` per function, then commit+push (repo has substantial unrelated pre-existing uncommitted changes — commit only these 8 files by name, never `git add -A`). 2-minute verify after deploy: log in as tzalamnadlan@gmail.com or mikeka13@gmail.com → Dashboard loads → open ACC (automation-queue) → User Management → invite still works.
+
 2026-08-19 | Spa shift roster = today's report names, not 70 placeholders | Assign/roster lists therapists on today's activities only. CSV import merges geresh duplicates (אור, לאקי, אום, פור, ג'ין). Placeholders `active=false` (migration 304). Hour windows later. Frontend + db push 304.
 
 
