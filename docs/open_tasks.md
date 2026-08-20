@@ -60,7 +60,11 @@ Leaving the laptop / home internet off does **not** stop the drain (server-side)
 
 ### T4 — EZGO room / profile change → XOS (15 ↔ 16 swap)
 - **Status:** done (code 2026-08-20) — **not deployed** until Mike says תעלה (`ezgo-mail-sync` + frontend)
-- **Shipped:** same-booking Doc2 snapshot overwrites suite `arrival_date`/`departure_date`; canonical suite never becomes day-guest from `iNights=0`; after all Doc2 lines of an ingest, `suite_rooms` = rooms in that report (`reconcileDoc2GuestRoomsToReport`). 10+11 stay; 15→16 prunes 15. `ezgo-guest-sync` still fill-empty (OrderId merge would wipe sibling suites). `ezgo-webhook` still staging only.
+- **Shipped:** same-booking Doc2 snapshot overwrites suite `arrival_date`/`departure_date`; canonical suite never becomes day-guest from `iNights=0`; after all Doc2 lines of an ingest, `suite_rooms` = rooms in that report (`reconcileDoc2GuestRoomsToReport`). 10+11 stay; 15→16 prunes 15.
+
+### T5 — EZGO API live sync (pending room + day-pass)
+- **Status:** done (code 2026-08-20) — **not deployed** (spa freeze; `ezgo-guest-sync` only)
+- **Shipped:** RoomId=0 creates suite profile waiting for assignment; later Reservations + historical Orders lookup fills room; Rooms:[] creates muted `day_guest`; room prune per OrderId (`reconcileGuestRoomsForOrder`). Check-in/out still housekeeping WA only. Each cron tick restages up to 200 parked **suite** ingest rows (`failed` + Reservations / Order.Rooms>0). Day-pass `order_no_room_grace_expired` stays parked (no 1000-profile flood).
 
 ---
 
@@ -75,5 +79,5 @@ Agent: append here in the same session Mike asked — do not rely on chat memory
 
 | When | What |
 |---|---|
-| 2026-08-20 | Spa accept phrase widening deployed to webhooks (not necessarily committed). |
+| 2026-08-20 | HK check-in salvage (parser + GuestsPage Hold). Deploy: `whapi-webhook` + frontend. |
 | 2026-08-20 | Paste list for Sunday spa upsell generated; 656 day-pass profiles created; staff scheduled Meta send. |

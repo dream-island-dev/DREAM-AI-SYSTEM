@@ -1,4 +1,4 @@
-2026-08-20 | EZGO API live guest sync — pending room + day-pass | `ezgo-guest-sync`: suite profile before RoomId assignment; later Reservations fills room (looks up past Orders); day-pass from Rooms:[] muted; prune suite_rooms per OrderId only. Check-in/out still WA group only. Deploy: `functions deploy ezgo-guest-sync --no-verify-jwt` (not during spa freeze).
+2026-08-20 | EZGO API live guest sync — pending room + day-pass + restage parked suites | `ezgo-guest-sync`: suite before RoomId; later Reservations fills room; muted day-pass from Rooms:[]; prune rooms per OrderId; restage up to 200 failed suite ingest rows/tick. Check-in still WA group. Deploy: `ezgo-guest-sync`.
 
 
 

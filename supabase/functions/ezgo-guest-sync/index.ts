@@ -66,6 +66,7 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   assertGuestSegmentConsistent,
+  assertNoConflictingSuiteProfile,
   assertNoDuplicateGuest,
   normalizeWhatsAppPhone,
 } from "../_shared/guestSegmentGuard.ts";
@@ -76,10 +77,12 @@ import {
   type OrderLineResolution,
   type ReservationInfo,
   buildTrustedRoomMap,
+  classifyEzgoApiBooking,
   classifyOrderResolution,
   extractOrderClient,
   extractOrderRoomsCount,
   extractReservation,
+  isUnassignedEzgoRoomId,
   resolveApiRoomOccupantIdentity,
   selectPrioritizedBatch,
 } from "../_shared/ezgoGuestSyncLogic.ts";
@@ -97,8 +100,10 @@ import {
   shouldMergeDoc2RowOntoGuest,
   createDoc2SuiteArrival,
   applyDoc2SuiteRoomAdd,
+  reconcileGuestRoomsForOrder,
 } from "../_shared/ezgoDoc2SuiteRoomSync.ts";
 import { ensureMissingDepartureAlert } from "../_shared/guestDepartureGuard.ts";
+import { extractSpaActivity } from "../_shared/ezgoSpaActivitySync.ts";
 import {
   processClaimedSpaActivities,
   restageIgnoredSpaActivities,
@@ -138,6 +143,88 @@ async function findGuestByEzgoClientId(
     throw new Error(error.message);
   }
   return data?.length === 1 ? (data[0] as Doc2GuestRow) : null;
+}
+
+async function findGuestByOrderNumber(
+  supabase: SupabaseClient,
+  orderId: string,
+): Promise<Doc2GuestRow | null> {
+  const { data, error } = await supabase
+    .from("guests")
+    .select(GUEST_ROW_SELECT)
+    .eq("order_number", orderId)
+    .neq("status", "cancelled")
+    .limit(2);
+  if (error) {
+    console.error("[ezgo-guest-sync] findGuestByOrderNumber query failed:", error.message);
+    throw new Error(error.message);
+  }
+  return data?.length === 1 ? (data[0] as Doc2GuestRow) : null;
+}
+
+async function findLatestOrderClientFromIngest(
+  supabase: SupabaseClient,
+  orderId: string,
+): Promise<OrderClientInfo | null> {
+  const { data, error } = await supabase
+    .from("ezgo_api_ingest")
+    .select("id, created_at, raw_payload")
+    .eq("raw_payload->>OrderId", orderId)
+    .order("created_at", { ascending: false })
+    .limit(25);
+  if (error) {
+    console.error("[ezgo-guest-sync] findLatestOrderClientFromIngest failed:", error.message);
+    throw new Error(error.message);
+  }
+  for (const row of data ?? []) {
+    const oc = extractOrderClient(row as { id: string; created_at: string; raw_payload: Record<string, unknown> });
+    if (oc) return oc;
+  }
+  return null;
+}
+
+const SUITE_RESTAGE_LIMIT = 200;
+
+function isParkedSuiteIngestRow(row: {
+  notes: string | null;
+  raw_payload: Record<string, unknown>;
+}): boolean {
+  const notes = row.notes || "";
+  if (notes === "order_no_room_grace_expired") return false;
+  if (notes.includes("daypass")) return false;
+  const rp = row.raw_payload || {};
+  const entity = rp.Entity as string | undefined;
+  if (entity === "Reservations") return true;
+  const rooms = extractOrderRoomsCount(rp);
+  return rooms != null && rooms > 0;
+}
+
+async function restageParkedSuiteOrders(supabase: SupabaseClient): Promise<number> {
+  const { data, error } = await supabase
+    .from("ezgo_api_ingest")
+    .select("id, notes, raw_payload")
+    .eq("status", "failed")
+    .order("created_at", { ascending: true })
+    .limit(800);
+  if (error) {
+    console.error("[ezgo-guest-sync] suite restage select failed:", error.message);
+    return 0;
+  }
+  const ids = (data ?? [])
+    .filter((row) => isParkedSuiteIngestRow(row as { notes: string | null; raw_payload: Record<string, unknown> }))
+    .slice(0, SUITE_RESTAGE_LIMIT)
+    .map((row) => row.id as string);
+  if (!ids.length) return 0;
+  const { error: upErr } = await supabase
+    .from("ezgo_api_ingest")
+    .update({ status: "staged", notes: null })
+    .in("id", ids)
+    .eq("status", "failed");
+  if (upErr) {
+    console.error("[ezgo-guest-sync] suite restage update failed:", upErr.message);
+    return 0;
+  }
+  return ids.length;
 }
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -217,8 +304,8 @@ async function purgeStaleEzgoApiIngest(supabase: SupabaseClient): Promise<number
 }
 
 type RoomLineOutcome =
-  | { kind: "created"; noPhone?: boolean }
-  | { kind: "enriched"; noPhone?: boolean }
+  | { kind: "created"; noPhone?: boolean; guestId?: number; roomLabel?: string | null }
+  | { kind: "enriched"; noPhone?: boolean; guestId?: number; roomLabel?: string | null }
   | { kind: "unresolved"; reason: string }
   | { kind: "error"; message: string };
 
@@ -235,6 +322,7 @@ async function applyApiOnlyEnrichment(
   guestId: number,
   {
     mealPlan, email, clientId, noPhoneAtImport, salesSegmentId, salesSegmentKind,
+    pendingRoomAssignment,
   }: {
     mealPlan?: string;
     email?: string | null;
@@ -242,6 +330,7 @@ async function applyApiOnlyEnrichment(
     noPhoneAtImport?: boolean;
     salesSegmentId?: number | null;
     salesSegmentKind?: SalesSegmentKind;
+    pendingRoomAssignment?: boolean;
   },
 ): Promise<void> {
   // Best-effort fill-empty patches on top of an already-created/merged guest
@@ -279,6 +368,23 @@ async function applyApiOnlyEnrichment(
     }
     const { error } = await supabase.from("guests").update(patch).eq("id", guestId);
     if (error) console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment sales_segment failed for guest ${guestId}:`, error.message);
+  }
+  if (pendingRoomAssignment !== undefined) {
+    const { data: guestRow, error: fetchErr } = await supabase
+      .from("guests").select("guest_profile").eq("id", guestId).maybeSingle();
+    if (fetchErr) {
+      console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment pending_room fetch failed for guest ${guestId}:`, fetchErr.message);
+    } else if (guestRow) {
+      const existingProfile = (guestRow.guest_profile as Record<string, unknown>) || {};
+      const existingSync = (existingProfile.ezgo_sync as Record<string, unknown>) || {};
+      const { error } = await supabase.from("guests").update({
+        guest_profile: {
+          ...existingProfile,
+          ezgo_sync: { ...existingSync, pending_room_assignment: pendingRoomAssignment },
+        },
+      }).eq("id", guestId);
+      if (error) console.error(`[ezgo-guest-sync] applyApiOnlyEnrichment pending_room flag failed for guest ${guestId}:`, error.message);
+    }
   }
   if (noPhoneAtImport) {
     // Fail Visible marker + hard automation mute for the Stage 1 no-phone
@@ -342,8 +448,9 @@ async function processRoomLine(
 
   const phone = normalizeWhatsAppPhone(identity.phone);
 
-  const suiteName = line.roomId ? roomMap.get(line.roomId) : undefined;
-  if (!suiteName) return { kind: "unresolved", reason: "room_not_mapped" };
+  const pendingRoom = isUnassignedEzgoRoomId(line.roomId);
+  const suiteName = pendingRoom ? null : roomMap.get(line.roomId);
+  if (!pendingRoom && !suiteName) return { kind: "unresolved", reason: "room_not_mapped" };
 
   if (!line.checkin) return { kind: "unresolved", reason: "no_checkin_date" };
 
@@ -379,7 +486,9 @@ async function processRoomLine(
   // full. Without this, a municipal coordinator's own number synced straight
   // from a single-room booking would receive full guest WhatsApp automation.
   const automationScope = mergeAutomationScope(
-    phone
+    pendingRoom || !phone
+      ? "muted"
+      : phone
       ? resolveDoc2ImportAutomationScope({
         coordNameRaw: oc.fullName,
         isRemarkGroupOccupant: identity.is_remark_group_occupant,
@@ -419,14 +528,12 @@ async function processRoomLine(
   try {
     assertGuestSegmentConsistent({ room: suiteName, room_type: "suite" });
 
-    // Try the ClientId link first (API-only signal, catches group-booking
-    // siblings under different OrderIds) — only for the coordinator's own
-    // identity, never a remark-swapped individual (a different person, not
-    // "this client's" room). Falls back to the existing order_number/phone
-    // path when there's no ClientId or no exact single match.
-    let existing = !identity.is_remark_group_occupant && oc.clientId
-      ? await findGuestByEzgoClientId(supabase, oc.clientId, line.checkin)
+    let existing = !identity.is_remark_group_occupant
+      ? await findGuestByOrderNumber(supabase, orderId)
       : null;
+    if (!existing && !identity.is_remark_group_occupant && oc.clientId) {
+      existing = await findGuestByEzgoClientId(supabase, oc.clientId, line.checkin);
+    }
     let willMerge = !!existing;
 
     if (!existing) {
@@ -470,6 +577,7 @@ async function processRoomLine(
       noPhoneAtImport: !phone,
       salesSegmentId: oc.salesSegment,
       salesSegmentKind: segmentKind,
+      pendingRoomAssignment: pendingRoom,
     });
 
     if (willMerge && existing) {
@@ -479,13 +587,13 @@ async function processRoomLine(
         arrival_date: existing.arrival_date || line.checkin,
         departure_date: effectiveDeparture, room_type: "suite", room: suiteName,
       });
-      return { kind: "enriched", identitySource, noPhone: !phone };
+      return { kind: "enriched", identitySource, noPhone: !phone, guestId: result.id, roomLabel: suiteName };
     }
 
     await ensureMissingDepartureAlert(supabase, {
       id: result.id, phone, name: result.name, arrival_date: line.checkin, departure_date: departure, room_type: "suite", room: suiteName,
     });
-    return { kind: "created", identitySource, noPhone: !phone };
+    return { kind: "created", identitySource, noPhone: !phone, guestId: result.id, roomLabel: suiteName };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // A genuinely different room-merge edge case (not the same-person one
@@ -501,6 +609,112 @@ async function processRoomLine(
       return { kind: "unresolved", reason: "invalid_dates", identitySource };
     }
     return { kind: "error", message, identitySource };
+  }
+}
+
+const DAY_PASS_ROOM = "בילוי יומי";
+
+async function findDaypassArrivalFromActivities(
+  supabase: SupabaseClient,
+  orderId: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("ezgo_api_ingest")
+    .select("id, raw_payload")
+    .eq("raw_payload->>Entity", "Activities")
+    .eq("raw_payload->>OrderId", orderId)
+    .order("created_at", { ascending: false })
+    .limit(10);
+  if (error) {
+    console.error("[ezgo-guest-sync] findDaypassArrivalFromActivities failed:", error.message);
+    return null;
+  }
+  for (const row of data ?? []) {
+    const act = extractSpaActivity({
+      id: row.id as string,
+      raw_payload: row.raw_payload as Record<string, unknown>,
+    });
+    if (act?.appointmentDate) return act.appointmentDate;
+  }
+  return null;
+}
+
+async function processDaypassOrder(
+  supabase: SupabaseClient,
+  oc: OrderClientInfo,
+  segmentKind: SalesSegmentKind,
+): Promise<RoomLineOutcome> {
+  const arrival = oc.arrivalDate || await findDaypassArrivalFromActivities(supabase, oc.orderId);
+  if (!arrival) return { kind: "unresolved", reason: "daypass_missing_arrival_date" };
+
+  const phone = normalizeWhatsAppPhone(oc.tel1);
+  const departure = oc.departureDate && oc.departureDate >= arrival ? oc.departureDate : arrival;
+  const mealPlan = oc.board != null ? BOARD_TO_MEAL_PLAN[oc.board] : undefined;
+
+  try {
+    await assertNoConflictingSuiteProfile(supabase, phone, arrival);
+    const existing = await findGuestByOrderNumber(supabase, oc.orderId);
+    if (existing) {
+      await applyApiOnlyEnrichment(supabase, existing.id, {
+        mealPlan,
+        email: oc.email,
+        clientId: oc.clientId,
+        noPhoneAtImport: !phone && !existing.phone,
+        salesSegmentId: oc.salesSegment,
+        salesSegmentKind: segmentKind,
+      });
+      return { kind: "enriched", noPhone: !phone, guestId: existing.id };
+    }
+    if (phone) await assertNoDuplicateGuest(supabase, phone, arrival);
+
+    const insert: Record<string, unknown> = {
+      phone,
+      name: oc.fullName,
+      arrival_date: arrival,
+      departure_date: departure,
+      room_type: "day_guest",
+      room: DAY_PASS_ROOM,
+      status: "pending",
+      order_number: oc.orderId,
+      automation_scope: "muted",
+      automation_muted: true,
+      guest_index: 1,
+    };
+    const { data: inserted, error } = await supabase
+      .from("guests")
+      .insert(insert)
+      .select("id, name, phone")
+      .maybeSingle();
+    if (error) throw error;
+    if (!inserted) throw new Error("יצירת אורח יום-כיף נכשלה");
+
+    await applyApiOnlyEnrichment(supabase, inserted.id as number, {
+      mealPlan,
+      email: oc.email,
+      clientId: oc.clientId,
+      noPhoneAtImport: !phone,
+      salesSegmentId: oc.salesSegment,
+      salesSegmentKind: segmentKind,
+    });
+    if (inserted.phone) {
+      await supabase.from("bookings").upsert({
+        phone: String(inserted.phone).replace(/^\+/, ""),
+        guest_name: oc.fullName,
+        arrival_date: arrival,
+        status: "expected",
+        room_count: 1,
+      }, { onConflict: "phone,arrival_date" });
+    }
+    return { kind: "created", noPhone: !phone, guestId: inserted.id as number };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("פרופיל סוויטה פעיל")) {
+      return { kind: "unresolved", reason: "daypass_conflicts_suite" };
+    }
+    if (message.includes("כבר קיים פרופיל אורח")) {
+      return { kind: "unresolved", reason: "duplicate_guest_same_phone_date" };
+    }
+    return { kind: "error", message };
   }
 }
 
@@ -542,9 +756,11 @@ serve(async (req) => {
     resolved_via_remark: 0, resolved_via_order_client: 0,
     skipped_cancelled: 0, skipped_no_client_data: 0, ignored_out_of_scope: 0,
     parked_room_less: 0, parked_unresolved: 0,
+    daypass_created: 0, daypass_enriched: 0,
     cancellations_applied: 0, delete_events_no_matching_guest: 0,
     spa_updated: 0, spa_created: 0, spa_cancelled: 0, spa_skipped: 0,
     spa_waiting_guest: 0, spa_unresolved: 0, spa_worker_stamped: 0, spa_restaged: 0,
+    suite_restaged: 0,
   };
 
   // releaseIds/release are declared outside the try so the `finally` below
@@ -558,6 +774,7 @@ serve(async (req) => {
 
   try {
     summary.spa_restaged = await restageIgnoredSpaActivities(supabase);
+    summary.suite_restaged = await restageParkedSuiteOrders(supabase);
 
     // 1) Race-safe claim: select candidate staged rows, then atomically flip
     // ONLY the ones still 'staged' at update time to 'processing'. A second
@@ -712,54 +929,12 @@ serve(async (req) => {
       }
     }
 
-    // 2c) Orders/Client snapshots with no Reservations line in this batch --
-    // could be a genuine race (Reservations for this order just hasn't
-    // arrived yet, will pair next run) or a day-pass/spa-only order that will
-    // NEVER get a Reservations event (EZGO only sends one for a physical
-    // room). Confirmed live 2026-08-16: 1041 of 1144 stuck OrderIds had never
-    // had a Reservations row anywhere, ever -- they were cycling
-    // staged->processing->staged every run since 2026-08-13, the day the
-    // webhook went live, three days before this fix. Give every order a
-    // GRACE_MS window to pair normally (covers the race); past that, only
-    // classify it out-of-scope when EVERY claimed row for that order
-    // positively confirms Order.Rooms: [] (never on an unparseable payload --
-    // Zero Data Loss). Day-pass guest creation via the live API isn't in this
-    // round's scope anyway (see module doc) -- this only stops the infinite
-    // retry loop and the unbounded ezgo_api_ingest growth it causes.
+    // 2c) Orders/Client with no Reservations in this batch: wait GRACE_MS for
+    // a suite Reservations event, then create a day-pass (Rooms:[]) or a
+    // pending-room suite (Rooms listed / dates on Order). Historic failed
+    // rows are not restaged here — only newly staged ingest.
     const GRACE_MS = 30 * 60 * 1000;
     const now = Date.now();
-    for (const orderId of orderClientByOrder.keys()) {
-      if (reservationsByOrder.has(orderId)) continue;
-      const rowIds = [...(rowIdsByOrder.get(orderId) ?? [])];
-      if (!rowIds.length) continue;
-      const oldestCreatedAt = Math.min(...rowIds.map((id) => new Date(createdAtById.get(id) ?? now).getTime()));
-      if (now - oldestCreatedAt < GRACE_MS) continue; // still within the race window -- keep retrying
-
-      const roomsCounts = rowIds.map((id) => {
-        const row = inScopeFull.find((r) => r.id === id);
-        return row ? extractOrderRoomsCount(row.raw_payload) : null;
-      });
-      const allConfirmedRoomless = roomsCounts.every((c) => c === 0);
-      if (!allConfirmedRoomless) continue; // has rooms, or unparseable -- never guess, keep retrying
-
-      // status='failed' (Mike, 2026-08-16, required before Stage 3's UI):
-      // NOT 'ignored'. purge_stale_ezgo_api_ingest (migration 296) purges
-      // 'ignored' rows after 3 days -- a room-less order is a genuine
-      // day-pass/spa-only candidate a human can still act on ("צור פרופיל
-      // בילוי יומי" in the exceptions queue), so it must stay visible the
-      // same way the other four unresolved reasons do (classifyOrderResolution
-      // above), not silently vanish before anyone gets to it.
-      const { error } = await supabase.from("ezgo_api_ingest").update({
-        status: "failed",
-        notes: "order_no_room_grace_expired",
-      }).in("id", rowIds);
-      if (error) {
-        console.error(`[ezgo-guest-sync] failed to park room-less order ${orderId}:`, error.message);
-      } else {
-        summary.parked_room_less += rowIds.length;
-        release(rowIds);
-      }
-    }
 
     // Trust gate (Mike, sync-management follow-up part 1): only
     // csv_verified/staff_verified matched_via tiers are usable to resolve a
@@ -793,12 +968,139 @@ serve(async (req) => {
       );
     }
 
+    const tallyLine = (
+      outcome: RoomLineOutcome & { identitySource?: "remark" | "order_client" },
+      lineResolutions: OrderLineResolution[],
+      wantedByGuest: Map<number, Set<string>>,
+    ) => {
+      switch (outcome.kind) {
+        case "created":
+          summary.created++;
+          if (outcome.noPhone) summary.no_phone_synced++;
+          if (outcome.identitySource === "remark") summary.resolved_via_remark++;
+          else if (outcome.identitySource) summary.resolved_via_order_client++;
+          if (outcome.guestId && outcome.roomLabel) {
+            const set = wantedByGuest.get(outcome.guestId) ?? new Set();
+            set.add(outcome.roomLabel);
+            wantedByGuest.set(outcome.guestId, set);
+          }
+          lineResolutions.push({ kind: "created" });
+          break;
+        case "enriched":
+          summary.enriched++;
+          if (outcome.noPhone) summary.no_phone_synced++;
+          if (outcome.identitySource === "remark") summary.resolved_via_remark++;
+          else if (outcome.identitySource) summary.resolved_via_order_client++;
+          if (outcome.guestId && outcome.roomLabel) {
+            const set = wantedByGuest.get(outcome.guestId) ?? new Set();
+            set.add(outcome.roomLabel);
+            wantedByGuest.set(outcome.guestId, set);
+          }
+          lineResolutions.push({ kind: "enriched" });
+          break;
+        case "unresolved":
+          if (outcome.reason === "no_usable_phone") summary.unresolved_no_usable_phone++;
+          else if (outcome.reason === "room_not_mapped") summary.unresolved_room_not_mapped++;
+          else if (outcome.reason === "no_checkin_date") summary.unresolved_no_checkin++;
+          else if (outcome.reason === "duplicate_guest_same_phone_date") summary.unresolved_duplicate_guest++;
+          else if (outcome.reason === "invalid_dates") summary.unresolved_invalid_dates++;
+          else summary.unresolved_other++;
+          lineResolutions.push({ kind: "unresolved", reason: outcome.reason });
+          break;
+        case "error":
+          summary.errors++;
+          lineResolutions.push({ kind: "error" });
+          break;
+      }
+    };
+
+    const finalizeOrderRows = async (
+      rowIds: string[],
+      lineResolutions: OrderLineResolution[],
+      orderId: string,
+    ) => {
+      const resolution = classifyOrderResolution(lineResolutions);
+      if (resolution.action === "parsed") {
+        const { error } = await supabase.from("ezgo_api_ingest").update({ status: "parsed", notes: "all_room_lines_resolved" }).in("id", rowIds);
+        if (error) console.error(`[ezgo-guest-sync] failed to finalize resolved order ${orderId}:`, error.message);
+        else release(rowIds);
+      } else if (resolution.action === "park") {
+        const { error } = await supabase.from("ezgo_api_ingest").update({ status: "failed", notes: resolution.notes }).in("id", rowIds);
+        if (error) {
+          console.error(`[ezgo-guest-sync] failed to park unresolved order ${orderId} (${resolution.notes}):`, error.message);
+        } else {
+          summary.parked_unresolved += rowIds.length;
+          release(rowIds);
+        }
+      }
+    };
+
+    for (const [orderId, oc] of orderClientByOrder) {
+      if (reservationsByOrder.has(orderId)) continue;
+      const rowIds = [...(rowIdsByOrder.get(orderId) ?? [])];
+      if (!rowIds.length) continue;
+      const oldestCreatedAt = Math.min(...rowIds.map((id) => new Date(createdAtById.get(id) ?? now).getTime()));
+      if (now - oldestCreatedAt < GRACE_MS) continue;
+
+      const roomsCounts = rowIds.map((id) => {
+        const row = inScopeFull.find((r) => r.id === id);
+        return row ? extractOrderRoomsCount(row.raw_payload) : null;
+      });
+      const kind = classifyEzgoApiBooking({
+        roomsCount: roomsCounts.every((c) => c === 0) ? 0 : roomsCounts.find((c) => c != null) ?? null,
+        reservations: [],
+      });
+      const segmentKind = kindFromSegmentMap(oc.salesSegment, segmentMap);
+
+      if (kind === "daypass") {
+        const outcome = await processDaypassOrder(supabase, oc, segmentKind);
+        const lineResolutions: OrderLineResolution[] = [];
+        if (outcome.kind === "created") {
+          summary.daypass_created++;
+          lineResolutions.push({ kind: "created" });
+        } else if (outcome.kind === "enriched") {
+          summary.daypass_enriched++;
+          lineResolutions.push({ kind: "enriched" });
+        } else {
+          tallyLine(outcome, lineResolutions, new Map());
+        }
+        await finalizeOrderRows(rowIds, lineResolutions, orderId);
+        continue;
+      }
+
+      if (kind === "suite_pending_room" && oc.arrivalDate) {
+        const synthetic: ReservationInfo = {
+          orderId,
+          ingestId: oc.ingestId,
+          roomId: 0,
+          lineId: null,
+          status: oc.status,
+          lineStatus: 1,
+          checkin: oc.arrivalDate,
+          checkout: oc.departureDate,
+          remark: "",
+          operationRemark: "",
+        };
+        const lineResolutions: OrderLineResolution[] = [];
+        const wantedByGuest = new Map<number, Set<string>>();
+        const outcome = await processRoomLine(
+          supabase, orderId, oc, synthetic, 1, roomMap, segmentKind,
+        );
+        tallyLine(outcome, lineResolutions, wantedByGuest);
+        await finalizeOrderRows(rowIds, lineResolutions, orderId);
+      }
+    }
+
     for (const [orderId, reservations] of reservationsByOrder) {
       const rowIds = [...(rowIdsByOrder.get(orderId) ?? [])];
 
-      const oc = orderClientByOrder.get(orderId);
+      let oc = orderClientByOrder.get(orderId) ?? null;
       if (!oc) {
-        summary.skipped_no_client_data++; // no Orders/Client snapshot for this order yet — retry later
+        oc = await findLatestOrderClientFromIngest(supabase, orderId);
+        if (oc) orderClientByOrder.set(orderId, oc);
+      }
+      if (!oc) {
+        summary.skipped_no_client_data++;
         continue;
       }
       if (oc.status === 0) {
@@ -827,6 +1129,7 @@ serve(async (req) => {
       if (!totalLinesInOrder) continue;
 
       const lineResolutions: OrderLineResolution[] = [];
+      const wantedByGuest = new Map<number, Set<string>>();
       for (const line of lines) {
         const outcome = await processRoomLine(
           supabase,
@@ -837,58 +1140,14 @@ serve(async (req) => {
           roomMap,
           kindFromSegmentMap(oc.salesSegment, segmentMap),
         );
-        switch (outcome.kind) {
-          case "created":
-            summary.created++;
-            if (outcome.noPhone) summary.no_phone_synced++;
-            if (outcome.identitySource === "remark") summary.resolved_via_remark++; else summary.resolved_via_order_client++;
-            lineResolutions.push({ kind: "created" });
-            break;
-          case "enriched":
-            summary.enriched++;
-            if (outcome.noPhone) summary.no_phone_synced++;
-            if (outcome.identitySource === "remark") summary.resolved_via_remark++; else summary.resolved_via_order_client++;
-            lineResolutions.push({ kind: "enriched" });
-            break;
-          case "unresolved":
-            if (outcome.reason === "no_usable_phone") summary.unresolved_no_usable_phone++;
-            else if (outcome.reason === "room_not_mapped") summary.unresolved_room_not_mapped++;
-            else if (outcome.reason === "no_checkin_date") summary.unresolved_no_checkin++;
-            else if (outcome.reason === "duplicate_guest_same_phone_date") summary.unresolved_duplicate_guest++;
-            else if (outcome.reason === "invalid_dates") summary.unresolved_invalid_dates++;
-            else summary.unresolved_other++;
-            lineResolutions.push({ kind: "unresolved", reason: outcome.reason });
-            break;
-          case "error":
-            summary.errors++;
-            lineResolutions.push({ kind: "error" });
-            break;
-        }
+        tallyLine(outcome, lineResolutions, wantedByGuest);
       }
 
-      // classifyOrderResolution (ezgoGuestSyncLogic.ts) decides parsed vs.
-      // terminal park vs. keep retrying -- see its doc comment. Parking uses
-      // status='failed' (not 'ignored'): 'failed' rows are excluded from
-      // purge_stale_ezgo_api_ingest (migration 296), so a parked order stays
-      // visible until a human fixes the underlying cause or a future retry
-      // action re-runs it, instead of quietly vanishing after 3 days.
-      const resolution = classifyOrderResolution(lineResolutions);
-      if (resolution.action === "parsed") {
-        const { error } = await supabase.from("ezgo_api_ingest").update({ status: "parsed", notes: "all_room_lines_resolved" }).in("id", rowIds);
-        if (error) {
-          console.error(`[ezgo-guest-sync] failed to finalize resolved order ${orderId}:`, error.message);
-        } else {
-          release(rowIds);
-        }
-      } else if (resolution.action === "park") {
-        const { error } = await supabase.from("ezgo_api_ingest").update({ status: "failed", notes: resolution.notes }).in("id", rowIds);
-        if (error) {
-          console.error(`[ezgo-guest-sync] failed to park unresolved order ${orderId} (${resolution.notes}):`, error.message);
-        } else {
-          summary.parked_unresolved += rowIds.length;
-          release(rowIds);
-        }
-      } // else action === "retry": stays claimed here, released back to 'staged' in `finally` — retried next run
+      for (const [guestId, rooms] of wantedByGuest) {
+        await reconcileGuestRoomsForOrder(supabase, guestId, orderId, [...rooms]);
+      }
+
+      await finalizeOrderRows(rowIds, lineResolutions, orderId);
     }
 
     const spa = await processClaimedSpaActivities(supabase, claimedRows, release);

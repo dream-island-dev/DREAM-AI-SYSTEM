@@ -472,6 +472,33 @@ export async function reconcileDoc2GuestRoomsToReport(
   await recomputeGuestCombinedRoom(supabase, guestId, wanted[0]);
 }
 
+/** Prune suite_rooms for ONE EZGO order_number only — never ClientId sibling suites. */
+export async function reconcileGuestRoomsForOrder(
+  supabase: SupabaseClient,
+  guestId: number,
+  orderNumber: string,
+  wantedRooms: string[],
+): Promise<void> {
+  const order = String(orderNumber || "").trim();
+  if (!order) return;
+  const wanted = [...new Set(wantedRooms.map((r) => String(r || "").trim()).filter(isCanonicalSuiteRoom))];
+  if (!wanted.length) return;
+
+  const { data } = await supabase
+    .from("suite_rooms")
+    .select("id, room_display, room_name, order_number")
+    .eq("guest_id", guestId);
+  for (const row of data ?? []) {
+    if (String(row.order_number ?? "").trim() !== order) continue;
+    const label = resolveSuiteRoomFromEzgoLabel(String(row.room_display || row.room_name || "").trim())
+      || String(row.room_display || row.room_name || "").trim();
+    if (!isCanonicalSuiteRoom(label)) continue;
+    if (wanted.includes(label)) continue;
+    await supabase.from("suite_rooms").delete().eq("id", row.id);
+  }
+  await recomputeGuestCombinedRoom(supabase, guestId, wanted[0]);
+}
+
 export async function recomputeGuestCombinedRoom(
   supabase: SupabaseClient,
   guestId: number,

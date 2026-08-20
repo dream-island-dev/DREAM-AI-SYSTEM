@@ -44,6 +44,9 @@ export interface OrderClientInfo {
   clientId: number | null;
   /** EZGO Order.SalesSegment numeric id (0 is a real id, not unset). */
   salesSegment: number | null;
+  /** Stay dates when present on Order / Order.Rooms (day-pass has no Reservations). */
+  arrivalDate: string | null;
+  departureDate: string | null;
 }
 
 export interface ReservationInfo {
@@ -57,6 +60,75 @@ export interface ReservationInfo {
   checkout: string | null;
   remark: string;
   operationRemark: string;
+}
+
+/** RoomId=0 (and null) means EZGO has not assigned a physical unit yet.
+ * It is NOT suite number 0 and must never be mapped. */
+export function isUnassignedEzgoRoomId(roomId: number | null | undefined): boolean {
+  return roomId == null || roomId === 0;
+}
+
+export type EzgoApiBookingKind = "suite" | "suite_pending_room" | "daypass" | "unknown";
+
+/** Suite vs day-pass vs waiting-for-assignment — never treats RoomId=0 as a unit. */
+export function classifyEzgoApiBooking(input: {
+  roomsCount: number | null;
+  reservations: Array<{ roomId: number }>;
+}): EzgoApiBookingKind {
+  const assigned = input.reservations.some((r) => !isUnassignedEzgoRoomId(r.roomId));
+  if (assigned) return "suite";
+  if (input.reservations.some((r) => r.roomId === 0)) return "suite_pending_room";
+  if (input.roomsCount === 0) return "daypass";
+  if (input.roomsCount != null && input.roomsCount > 0) return "suite_pending_room";
+  return "unknown";
+}
+
+const ORDER_ARRIVAL_KEYS = [
+  "Checkin", "CheckIn", "FromDate", "DateFrom", "Arrival", "ArrivalDate", "StartDate", "dtCheckIn", "From",
+];
+const ORDER_DEPARTURE_KEYS = [
+  "Checkout", "CheckOut", "ToDate", "DateTo", "Departure", "DepartureDate", "EndDate", "dtCheckOut", "To",
+];
+
+function pickDateFromRecord(obj: Record<string, unknown>, keys: string[]): string | null {
+  for (const k of keys) {
+    const iso = ddmmyyyyToIso(obj[k]);
+    if (iso) return iso;
+  }
+  return null;
+}
+
+export function extractOrderObject(rawPayload: Record<string, unknown>): Record<string, unknown> | null {
+  const entity = rawPayload.Entity as string | undefined;
+  const type = rawPayload.Type as string | null | undefined;
+  if (entity === "Orders") {
+    const value = parseInnerValue(rawPayload);
+    return (value?.Order as Record<string, unknown>) ?? null;
+  }
+  if (!entity && (type === "Insert" || type === "Update")) {
+    return (rawPayload.Order as Record<string, unknown>) ?? null;
+  }
+  return null;
+}
+
+export function extractOrderStayDates(rawPayload: Record<string, unknown>): {
+  arrival: string | null;
+  departure: string | null;
+} {
+  const order = extractOrderObject(rawPayload);
+  if (!order) return { arrival: null, departure: null };
+  let arrival = pickDateFromRecord(order, ORDER_ARRIVAL_KEYS);
+  let departure = pickDateFromRecord(order, ORDER_DEPARTURE_KEYS);
+  if (!arrival && Array.isArray(order.Rooms)) {
+    for (const raw of order.Rooms) {
+      if (!raw || typeof raw !== "object") continue;
+      const room = raw as Record<string, unknown>;
+      arrival = pickDateFromRecord(room, ORDER_ARRIVAL_KEYS);
+      departure = pickDateFromRecord(room, ORDER_DEPARTURE_KEYS);
+      if (arrival) break;
+    }
+  }
+  return { arrival, departure };
 }
 
 export function parseInnerValue(rawPayload: Record<string, unknown>): Record<string, unknown> | null {
@@ -101,6 +173,7 @@ export function extractOrderClient(ingestRow: {
 
   const clientIdRaw = client?.ClientId;
   const clientId = typeof clientIdRaw === "number" && clientIdRaw > 0 ? clientIdRaw : null;
+  const stay = extractOrderStayDates(root);
 
   return {
     orderId,
@@ -118,6 +191,8 @@ export function extractOrderClient(ingestRow: {
         : parseInt(String(order.SalesSegment ?? ""), 10);
       return Number.isFinite(seg) ? Math.trunc(seg) : null;
     })(),
+    arrivalDate: stay.arrival,
+    departureDate: stay.departure,
   };
 }
 
@@ -138,16 +213,7 @@ export function extractOrderClient(ingestRow: {
  * never on an unparseable payload).
  */
 export function extractOrderRoomsCount(rawPayload: Record<string, unknown>): number | null {
-  const entity = rawPayload.Entity as string | undefined;
-  const type = rawPayload.Type as string | null | undefined;
-
-  let order: Record<string, unknown> | null = null;
-  if (entity === "Orders") {
-    const value = parseInnerValue(rawPayload);
-    order = (value?.Order as Record<string, unknown>) ?? null;
-  } else if (!entity && (type === "Insert" || type === "Update")) {
-    order = (rawPayload.Order as Record<string, unknown>) ?? null;
-  }
+  const order = extractOrderObject(rawPayload);
   if (!order) return null;
   const rooms = order.Rooms;
   return Array.isArray(rooms) ? rooms.length : null;
@@ -276,6 +342,8 @@ const PARKABLE_UNRESOLVED_REASONS = new Set([
   "room_not_mapped", // includes a mapping that exists but was filtered out by the trust gate above
   "duplicate_guest_same_phone_date",
   "invalid_dates",
+  "daypass_missing_arrival_date",
+  "daypass_conflicts_suite",
 ]);
 
 export type OrderLineResolutionKind = "created" | "enriched" | "unresolved" | "error";

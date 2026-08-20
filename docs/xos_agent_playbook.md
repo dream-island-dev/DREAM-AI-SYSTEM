@@ -420,8 +420,13 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ### 2026-08-20 — Doc2 mail is a per-ingest room snapshot
 - **Symptom:** EZGO changed nights/room; XOS kept fill-empty dates and extra `suite_rooms` (0-night suite, 15 leftover after 16).
-- **Fix:** Same booking overwrites suite dates. After all Doc2 lines of one mail, prune rooms not in that report. Do not prune from `ezgo-guest-sync` by OrderId (ClientId merge wipes sibling suites).
-- **Lesson:** Canonical physical suite wins over stale `day_guest` / `iNights=0`.
+- **Fix:** Same booking overwrites suite dates. After all Doc2 lines of one mail, prune rooms not in that report. API path prunes `suite_rooms` for **that OrderId only** (`reconcileGuestRoomsForOrder`) — never by ClientId.
+- **Lesson:** Canonical physical suite wins over stale `day_guest` / `iNights=0`. RoomId=0 is unassigned, not a unit. EZGO `Checkin`/`Checkout` are stay dates, not physical CI/CO.
+
+### 2026-08-20 — EZGO API live profiles without guessing zeros
+- **Symptom:** RoomId=0 parked the order; day-pass never created; later room assignment missed if Orders was already consumed.
+- **Fix:** Create pending suite (no room guess); look up historical Orders when only Reservations arrives; muted day-pass from `Rooms:[]` after 30min grace. Historic failed rows not auto-restaged.
+- **Lesson:** Physical check-in stays the housekeeping WA group. EZGO API never writes `checked_in` / `checked_out`.
 
 ### 2026-08-20 — Chat is not the work queue
 - **Symptom:** Cross-session tasks (spa hub banner, Meta vs DM price, EZGO room swap) would vanish when a new chat started.
@@ -497,6 +502,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 - **Root:** `fieldOpsTranslation` `maxOutputTokens:160` on Gemini 2.5 — thinking tokens consume the budget; code accepted any non-Hebrew line. Inbox prefix `[מתיבת וואטסאפ — name]` was also sent to the model.
 - **Fix:** Strip prefix; `thinkingBudget:0`; 1024 tokens; reject `MAX_TOKENS` / dangling and|or|the.
 - **Lesson:** Guest-bot already flags `finishReason=MAX_TOKENS`; short "one line" Gemini calls need the same + thinking off.
+
+### 2026-08-20 — Housekeeping check-in: EZGO never writes status; salvage ✅-without-ci in UI
+- **Fact:** EZGO mail/API update rooms/dates/spa — never `guests.status=checked_in`. Physical CI is only the WA housekeeping group (`N ci`). `N✅` is room-ready, not presence.
+- **Misses:** Action-only Co/CI with a staff note (`10\n11\nCo צמידים שחורים`) was `near_miss`. Ready-without-ci had a dead chip (no apply) after the 15:00 auto-CI removal.
+- **Fix:** Parser trailing-note on action-only lines; GuestsPage banner + Hold-to-confirm salvage. Never auto-check-in from ✅.
 
 ### 2026-08-14 — Housekeeping `N ci` must not attach to yesterday's occupant
 - **Symptom:** `9 ci` checked in הראל ברקוביץ (arrived yesterday, departing today) because nobody arrives today to אמטיסט 9.

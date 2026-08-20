@@ -3,11 +3,14 @@ import {
   BOARD_TO_MEAL_PLAN,
   TRUSTED_ROOM_MAP_MATCHED_VIA,
   buildTrustedRoomMap,
+  classifyEzgoApiBooking,
   classifyOrderResolution,
   ddmmyyyyToIso,
   extractOrderClient,
   extractOrderRoomsCount,
+  extractOrderStayDates,
   extractReservation,
+  isUnassignedEzgoRoomId,
   pickFillEmpty,
   resolveApiRoomOccupantIdentity,
   selectPrioritizedBatch,
@@ -199,6 +202,61 @@ Deno.test("extractReservation: RoomId=0 (not yet assigned) is still extracted �
     },
   };
   assertEquals(extractReservation(row)?.roomId, 0);
+});
+
+Deno.test("isUnassignedEzgoRoomId: 0 and null are unset, positive ids are real units", () => {
+  assertEquals(isUnassignedEzgoRoomId(0), true);
+  assertEquals(isUnassignedEzgoRoomId(null), true);
+  assertEquals(isUnassignedEzgoRoomId(3), false);
+});
+
+Deno.test("classifyEzgoApiBooking: Rooms:[] and no reservations -> daypass", () => {
+  assertEquals(classifyEzgoApiBooking({ roomsCount: 0, reservations: [] }), "daypass");
+});
+
+Deno.test("classifyEzgoApiBooking: RoomId=0 reservation is pending assignment, not a suite unit", () => {
+  assertEquals(
+    classifyEzgoApiBooking({ roomsCount: 1, reservations: [{ roomId: 0 }] }),
+    "suite_pending_room",
+  );
+});
+
+Deno.test("classifyEzgoApiBooking: any assigned RoomId -> suite", () => {
+  assertEquals(
+    classifyEzgoApiBooking({ roomsCount: 2, reservations: [{ roomId: 0 }, { roomId: 17 }] }),
+    "suite",
+  );
+});
+
+Deno.test("extractOrderStayDates: Order.Checkin DD/MM/YYYY", () => {
+  const dates = extractOrderStayDates({
+    Type: "Update",
+    Order: { Checkin: "20/08/2026", Checkout: "22/08/2026", Rooms: [] },
+  });
+  assertEquals(dates.arrival, "2026-08-20");
+  assertEquals(dates.departure, "2026-08-22");
+});
+
+Deno.test("extractOrderClient: stay dates ride along when present on Order", () => {
+  const result = extractOrderClient({
+    id: "d1",
+    created_at: "2026-08-20T10:00:00Z",
+    raw_payload: {
+      Type: "Update",
+      OrderId: 1,
+      Order: { OrderId: 1, Status: 1, Board: 0, Checkin: "21/08/2026" },
+      Client: { FullName: "א", Tel1: "0501234567" },
+    },
+  });
+  assertEquals(result?.arrivalDate, "2026-08-21");
+  assertEquals(result?.departureDate, null);
+});
+
+Deno.test("classifyOrderResolution: daypass_missing_arrival_date parks (fail visible, not dropped)", () => {
+  assertEquals(
+    classifyOrderResolution([{ kind: "unresolved", reason: "daypass_missing_arrival_date" }]),
+    { action: "park", notes: "unresolved_daypass_missing_arrival_date" },
+  );
 });
 
 // ── resolveApiRoomOccupantIdentity — group/room-merge rule (Mike, 2026-08-16,
