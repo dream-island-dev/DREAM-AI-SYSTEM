@@ -1,4 +1,7 @@
-2026-08-20 | Doc2 mail snapshot sync — same-booking EZGO dates overwrite XOS suite stay; canonical suite never day-guest from iNights=0; ingest reconciles `suite_rooms` to the report (15→16 prune, 10+11 keep). Deploy later: `ezgo-mail-sync` + frontend. Not spa cron.
+2026-08-20 | EZGO API live guest sync — pending room + day-pass | `ezgo-guest-sync`: suite profile before RoomId assignment; later Reservations fills room (looks up past Orders); day-pass from Rooms:[] muted; prune suite_rooms per OrderId only. Check-in/out still WA group only. Deploy: `functions deploy ezgo-guest-sync --no-verify-jwt` (not during spa freeze).
+
+
+
 
 2026-08-20 | Inbox ⚡ — «תפריט ספא» drafts `bot_scripts.spa_menu` into the reply box (manual send). Frontend only.
 

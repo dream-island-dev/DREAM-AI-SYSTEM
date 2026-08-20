@@ -19,6 +19,7 @@ import {
   israelTomorrowYmd,
 } from "../_shared/guestDreamBotCohort.ts";
 import { primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
+import { assertAuthenticatedStaff } from "../_shared/assertAuthenticatedStaff.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -74,6 +75,12 @@ serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
+
+    // 🔒 2026-08-20 — any logged-in, non-suspended staff member. This was
+    // previously callable by anyone with no credentials at all (real Meta
+    // broadcast to up to 120 currently-staying guests).
+    await assertAuthenticatedStaff(supabase, req);
+
     await primeGuestChannelConfig(supabase);
 
     const cutoff = (() => {

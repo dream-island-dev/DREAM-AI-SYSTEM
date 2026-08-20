@@ -50,6 +50,7 @@ import {
   pipelineSegmentFromAppliesTo,
   stageAppliesToGuestPipeline,
 } from "../_shared/automationCohort.ts";
+import { assertAuthenticatedStaff } from "../_shared/assertAuthenticatedStaff.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -107,6 +108,12 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
+
+    // 🔒 2026-08-20 — any logged-in, non-suspended staff member. This was
+    // previously callable by anyone with no credentials at all (full guest
+    // PII read: name/phone/room/journey status for every upcoming guest).
+    await assertAuthenticatedStaff(supabase, req);
+
     // Must prime before any isStageEffectivelyActive/shouldRouteGuestOutboundViaWhapiSuites call below.
     await primeGuestChannelConfig(supabase);
 
@@ -162,12 +169,27 @@ Deno.serve(async (req: Request) => {
     // recent-past-to-future. Excludes long-departed guests (those live in
     // the separate Past Guests view) — keeps this projection bounded.
     const cutoff = ymd(new Date(now.getTime() - 3 * 24 * 3600 * 1000));
-    const { data: guestsData, error: guestsErr } = await supabase
-      .from("guests")
-      .select("*")
-      .or(`arrival_date.gte.${cutoff},departure_date.gte.${cutoff}`);
-    if (guestsErr) throw new Error(`guests_lookup_error: ${guestsErr.message}`);
-    const guests = (guestsData ?? []) as GuestForSchedule[];
+    // P0 2026-08-10: PostgREST caps an unranged select at 1000 rows — this
+    // window can exceed that on a full resort, silently dropping guests from
+    // the Live Queue preview. Paginate past the cap (same pattern as
+    // src/utils/inboxGuestMap.js's fetchPaginatedGuests / whatsapp-cron).
+    const QUEUE_GUEST_PAGE_SIZE = 1000;
+    const guests: GuestForSchedule[] = [];
+    for (let from = 0; ; from += QUEUE_GUEST_PAGE_SIZE) {
+      const { data: guestsData, error: guestsErr } = await supabase
+        .from("guests")
+        .select("*")
+        .or(`arrival_date.gte.${cutoff},departure_date.gte.${cutoff}`)
+        .order("id", { ascending: true })
+        .range(from, from + QUEUE_GUEST_PAGE_SIZE - 1);
+      if (guestsErr) throw new Error(`guests_lookup_error: ${guestsErr.message}`);
+      const batch = (guestsData ?? []) as GuestForSchedule[];
+      if (from === 0 && batch.length === 0) {
+        console.warn("[automation-queue] guest scan returned 0 rows on first page — verify the cutoff/filter is correct, not a truncation.");
+      }
+      guests.push(...batch);
+      if (batch.length < QUEUE_GUEST_PAGE_SIZE) break;
+    }
 
     const guestIds = guests.map((g) => g.id);
     const stageKeys = stages.map((s) => s.stage_key);

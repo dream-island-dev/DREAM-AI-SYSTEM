@@ -17,6 +17,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { assertAuthenticatedStaff } from "../_shared/assertAuthenticatedStaff.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -29,6 +30,16 @@ serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
+    const admin = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    );
+
+    // 🔒 2026-08-20 — only super_admin may invite/create accounts. This was
+    // previously callable by anyone with no credentials at all.
+    await assertAuthenticatedStaff(admin, req, { requiredRole: "super_admin" });
+
     const body = await req.json() as Record<string, unknown>;
     const email      = String(body.email ?? "").trim().toLowerCase();
     const name       = String(body.name  ?? "").trim();
@@ -40,12 +51,6 @@ serve(async (req: Request) => {
     if (!name)                          throw new Error("name is required");
     if (!password || password.length < 8) throw new Error("password is required and must be at least 8 characters");
     if (!ALLOWED_ROLES.includes(role))  throw new Error("invalid role: " + role);
-
-    const admin = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-      { auth: { autoRefreshToken: false, persistSession: false } }
-    );
 
     let userId: string | null = null;
     let alreadyExists = false;

@@ -19,6 +19,7 @@ import { cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { INTER_SEND_DELAY_MS, sleep } from "../_shared/outboundThrottle.ts";
 import { loadWhapiVelocityLimits, sendWhapiTextGuarded, WhapiRateLimitedError } from "../_shared/whapiVelocityGuard.ts";
 import { appendWhapiUniqueRef } from "../_shared/whapiMessagePersonalize.ts";
+import { assertAuthenticatedStaff } from "../_shared/assertAuthenticatedStaff.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -95,6 +96,11 @@ serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
+
+    // 🔒 2026-08-20 — any logged-in, non-suspended staff member. This was
+    // previously callable by anyone with no credentials at all (broadcast to
+    // every active guest-club member, WhatsApp or Meta template).
+    await assertAuthenticatedStaff(supabase, req);
 
     const { data: members, error: memErr } = await supabase
       .from("guest_club_members")

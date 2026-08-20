@@ -9,6 +9,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
+import { assertAuthenticatedStaff } from "../_shared/assertAuthenticatedStaff.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -159,6 +160,11 @@ serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
+
+    // 🔒 2026-08-20 — any logged-in, non-suspended staff member. This was
+    // previously callable by anyone with no credentials at all (paid Gemini/
+    // Claude calls). Not a new role matrix — same bar as before for the UI.
+    await assertAuthenticatedStaff(supabase, req);
 
     // ── 1. Load conversation history from DB ─────────────────────────────────
     const { data: history } = await supabase

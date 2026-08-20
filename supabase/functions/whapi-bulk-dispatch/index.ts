@@ -19,6 +19,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { enqueueWhapiBulkJob } from "../_shared/whapiOutboundQueue.ts";
 import { enqueuePipelineGuestWhapiBulk } from "../_shared/pipelineWhapiGuestBulk.ts";
 import { normalizeOritGuestPhoneDigits } from "../_shared/oritGuestOutbound.ts";
+import { assertAuthenticatedStaff } from "../_shared/assertAuthenticatedStaff.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -44,6 +45,11 @@ serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
+
+    // 🔒 2026-08-20 — any logged-in, non-suspended staff member. This was
+    // previously callable by anyone with no credentials at all (bulk WhatsApp
+    // sends through the resort's own Whapi device).
+    await assertAuthenticatedStaff(supabase, req);
 
     const guestIds = (body.guest_ids ?? []).map((id) => Number(id)).filter((id) => id > 0);
     if (guestIds.length > 0) {
