@@ -825,7 +825,7 @@ const SAMPLE_VALUES = {
   WORKSHOP_URL: "https://dream-island.co.il/workshops",
   PAYMENT_LINK: "https://pay.dream-island.co.il/abc123",
   PAYMENT_AMOUNT: "450",
-  GOOGLE_REVIEW_URL: "https://g.page/r/dream-island/review",
+  GOOGLE_REVIEW_URL: "https://search.google.com/local/writereview?placeid=ChIJzaIHH_ybAhURhKnG4XXJDGo",
   // Stage 2.5 (night_before_reminder) — whatsapp-send's resolveNightBeforeTimes()
   // picks weekday (12:00/15:00) vs Shabbat/holiday (bot_config-driven) hours per
   // real guest arrival date. This preview has no guest/date behind it, so it

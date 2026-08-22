@@ -25,6 +25,7 @@ import GuestClubOfferCard from "./GuestClubOfferCard";
 import { formatSpaSchedule } from "../utils/israeliTime";
 import { DEFAULT_GUEST_SURVEY_UI, normalizeGuestSurveyUi, serializeGuestSurveyUi } from "../utils/guestSurveyUi";
 import { DEFAULT_GUEST_CLUB_UI, normalizeGuestClubUi } from "../utils/guestClubUi";
+import { resolveGoogleReviewUrl } from "../utils/googleReviewUrl";
 
 const XOS_GOLD    = "#D4AF37";
 const XOS_BG_TOP  = "#0f172a";
@@ -423,7 +424,8 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi, onSurveyClubOf
   }
 
   if (thankYou) {
-    const hasGoogle = thankYou.googleCta && thankYou.reviewUrl;
+    const googleHref = thankYou.googleCta ? resolveGoogleReviewUrl(thankYou.reviewUrl) : null;
+    const hasGoogle = !!googleHref;
     const showClub = thankYou.clubOffer && !clubStatus;
     const showSuitesAfterJoin =
       thankYou.suitesCta && thankYou.suitesUrl
@@ -444,7 +446,7 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi, onSurveyClubOf
             </div>
             {hasGoogle && (
               <a
-                href={thankYou.reviewUrl.startsWith("http") ? thankYou.reviewUrl : `https://${thankYou.reviewUrl}`}
+                href={googleHref}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{

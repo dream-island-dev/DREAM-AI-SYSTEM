@@ -418,6 +418,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ---
 
+### 2026-08-22 — Google review URL is not Waze
+- **Symptom:** Portal CTA «נשמח לביקורת קצרה בגוגל» opened `waze.com/ul/hsv8sj2bbc`.
+- **Fix:** Canonical write-review Place ID `ChIJzaIHH_ybAhURhKnG4XXJDGo`. Reject Waze and the resort homepage as `GOOGLE_REVIEW_URL`.
+- **Lesson:** Navigation pins are not review links. Sanitize env before putting it on a guest CTA.
+
 ### 2026-08-20 — Doc2 mail is a per-ingest room snapshot
 - **Symptom:** EZGO changed nights/room; XOS kept fill-empty dates and extra `suite_rooms` (0-night suite, 15 leftover after 16).
 - **Fix:** Same booking overwrites suite dates. After all Doc2 lines of one mail, prune rooms not in that report. API path prunes `suite_rooms` for **that OrderId only** (`reconcileGuestRoomsForOrder`) — never by ClientId.

@@ -11,6 +11,7 @@ import {
   primeGuestChannelConfig,
   shouldRouteGuestOutboundViaWhapiSuites,
 } from "./guestWhapiRouting.ts";
+import { resolveGoogleReviewUrl } from "./googleReviewUrl.ts";
 
 type GuestOutboundRow = {
   id: number;
@@ -27,7 +28,7 @@ export async function resolvePositiveFeedbackReplyBody(
     .select("message_text")
     .eq("script_key", "positive_feedback_reply")
     .maybeSingle();
-  const reviewUrl = Deno.env.get("GOOGLE_REVIEW_URL") ?? "dream-island.co.il";
+  const reviewUrl = resolveGoogleReviewUrl(Deno.env.get("GOOGLE_REVIEW_URL"));
   const raw = scriptRow?.message_text?.trim();
   if (raw) {
     return raw.replace(/\{\{\s*GOOGLE_REVIEW_URL\s*\}\}/gi, reviewUrl);

@@ -1,3 +1,5 @@
+2026-08-22 | Portal Google-review CTA opened Waze | `GOOGLE_REVIEW_URL` was the Waze `/ul/` pin. Canonical write-review: `search.google.com/local/writereview?placeid=ChIJzaIHH_ybAhURhKnG4XXJDGo`. Waze/homepage rejected. Deploy: frontend + `guest-portal-data` `guest-portal-survey` (`whatsapp-webhook` after spa freeze).
+
 2026-08-20 | EZGO API live guest sync — pending room + day-pass + restage parked suites | `ezgo-guest-sync`: suite before RoomId; later Reservations fills room; muted day-pass from Rooms:[]; prune rooms per OrderId; restage up to 200 failed suite ingest rows/tick. Check-in still WA group. Deploy: `ezgo-guest-sync`.
 
 

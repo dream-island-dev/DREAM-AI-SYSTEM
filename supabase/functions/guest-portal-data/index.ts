@@ -22,8 +22,8 @@ import {
   shouldOfferClubInPortal,
 } from "../_shared/guestClubWaSettings.ts";
 import { isGuestPortalSurveyEligible } from "../_shared/guestSurveyEligibility.ts";
+import { resolveGoogleReviewUrl } from "../_shared/googleReviewUrl.ts";
 
-const GOOGLE_REVIEW_URL = Deno.env.get("GOOGLE_REVIEW_URL") ?? "";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -263,7 +263,9 @@ serve(async (req: Request) => {
         surveyThankYou = {
           positiveReview: suitesCta,
           googleCta,
-          reviewUrl: googleCta ? (GOOGLE_REVIEW_URL || "dream-island.co.il") : null,
+          reviewUrl: googleCta
+            ? resolveGoogleReviewUrl(Deno.env.get("GOOGLE_REVIEW_URL"))
+            : null,
           suitesCta,
           suitesUrl: suitesCta ? (surveyUi.suites_cta_url || DEFAULT_SUITES_CTA_URL) : null,
           suitesCtaLabel: suitesCta ? surveyUi.suites_cta_label : null,

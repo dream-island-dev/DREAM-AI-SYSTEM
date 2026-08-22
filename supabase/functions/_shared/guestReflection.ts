@@ -1,6 +1,7 @@
 // Holistic stay/service reflections — distinct from facility reviews and ops complaints.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { resolveGoogleReviewUrl } from "./googleReviewUrl.ts";
 
 const REFLECTION_GATE_PATTERN =
   /(ה)?שהות|(ה)?חופשה|(ה)?אירוח|(ה)?חוויה|(ה)?ביקור|(ה)?צוות\s*(היה|היו)|ממליצים|נחזור|(the\s*)?(stay|vacation|experience|visit)/i;
@@ -38,7 +39,7 @@ export function classifyGuestReflection(text: string): GuestReflectionSentiment 
 
 export function buildReflectionReply(sentiment: GuestReflectionSentiment): string {
   if (sentiment === "positive") {
-    const reviewUrl = Deno.env.get("GOOGLE_REVIEW_URL") ?? "dream-island.co.il";
+    const reviewUrl = resolveGoogleReviewUrl(Deno.env.get("GOOGLE_REVIEW_URL"));
     return `איזה כיף לשמוע! 🌟 שמחים מאוד שנהניתם. אם תרצו לשתף את החוויה שלכם עם עוד אורחים — זה יעשה לנו את היום:\n${reviewUrl}\nתודה רבה ומחכים לראותכם שוב! 💫`;
   }
   if (sentiment === "negative") {
